@@ -68,6 +68,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 return Ok(());
                             }
                         }
+                        KeyCode::Char(' ') => app.toggle_collapse(),
+                        KeyCode::Char('t') => app.start_add_task(),
                         KeyCode::Char('n') => app.start_new_session(true),
                         KeyCode::Char('N') => app.start_new_session(false),
                         KeyCode::Char('d') => app.start_delete(),
@@ -78,6 +80,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     },
                     InputMode::AddProjectName => match key.code {
                         KeyCode::Enter => app.confirm_add_project(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
+                    InputMode::AddTaskName => match key.code {
+                        KeyCode::Enter => app.confirm_add_task(),
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {
                             app.input_buffer.pop();
@@ -104,8 +115,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('n') | KeyCode::Esc => app.cancel_input(),
                         _ => {}
                     },
-                    InputMode::RenameProject | InputMode::RenameSession => match key.code
-                    {
+                    InputMode::RenameProject
+                    | InputMode::RenameTask
+                    | InputMode::RenameSession => match key.code {
                         KeyCode::Enter => app.confirm_rename(),
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {
@@ -117,11 +129,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 }
             }
         } else {
-            // No key event within poll timeout - refresh sessions and preview
             app.refresh_sessions();
         }
 
-        // Refresh preview when selection changed, or periodically (via the else branch above)
         app.refresh_preview();
 
         if app.should_quit {

@@ -5,9 +5,17 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    pub name: String,
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
     pub path: String,
+    #[serde(default)]
+    pub tasks: Vec<Task>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -44,7 +52,11 @@ impl Config {
 
     pub fn add_project(&mut self, name: String, path: String) {
         if !self.projects.iter().any(|p| p.path == path) {
-            self.projects.push(Project { name, path });
+            self.projects.push(Project {
+                name,
+                path,
+                tasks: vec![],
+            });
         }
     }
 
@@ -59,6 +71,53 @@ impl Config {
         } else {
             false
         }
+    }
+
+    pub fn add_task(&mut self, project_name: &str, task_name: String, branch: String) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            if !project.tasks.iter().any(|t| t.name == task_name) {
+                project.tasks.push(Task {
+                    name: task_name,
+                    branch,
+                });
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn remove_task(&mut self, project_name: &str, task_name: &str) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            let before = project.tasks.len();
+            project.tasks.retain(|t| t.name != task_name);
+            return project.tasks.len() < before;
+        }
+        false
+    }
+
+    pub fn rename_task(
+        &mut self,
+        project_name: &str,
+        old_task_name: &str,
+        new_task_name: String,
+    ) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == old_task_name) {
+                task.name = new_task_name;
+                return true;
+            }
+        }
+        false
+    }
+
+    #[allow(dead_code)]
+    pub fn find_task(&self, project_name: &str, task_name: &str) -> Option<&Task> {
+        self.projects
+            .iter()
+            .find(|p| p.name == project_name)?
+            .tasks
+            .iter()
+            .find(|t| t.name == task_name)
     }
 
     #[allow(dead_code)]

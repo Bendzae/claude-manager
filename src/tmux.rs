@@ -1,27 +1,114 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Result};
 
-const SESSION_PREFIX: &str = "cm-";
+const SESSION_SEP: &str = "__";
 
 #[derive(Debug, Clone)]
 pub struct TmuxSession {
     pub name: String,
     pub project_name: String,
+    pub task_name: String,
     pub session_name: String,
 }
 
 impl TmuxSession {
+    /// Parse a tmux session name like `cm__project__task__session`.
     pub fn from_tmux_name(name: &str) -> Option<Self> {
-        let rest = name.strip_prefix(SESSION_PREFIX)?;
-        let (project_name, session_name) = rest.split_once('-')?;
+        let rest = name.strip_prefix("cm")?;
+        let rest = rest.strip_prefix(SESSION_SEP)?;
+        let (project_name, rest) = rest.split_once(SESSION_SEP)?;
+        let (task_name, session_name) = rest.split_once(SESSION_SEP)?;
         Some(TmuxSession {
             name: name.to_string(),
             project_name: project_name.to_string(),
+            task_name: task_name.to_string(),
             session_name: session_name.to_string(),
         })
     }
+
+    /// Returns the worktree path if this session has one.
+    pub fn worktree_path(&self) -> Option<PathBuf> {
+        let path = worktree_dir(&self.project_name, &self.task_name, &self.session_name);
+        if path.exists() { Some(path) } else { None }
+    }
+}
+
+/// Sanitize a name for use in tmux session names.
+/// Replaces problematic characters and ensures no double underscores.
+pub fn sanitize(s: &str) -> String {
+    let s: String = s
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    // Collapse multiple hyphens
+    let mut result = String::new();
+    let mut prev_hyphen = false;
+    for c in s.chars() {
+        if c == '-' {
+            if !prev_hyphen {
+                result.push(c);
+            }
+            prev_hyphen = true;
+        } else {
+            result.push(c);
+            prev_hyphen = false;
+        }
+    }
+    result
+        .trim_matches('-')
+        .replace("__", "_")
+        .to_string()
+}
+
+/// Generate a branch name from a task name.
+pub fn to_branch_name(task_name: &str) -> String {
+    let s: String = task_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut result = String::new();
+    let mut prev_hyphen = true; // skip leading hyphens
+    for c in s.chars() {
+        if c == '-' {
+            if !prev_hyphen {
+                result.push(c);
+            }
+            prev_hyphen = true;
+        } else {
+            result.push(c);
+            prev_hyphen = false;
+        }
+    }
+    result.trim_end_matches('-').to_string()
+}
+
+fn build_tmux_name(project: &str, task: &str, session: &str) -> String {
+    format!(
+        "cm{sep}{}{sep}{}{sep}{}",
+        sanitize(project),
+        sanitize(task),
+        sanitize(session),
+        sep = SESSION_SEP
+    )
+}
+
+pub fn worktree_dir(project_name: &str, task: &str, session: &str) -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .join("claude-manager")
+        .join("worktrees")
+        .join(sanitize(project_name))
+        .join(format!("{}-{}", sanitize(task), sanitize(session)))
 }
 
 pub fn list_sessions() -> Result<Vec<TmuxSession>> {
@@ -45,18 +132,78 @@ pub fn list_sessions() -> Result<Vec<TmuxSession>> {
         .collect())
 }
 
+/// Pull latest main and create a task branch from it.
+pub fn create_task_branch(project_path: &str, branch_name: &str) -> Result<()> {
+    // Try to fetch latest main from origin
+    let _ = Command::new("git")
+        .args(["-C", project_path, "fetch", "origin", "main"])
+        .output();
+
+    // Try creating from origin/main first, fall back to local main
+    let status = Command::new("git")
+        .args(["-C", project_path, "branch", branch_name, "origin/main"])
+        .output()?;
+
+    if !status.status.success() {
+        let status = Command::new("git")
+            .args(["-C", project_path, "branch", branch_name, "main"])
+            .status()?;
+        if !status.success() {
+            bail!("Failed to create branch {branch_name}");
+        }
+    }
+
+    Ok(())
+}
+
 pub fn create_session(
     project_name: &str,
     project_path: &str,
+    task_name: &str,
+    task_branch: &str,
     session_name: &str,
     use_worktree: bool,
 ) -> Result<String> {
-    let tmux_name = format!("{SESSION_PREFIX}{project_name}-{session_name}");
+    let tmux_name = build_tmux_name(project_name, task_name, session_name);
 
-    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
+    let work_dir;
+    let mut worktree_path_str = String::new();
+
     if use_worktree {
-        claude_cmd.push_str(" --worktree");
+        let wt_path = worktree_dir(project_name, task_name, session_name);
+        worktree_path_str = wt_path.to_string_lossy().to_string();
+
+        // Create parent directories
+        if let Some(parent) = wt_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Create worktree with a session-specific branch based on task branch
+        let session_branch = format!("{task_branch}-{}", sanitize(session_name));
+        let status = Command::new("git")
+            .args([
+                "-C",
+                project_path,
+                "worktree",
+                "add",
+                "-b",
+                &session_branch,
+                &worktree_path_str,
+                task_branch,
+            ])
+            .output()?;
+
+        if !status.status.success() {
+            let stderr = String::from_utf8_lossy(&status.stderr);
+            bail!("Failed to create worktree: {stderr}");
+        }
+
+        work_dir = worktree_path_str.clone();
+    } else {
+        work_dir = project_path.to_string();
     }
+
+    let claude_cmd = "claude --dangerously-skip-permissions";
 
     let status = Command::new("tmux")
         .args([
@@ -65,8 +212,8 @@ pub fn create_session(
             "-s",
             &tmux_name,
             "-c",
-            project_path,
-            &claude_cmd,
+            &work_dir,
+            claude_cmd,
         ])
         .status()?;
 
@@ -74,12 +221,7 @@ pub fn create_session(
         bail!("Failed to create tmux session");
     }
 
-    // Store worktree flag and project path in tmux environment for cleanup
-    if use_worktree {
-        let _ = Command::new("tmux")
-            .args(["set-environment", "-t", &tmux_name, "CM_WORKTREE", "1"])
-            .status();
-    }
+    // Store metadata in tmux environment for cleanup
     let _ = Command::new("tmux")
         .args([
             "set-environment",
@@ -89,6 +231,18 @@ pub fn create_session(
             project_path,
         ])
         .status();
+
+    if use_worktree {
+        let _ = Command::new("tmux")
+            .args([
+                "set-environment",
+                "-t",
+                &tmux_name,
+                "CM_WORKTREE_PATH",
+                &worktree_path_str,
+            ])
+            .status();
+    }
 
     Ok(tmux_name)
 }
@@ -105,7 +259,6 @@ pub fn attach_session(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Get a tmux environment variable for a session.
 fn get_session_env(session_name: &str, var: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["show-environment", "-t", session_name, var])
@@ -117,146 +270,7 @@ fn get_session_env(session_name: &str, var: &str) -> Option<String> {
     }
 
     let line = String::from_utf8_lossy(&output.stdout);
-    // Format is "VAR=value\n"
     line.trim().split_once('=').map(|(_, v)| v.to_string())
-}
-
-/// Get the current working directory of the first pane in the session.
-fn get_pane_cwd(session_name: &str) -> Option<String> {
-    let output = Command::new("tmux")
-        .args([
-            "display-message",
-            "-t",
-            session_name,
-            "-p",
-            "#{pane_current_path}",
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() { None } else { Some(path) }
-}
-
-/// Check if a path is a git worktree (has a .git file pointing to the main repo).
-fn is_git_worktree(path: &str) -> bool {
-    let git_path = Path::new(path).join(".git");
-    git_path.is_file() // worktrees have a .git *file*, not a directory
-}
-
-/// Remove a git worktree directory.
-fn remove_worktree(project_path: &str, worktree_path: &str) -> Result<()> {
-    let status = Command::new("git")
-        .args(["-C", project_path, "worktree", "remove", "--force", worktree_path])
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to remove worktree at {worktree_path}");
-    }
-
-    Ok(())
-}
-
-/// List all worktree paths for a project (excluding the main working tree).
-fn list_worktrees(project_path: &str) -> Vec<String> {
-    let output = Command::new("git")
-        .args(["-C", project_path, "worktree", "list", "--porcelain"])
-        .output();
-
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut worktrees = Vec::new();
-    let mut current_path = None;
-    let mut is_bare = false;
-
-    for line in stdout.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            current_path = Some(path.to_string());
-            is_bare = false;
-        } else if line == "bare" {
-            is_bare = true;
-        } else if line.is_empty() {
-            if let Some(path) = current_path.take() {
-                if !is_bare && path != project_path {
-                    worktrees.push(path);
-                }
-            }
-        }
-    }
-    // Handle last entry
-    if let Some(path) = current_path {
-        if !is_bare && path != project_path {
-            worktrees.push(path);
-        }
-    }
-
-    worktrees
-}
-
-pub fn kill_session(name: &str, project_path: Option<&str>) -> Result<()> {
-    // Gather worktree info before killing
-    let was_worktree = get_session_env(name, "CM_WORKTREE").is_some();
-    let session_project_path =
-        get_session_env(name, "CM_PROJECT_PATH").or_else(|| project_path.map(String::from));
-    let pane_cwd = get_pane_cwd(name);
-
-    // Collect worktrees before kill so we can diff after
-    let worktrees_before: Vec<String> = session_project_path
-        .as_deref()
-        .map(list_worktrees)
-        .unwrap_or_default();
-
-    // Kill the tmux session
-    let status = Command::new("tmux")
-        .args(["kill-session", "-t", name])
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to kill tmux session");
-    }
-
-    // Clean up worktree if applicable
-    if was_worktree {
-        if let Some(ref proj_path) = session_project_path {
-            // Strategy 1: Try the pane's cwd if it's a worktree
-            if let Some(ref cwd) = pane_cwd {
-                if is_git_worktree(cwd) {
-                    let _ = remove_worktree(proj_path, cwd);
-                    return Ok(());
-                }
-            }
-
-            // Strategy 2: Find worktrees that still exist after kill and remove orphans.
-            // Claude Code's worktree might still be around if the process was killed.
-            let worktrees_after = list_worktrees(proj_path);
-            // Any worktree that existed before and still exists might be orphaned.
-            // We check each one - if no tmux session is using it, clean it up.
-            let active_sessions = list_sessions().unwrap_or_default();
-            for wt in &worktrees_before {
-                if !worktrees_after.contains(wt) {
-                    continue; // already cleaned up
-                }
-                // Check if any active session is using this worktree
-                let in_use = active_sessions.iter().any(|s| {
-                    get_pane_cwd(&s.name)
-                        .is_some_and(|cwd| cwd.starts_with(wt.as_str()))
-                });
-                if !in_use {
-                    let _ = remove_worktree(proj_path, wt);
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
@@ -271,15 +285,46 @@ pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Capture the visible content of a tmux session's pane.
+pub fn kill_session(name: &str) -> Result<()> {
+    let project_path = get_session_env(name, "CM_PROJECT_PATH");
+    let worktree_path = get_session_env(name, "CM_WORKTREE_PATH");
+
+    // Kill the tmux session
+    let status = Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to kill tmux session");
+    }
+
+    // Clean up worktree if applicable
+    if let (Some(proj_path), Some(wt_path)) = (project_path, worktree_path) {
+        if Path::new(&wt_path).exists() {
+            let _ = Command::new("git")
+                .args([
+                    "-C",
+                    &proj_path,
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &wt_path,
+                ])
+                .status();
+        }
+    }
+
+    Ok(())
+}
+
 pub fn capture_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args([
             "capture-pane",
             "-t",
             session_name,
-            "-p", // print to stdout
-            "-e", // include escape sequences (for colors, though we strip them)
+            "-p",
+            "-e",
         ])
         .output()
         .ok()?;
@@ -291,12 +336,30 @@ pub fn capture_pane(session_name: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn next_session_number(project_name: &str, sessions: &[TmuxSession]) -> u32 {
+pub fn next_session_number(
+    project_name: &str,
+    task_name: &str,
+    sessions: &[TmuxSession],
+) -> u32 {
     let max = sessions
         .iter()
-        .filter(|s| s.project_name == project_name)
+        .filter(|s| s.project_name == project_name && s.task_name == task_name)
         .filter_map(|s| s.session_name.parse::<u32>().ok())
         .max()
         .unwrap_or(0);
     max + 1
+}
+
+pub fn sessions_for_task(
+    project_name: &str,
+    task_name: &str,
+    sessions: &[TmuxSession],
+) -> Vec<TmuxSession> {
+    sessions
+        .iter()
+        .filter(|s| {
+            s.project_name == sanitize(project_name) && s.task_name == sanitize(task_name)
+        })
+        .cloned()
+        .collect()
 }

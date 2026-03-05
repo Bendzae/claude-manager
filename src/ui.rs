@@ -9,6 +9,7 @@ use crate::app::{self, App, InputMode};
 
 const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::DarkGray;
+const TASK_COLOR: Color = Color::Yellow;
 const SESSION_COLOR: Color = Color::Green;
 const PAD_LEFT: u16 = 2;
 const PAD_TOP: u16 = 1;
@@ -58,19 +59,30 @@ fn draw_title(f: &mut Frame, area: Rect) {
     f.render_widget(title, area);
 }
 
+fn is_project_collapsed(app: &App, name: &str) -> bool {
+    app.collapsed.contains(&format!("p:{name}"))
+}
+
+fn is_task_collapsed(app: &App, project: &str, task: &str) -> bool {
+    app.collapsed.contains(&format!("t:{project}:{task}"))
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<ListItem> = Vec::new();
+    let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
 
     for (i, item) in app.items.iter().enumerate() {
         let is_selected = i == app.selected;
 
-        if matches!(item, app::ListItem::Project(_)) && !lines.is_empty() {
+        if matches!(item, app::ListItem::Project { .. }) && !lines.is_empty() {
             lines.push(ListItem::new(Line::raw("")));
         }
 
         match item {
-            app::ListItem::Project(project) => {
+            app::ListItem::Project { project } => {
                 let indicator = if is_selected { "> " } else { "  " };
+                let collapsed = is_project_collapsed(app, &project.name);
+                let chevron = if collapsed { "+ " } else { "- " };
                 let name_style = if is_selected {
                     Style::default()
                         .fg(ACCENT)
@@ -81,16 +93,44 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD)
                 };
                 let line = Line::from(vec![
-                    Span::styled(
-                        indicator,
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(indicator, indicator_style),
+                    Span::styled(chevron, Style::default().fg(MUTED)),
                     Span::styled(&project.name, name_style),
-                    Span::styled(format!("  {}", project.path), Style::default().fg(MUTED)),
+                    Span::styled(
+                        format!("  {}", project.path),
+                        Style::default().fg(MUTED),
+                    ),
                 ]);
                 lines.push(ListItem::new(line));
             }
-            app::ListItem::Session(session) => {
+            app::ListItem::Task {
+                project_name,
+                task,
+                ..
+            } => {
+                let indicator = if is_selected { "> " } else { "  " };
+                let collapsed = is_task_collapsed(app, project_name, &task.name);
+                let chevron = if collapsed { "+ " } else { "- " };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(TASK_COLOR)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TASK_COLOR)
+                };
+                let line = Line::from(vec![
+                    Span::styled(indicator, indicator_style),
+                    Span::raw("    "),
+                    Span::styled(chevron, Style::default().fg(MUTED)),
+                    Span::styled(&task.name, style),
+                    Span::styled(
+                        format!("  ({})", task.branch),
+                        Style::default().fg(MUTED),
+                    ),
+                ]);
+                lines.push(ListItem::new(line));
+            }
+            app::ListItem::Session { session, .. } => {
                 let indicator = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
                     Style::default()
@@ -99,15 +139,29 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default().fg(SESSION_COLOR)
                 };
-                let line = Line::from(vec![
-                    Span::styled(
-                        indicator,
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("    "),
-                    Span::styled(&session.session_name, style),
-                ]);
-                lines.push(ListItem::new(line));
+                let wt = session.worktree_path();
+                let mut spans = vec![
+                    Span::styled(indicator, indicator_style),
+                    Span::raw("        "),
+                ];
+                if wt.is_some() {
+                    spans.push(Span::styled(
+                        "\u{e0a0} ",
+                        Style::default().fg(MUTED),
+                    ));
+                }
+                spans.push(Span::styled(&session.session_name, style));
+                if let Some(ref path) = wt {
+                    let dir_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    spans.push(Span::styled(
+                        format!("  {dir_name}"),
+                        Style::default().fg(MUTED),
+                    ));
+                }
+                lines.push(ListItem::new(Line::from(spans)));
             }
         }
     }
@@ -131,13 +185,11 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Parse ANSI escape sequences into styled ratatui Text
     let text = match content.as_bytes().into_text() {
         Ok(text) => text,
         Err(_) => return,
     };
 
-    // Show the last N lines that fit the preview area
     let total_lines = text.lines.len();
     let start = total_lines.saturating_sub(visible_height);
     let visible_lines: Vec<Line> = text.lines.into_iter().skip(start).collect();
@@ -149,11 +201,13 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "n: new session  N: no worktree  Enter: attach  d: delete  R: rename  a: add project  q: quit"
+            "t: new task  n: new session  N: no worktree  Enter: attach  Space: collapse  d: delete  R: rename  a: add project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
+        | InputMode::AddTaskName
         | InputMode::RenameProject
+        | InputMode::RenameTask
         | InputMode::RenameSession => "Enter: confirm  Esc: cancel",
         InputMode::ConfirmDelete => "y: confirm  n/Esc: cancel",
     };
@@ -174,7 +228,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             app.input_mode,
             InputMode::AddProjectName
                 | InputMode::AddSessionName
+                | InputMode::AddTaskName
                 | InputMode::RenameProject
+                | InputMode::RenameTask
                 | InputMode::RenameSession
         ) {
             format!("{}{}", msg, app.input_buffer)
