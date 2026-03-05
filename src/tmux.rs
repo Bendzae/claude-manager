@@ -218,6 +218,9 @@ pub fn create_session(
             bail!("Failed to create worktree: {stderr}");
         }
 
+        // Copy git-ignored files from the project into the new worktree
+        copy_ignored_files(project_path, &worktree_path_str);
+
         work_dir = worktree_path_str.clone();
     } else {
         work_dir = project_path.to_string();
@@ -370,6 +373,63 @@ pub fn kill_session(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copy git-ignored files from the project into a new worktree.
+/// This ensures .env files, build caches, node_modules etc. are available.
+fn copy_ignored_files(project_path: &str, worktree_path: &str) {
+    // Get list of ignored files (newline-separated)
+    let output = match Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return,
+    };
+
+    let file_list = String::from_utf8_lossy(&output.stdout);
+    if file_list.trim().is_empty() {
+        return;
+    }
+
+    // Ensure project_path ends with / for rsync
+    let src = if project_path.ends_with('/') {
+        project_path.to_string()
+    } else {
+        format!("{project_path}/")
+    };
+
+    let dst = if worktree_path.ends_with('/') {
+        worktree_path.to_string()
+    } else {
+        format!("{worktree_path}/")
+    };
+
+    // Use rsync with --files-from reading from stdin
+    let mut child = match Command::new("rsync")
+        .args(["-a", "--files-from=-", &src, &dst])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(file_list.as_bytes());
+    }
+
+    let _ = child.wait();
+}
+
 /// Check if a worktree has uncommitted changes.
 pub fn worktree_is_dirty(worktree_path: &str) -> bool {
     Command::new("git")
@@ -415,6 +475,37 @@ pub fn commit_all(worktree_path: &str, message: &str) -> Result<()> {
 }
 
 /// Rebase a session's worktree branch onto the task branch to pull in latest changes.
+/// Pull latest main and rebase the task branch onto it.
+pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
+    // Fetch latest main
+    let _ = Command::new("git")
+        .args(["-C", project_path, "fetch", "origin", "main"])
+        .output();
+
+    // Find worktree with this branch, or use project path
+    let rebase_dir = find_worktree_for_branch(project_path, branch)
+        .unwrap_or_else(|| project_path.to_string());
+
+    let output = Command::new("git")
+        .args(["-C", &rebase_dir, "rebase", "origin/main"])
+        .output()?;
+
+    if !output.status.success() {
+        let _ = Command::new("git")
+            .args(["-C", &rebase_dir, "rebase", "--abort"])
+            .output();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Rebase failed, aborted. Resolve manually.\n{stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.contains("is up to date") {
+        Ok(format!("Branch {branch} is already up to date with main"))
+    } else {
+        Ok(format!("Rebased {branch} onto latest main"))
+    }
+}
+
 pub fn rebase_session_on_task(
     project_path: &str,
     task_branch: &str,

@@ -787,6 +787,25 @@ impl App {
     }
 
     pub fn update_session(&mut self) {
+        match self.selected_item().cloned() {
+            Some(ListItem::Task {
+                project_path,
+                task,
+                ..
+            }) => {
+                match tmux::update_task_branch(&project_path, &task.branch) {
+                    Ok(msg) => self.status_message = Some(msg),
+                    Err(e) => self.status_message = Some(format!("Error: {e}")),
+                }
+                return;
+            }
+            Some(ListItem::Session { .. }) => {}
+            _ => {
+                self.status_message = Some("Select a session or task to update".into());
+                return;
+            }
+        }
+
         let (project_path, task, session) = match self.selected_item().cloned() {
             Some(ListItem::Session {
                 project_path,
@@ -794,10 +813,7 @@ impl App {
                 session,
                 ..
             }) => (project_path, task, session),
-            _ => {
-                self.status_message = Some("Select a session to update".into());
-                return;
-            }
+            _ => return,
         };
 
         let wt_path = match session.worktree_path() {
