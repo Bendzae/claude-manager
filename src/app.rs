@@ -500,7 +500,8 @@ impl App {
             self.use_worktree,
         ) {
             Ok(tmux_name) => {
-                self.should_attach = Some(tmux_name);
+                self.status_message = Some(format!("Created session {tmux_name}"));
+                self.rebuild_items();
             }
             Err(e) => {
                 self.status_message = Some(format!("Error: {e}"));
