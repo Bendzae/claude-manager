@@ -106,8 +106,12 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 }
             }
         } else {
+            // No key event within poll timeout - refresh sessions and preview
             app.refresh_sessions();
         }
+
+        // Refresh preview when selection changed, or periodically (via the else branch above)
+        app.refresh_preview();
 
         if app.should_quit {
             return Ok(());

@@ -29,6 +29,7 @@ pub struct App {
     pub should_quit: bool,
     pub should_attach: Option<String>,
     pub pending_project_path: Option<String>,
+    pub preview_content: Option<String>,
 }
 
 impl App {
@@ -47,6 +48,7 @@ impl App {
             should_quit: false,
             should_attach: None,
             pending_project_path: None,
+            preview_content: None,
         };
         app.rebuild_items();
         app.check_cwd();
@@ -237,5 +239,12 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
         self.status_message = None;
+    }
+
+    pub fn refresh_preview(&mut self) {
+        self.preview_content = match self.selected_item() {
+            Some(ListItem::Session(session)) => tmux::capture_pane(&session.name),
+            _ => None,
+        };
     }
 }

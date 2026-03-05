@@ -259,6 +259,26 @@ pub fn kill_session(name: &str, project_path: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Capture the visible content of a tmux session's pane.
+pub fn capture_pane(session_name: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args([
+            "capture-pane",
+            "-t",
+            session_name,
+            "-p", // print to stdout
+            "-e", // include escape sequences (for colors, though we strip them)
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 pub fn next_session_number(project_name: &str, sessions: &[TmuxSession]) -> u32 {
     let max = sessions
         .iter()

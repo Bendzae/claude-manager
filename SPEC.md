@@ -34,11 +34,11 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - Detach from a session using standard tmux keybind (`Ctrl-b d`) to return to the TUI
 - Delete a session (kills the tmux session)
 - Prompt to add current directory as a project if not yet registered
+- Preview of the hovered session to the right (via `tmux capture-pane`)
 
 ## Features (Later)
 
 - Session status detection (running, finished, waiting for input)
-- Preview of the hovered session to the right
 - Hotkey to open a plain terminal in the worktree folder (persistent, for long-running commands)
 
 ## Tech Stack
