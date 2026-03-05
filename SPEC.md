@@ -22,3 +22,6 @@ A minimal TUI to handle multiple claude code sessions across projects.
 
 - Avoid blocking ui while waiting for tmux operations
 - Should be as fast and snappy as possible
+
+## Visual
+- Clean dark aesthetic with color accents
