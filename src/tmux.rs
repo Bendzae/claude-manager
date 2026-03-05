@@ -5,6 +5,19 @@ use std::process::Command;
 use anyhow::{bail, Result};
 
 const SESSION_SEP: &str = "__";
+const PERMISSION_PROMPTS: &[&str] = &[
+    "Do you want to",
+    "Yes, allow all",
+    "No, and tell Claude what to do differently",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionStatus {
+    Running,
+    WaitingForInput,
+    WaitingForPermission,
+    Finished,
+}
 
 #[derive(Debug, Clone)]
 pub struct TmuxSession {
@@ -326,6 +339,86 @@ pub fn capture_pane(session_name: &str) -> Option<String> {
             "-p",
             "-e",
         ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Raw signals from a tmux session for status detection.
+pub struct SessionProbe {
+    pub claude_alive: bool,
+    pub content_hash: u64,
+    pub has_permission_prompt: bool,
+}
+
+/// Probe a session for raw status signals.
+pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
+    // Check pane_pid and pane_dead
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{pane_pid} #{pane_dead}",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let info = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = info.trim().split(' ').collect();
+
+    if parts.len() >= 2 && parts[1] == "1" {
+        return None; // pane is dead
+    }
+
+    let pane_pid = parts.first().and_then(|p| p.parse::<u32>().ok())?;
+
+    // Check if the pane process itself is claude, or if claude is a child
+    let pane_comm = Command::new("ps")
+        .args(["-o", "comm=", "-p", &pane_pid.to_string()])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    let claude_alive = pane_comm == "claude"
+        || Command::new("pgrep")
+            .args(["-P", &pane_pid.to_string(), "-x", "claude"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+    let content = capture_pane_plain(session_name).unwrap_or_default();
+    let content_hash = hash_content(&content);
+    let has_permission_prompt = PERMISSION_PROMPTS.iter().any(|p| content.contains(p));
+
+    Some(SessionProbe {
+        claude_alive,
+        content_hash,
+        has_permission_prompt,
+    })
+}
+
+fn hash_content(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn capture_pane_plain(session_name: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["capture-pane", "-t", session_name, "-p"])
         .output()
         .ok()?;
 

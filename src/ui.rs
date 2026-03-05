@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{self, App, InputMode};
+use crate::tmux::SessionStatus;
 
 const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::DarkGray;
@@ -139,10 +140,31 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default().fg(SESSION_COLOR)
                 };
+
+                let status = app
+                    .session_statuses
+                    .get(&session.name)
+                    .copied()
+                    .unwrap_or(SessionStatus::Finished);
+                const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let (status_icon, status_color) = match status {
+                    SessionStatus::Running => {
+                        let frame = SPINNER[app.tick % SPINNER.len()];
+                        (frame, Color::Yellow)
+                    }
+                    SessionStatus::WaitingForInput => ("\u{25CF}", Color::Green),
+                    SessionStatus::WaitingForPermission => ("!", Color::Magenta),
+                    SessionStatus::Finished => ("\u{25CF}", Color::Red),
+                };
+
                 let wt = session.worktree_path();
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
                     Span::raw("        "),
+                    Span::styled(
+                        format!("{status_icon} "),
+                        Style::default().fg(status_color),
+                    ),
                 ];
                 if wt.is_some() {
                     spans.push(Span::styled(

@@ -133,6 +133,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         }
 
         app.refresh_preview();
+        app.refresh_statuses();
+        app.tick = app.tick.wrapping_add(1);
 
         if app.should_quit {
             return Ok(());

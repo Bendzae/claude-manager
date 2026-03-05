@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
 use crate::config::{Config, Project, Task};
-use crate::tmux::{self, TmuxSession};
+use crate::tmux::{self, SessionStatus, TmuxSession};
 
 #[derive(Debug, Clone)]
 pub enum ListItem {
@@ -49,6 +49,10 @@ pub struct App {
     pub pending_project_path: Option<String>,
     pub preview_content: Option<String>,
     pub collapsed: HashSet<String>,
+    pub session_statuses: HashMap<String, SessionStatus>,
+    session_content_hashes: HashMap<String, u64>,
+    session_stable_ticks: HashMap<String, u32>,
+    pub tick: usize,
 }
 
 fn project_key(name: &str) -> String {
@@ -77,6 +81,10 @@ impl App {
             pending_project_path: None,
             preview_content: None,
             collapsed: HashSet::new(),
+            session_statuses: HashMap::new(),
+            session_content_hashes: HashMap::new(),
+            session_stable_ticks: HashMap::new(),
+            tick: 0,
         };
         app.rebuild_items();
         app.check_cwd();
@@ -556,5 +564,62 @@ impl App {
             Some(ListItem::Session { session, .. }) => tmux::capture_pane(&session.name),
             _ => None,
         };
+    }
+
+    pub fn refresh_statuses(&mut self) {
+        // Number of consecutive stable polls before we consider Claude idle.
+        // At ~250ms per poll, 3 ticks = ~750ms of no content change.
+        const STABLE_THRESHOLD: u32 = 3;
+
+        for session in &self.sessions {
+            let probe = tmux::probe_session(&session.name);
+
+            let status = match probe {
+                None => {
+                    // Pane dead or unreachable
+                    self.session_content_hashes.remove(&session.name);
+                    self.session_stable_ticks.remove(&session.name);
+                    SessionStatus::Finished
+                }
+                Some(probe) if !probe.claude_alive => {
+                    self.session_content_hashes.remove(&session.name);
+                    self.session_stable_ticks.remove(&session.name);
+                    SessionStatus::Finished
+                }
+                Some(probe) => {
+                    let prev_hash =
+                        self.session_content_hashes.get(&session.name).copied();
+                    let content_changed =
+                        prev_hash.is_some_and(|h| h != probe.content_hash);
+
+                    self.session_content_hashes
+                        .insert(session.name.clone(), probe.content_hash);
+
+                    if content_changed {
+                        // Content just changed — reset stable counter
+                        self.session_stable_ticks.insert(session.name.clone(), 0);
+                        SessionStatus::Running
+                    } else {
+                        // Content stable — increment counter
+                        let ticks = self
+                            .session_stable_ticks
+                            .entry(session.name.clone())
+                            .or_insert(0);
+                        *ticks = ticks.saturating_add(1);
+
+                        if *ticks < STABLE_THRESHOLD {
+                            // Recently changed, give it a moment
+                            SessionStatus::Running
+                        } else if probe.has_permission_prompt {
+                            SessionStatus::WaitingForPermission
+                        } else {
+                            SessionStatus::WaitingForInput
+                        }
+                    }
+                }
+            };
+
+            self.session_statuses.insert(session.name.clone(), status);
+        }
     }
 }

@@ -51,10 +51,14 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - Rename projects, tasks, and sessions
 - Prompt to add current directory as a project if not yet registered
 - Preview of the hovered session to the right (via `tmux capture-pane`)
+- Session status detection with colored indicators:
+  - Running/thinking: yellow indicator — Claude process alive, no input prompt visible
+  - Waiting for input: blue indicator — Claude process alive, `⏵⏵` prompt detected in pane
+  - Finished/exited: red indicator — no Claude child process or pane is dead
+  - Detection via: tmux `#{pane_pid}` + child process check + `capture-pane` content analysis
 
 ## Features (Later)
 
-- Session status detection (running, finished, waiting for input)
 - Hotkey to open a plain terminal in the worktree folder (persistent, for long-running commands)
 
 ## Tech Stack
