@@ -24,12 +24,16 @@ pub struct Config {
     pub projects: Vec<Project>,
 }
 
+/// Root directory for all claude-manager data: ~/.claude-manager
+pub fn base_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".claude-manager")
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("claude-manager")
-            .join("config.toml")
+        base_dir().join("config.toml")
     }
 
     pub fn load() -> Result<Self> {

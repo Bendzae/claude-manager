@@ -116,9 +116,7 @@ fn build_tmux_name(project: &str, task: &str, session: &str) -> String {
 }
 
 pub fn worktree_dir(project_name: &str, task: &str, session: &str) -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.local/share"))
-        .join("claude-manager")
+    crate::config::base_dir()
         .join("worktrees")
         .join(sanitize(project_name))
         .join(format!("{}-{}", sanitize(task), sanitize(session)))
