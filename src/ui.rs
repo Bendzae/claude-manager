@@ -2,14 +2,15 @@ use ansi_to_tui::IntoText;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{self, App, InputMode, PreviewMode};
 use crate::tmux::SessionStatus;
 
 const ACCENT: Color = Color::Cyan;
-const MUTED: Color = Color::DarkGray;
+const MUTED: Color = Color::Rgb(90, 90, 100);
+const TREE: Color = Color::Rgb(60, 60, 70);
 const TASK_COLOR: Color = Color::Yellow;
 const SESSION_COLOR: Color = Color::Green;
 const PAD_LEFT: u16 = 1;
@@ -24,6 +25,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(PAD_TOP),
         Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(5),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -31,6 +33,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     .split(outer);
 
     draw_title(f, chunks[1]);
+    // chunks[2] is a blank line after the title
 
     let show_panel = matches!(
         app.selected_item(),
@@ -41,7 +44,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Percentage(30),
             Constraint::Percentage(70),
         ])
-        .split(chunks[2]);
+        .split(chunks[3]);
 
         draw_list(f, app, columns[0]);
         match app.selected_item() {
@@ -49,11 +52,11 @@ pub fn draw(f: &mut Frame, app: &App) {
             _ => draw_preview_panel(f, app, columns[1]),
         }
     } else {
-        draw_list(f, app, chunks[2]);
+        draw_list(f, app, chunks[3]);
     }
 
-    draw_help(f, app, chunks[3]);
-    draw_status(f, app, chunks[4]);
+    draw_help(f, app, chunks[4]);
+    draw_status(f, app, chunks[5]);
 }
 
 fn draw_title(f: &mut Frame, area: Rect) {
@@ -71,13 +74,53 @@ fn is_project_collapsed(app: &App, name: &str) -> bool {
     app.collapsed.contains(&format!("p:{name}"))
 }
 
-fn is_task_collapsed(app: &App, project: &str, task: &str) -> bool {
-    app.collapsed.contains(&format!("t:{project}:{task}"))
+/// Check if a task is the last task in its project (looking past child sessions).
+fn is_last_task(items: &[app::ListItem], i: usize, project_name: &str) -> bool {
+    for j in (i + 1)..items.len() {
+        match &items[j] {
+            app::ListItem::Session { .. } => continue,
+            app::ListItem::Task {
+                project_name: pn, ..
+            } => return pn != project_name,
+            _ => return true,
+        }
+    }
+    true
+}
+
+/// Check if a session is the last session under its task.
+fn is_last_session(items: &[app::ListItem], i: usize, project_name: &str, task_name: &str) -> bool {
+    match items.get(i + 1) {
+        Some(app::ListItem::Session {
+            project_name: pn,
+            task: t,
+            ..
+        }) => pn != project_name || t.name != task_name,
+        _ => true,
+    }
+}
+
+/// Find whether the parent task of a session is the last task in the project.
+fn parent_task_is_last(items: &[app::ListItem], session_idx: usize, project_name: &str, task_name: &str) -> bool {
+    for j in (0..session_idx).rev() {
+        if let app::ListItem::Task {
+            project_name: pn,
+            task: t,
+            ..
+        } = &items[j]
+        {
+            if pn == project_name && t.name == task_name {
+                return is_last_task(items, j, project_name);
+            }
+        }
+    }
+    true
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<ListItem> = Vec::new();
     let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let tree_style = Style::default().fg(TREE);
 
     for (i, item) in app.items.iter().enumerate() {
         let is_selected = i == app.selected;
@@ -88,9 +131,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
         match item {
             app::ListItem::Project { project } => {
-                let indicator = if is_selected { "> " } else { "  " };
+                let indicator = if is_selected { " ▸ " } else { "   " };
                 let collapsed = is_project_collapsed(app, &project.name);
-                let chevron = if collapsed { "+ " } else { "- " };
+                let chevron = if collapsed { "▶ " } else { "▼ " };
                 let name_style = if is_selected {
                     Style::default()
                         .fg(ACCENT)
@@ -116,9 +159,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 task,
                 ..
             } => {
-                let indicator = if is_selected { "> " } else { "  " };
-                let collapsed = is_task_collapsed(app, project_name, &task.name);
-                let chevron = if collapsed { "+ " } else { "- " };
+                let indicator = if is_selected { " ▸ " } else { "   " };
+                let last = is_last_task(&app.items, i, project_name);
+                let branch_char = if last { "└─ " } else { "├─ " };
                 let style = if is_selected {
                     Style::default()
                         .fg(TASK_COLOR)
@@ -128,8 +171,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 };
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
-                    Span::raw("  "),
-                    Span::styled(chevron, Style::default().fg(MUTED)),
+                    Span::styled(branch_char, tree_style),
                     Span::styled(&task.name, style),
                 ];
 
@@ -168,8 +210,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
                 lines.push(ListItem::new(Line::from(spans)));
             }
-            app::ListItem::Session { session, .. } => {
-                let indicator = if is_selected { "> " } else { "  " };
+            app::ListItem::Session {
+                project_name,
+                task,
+                session,
+                ..
+            } => {
+                let indicator = if is_selected { " ▸ " } else { "   " };
                 let style = if is_selected {
                     Style::default()
                         .fg(SESSION_COLOR)
@@ -189,15 +236,21 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         let frame = SPINNER[app.tick % SPINNER.len()];
                         (frame, Color::Yellow)
                     }
-                    SessionStatus::WaitingForInput => ("\u{25CF}", Color::Green),
+                    SessionStatus::WaitingForInput => ("●", Color::Green),
                     SessionStatus::WaitingForPermission => ("!", Color::Magenta),
-                    SessionStatus::Finished => ("\u{25CF}", Color::Red),
+                    SessionStatus::Finished => ("●", Color::Red),
                 };
+
+                let parent_last = parent_task_is_last(&app.items, i, project_name, &task.name);
+                let session_last = is_last_session(&app.items, i, project_name, &task.name);
+                let continuation = if parent_last { "   " } else { "│  " };
+                let branch_char = if session_last { "└─ " } else { "├─ " };
 
                 let wt = session.worktree_path();
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
-                    Span::raw("    "),
+                    Span::styled(continuation, tree_style),
+                    Span::styled(branch_char, tree_style),
                     Span::styled(
                         format!("{status_icon} "),
                         Style::default().fg(status_color),
@@ -206,7 +259,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 if wt.is_some() {
                     spans.push(Span::styled(
                         "\u{e0a0} ",
-                        Style::default().fg(MUTED),
+                        Style::default().fg(TREE),
                     ));
                 }
                 spans.push(Span::styled(&session.session_name, style));
@@ -224,16 +277,6 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         ));
                     }
                 }
-                if let Some(ref path) = wt {
-                    let dir_name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    spans.push(Span::styled(
-                        format!("  {dir_name}"),
-                        Style::default().fg(MUTED),
-                    ));
-                }
                 lines.push(ListItem::new(Line::from(spans)));
             }
         }
@@ -246,6 +289,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT));
 
     let inner = block.inner(area);
@@ -268,10 +312,10 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let inactive_style = Style::default().fg(MUTED);
 
     let tab_style = |active: bool| if active { active_style } else { inactive_style };
-    let sep_span = Span::styled(" │ ", Style::default().fg(MUTED));
+    let sep_span = Span::styled(" │ ", Style::default().fg(TREE));
 
     let mut tab_spans = vec![
-        Span::styled("agent", tab_style(app.preview_mode == PreviewMode::Output)),
+        Span::styled(" agent", tab_style(app.preview_mode == PreviewMode::Output)),
         sep_span.clone(),
         Span::styled("diff", tab_style(app.preview_mode == PreviewMode::Diff)),
     ];
@@ -298,7 +342,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
 
     // Draw separator line
     let sep = "─".repeat(rows[1].width as usize);
-    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(ACCENT)));
+    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(TREE)));
     f.render_widget(separator, rows[1]);
 
     // Draw content
@@ -343,6 +387,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
 fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT));
 
     let inner = block.inner(area);
@@ -362,14 +407,14 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     // Tab header (diff only, no switching)
     let tab = Paragraph::new(Line::from(vec![
         Span::styled(
-            "diff",
+            " diff",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
     ]));
     f.render_widget(tab, rows[0]);
 
     let sep = "─".repeat(rows[1].width as usize);
-    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(ACCENT)));
+    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(TREE)));
     f.render_widget(separator, rows[1]);
 
     let content_area = rows[2];
@@ -424,7 +469,7 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(sep, Style::default().fg(MUTED)),
+                Span::styled(sep, Style::default().fg(TREE)),
             ]));
         } else if line.starts_with("index ") || line.starts_with("---") || line.starts_with("+++")
         {
@@ -505,9 +550,15 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    let help_text = match app.input_mode {
+    let help_spans = match app.input_mode {
         InputMode::Normal => {
-            "t: task  n/N: session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  P: push  o: PR  b: checkout  c: terminal  x: kill term  Tab: switch  J/K: scroll  a: project  q: quit"
+            help_bar(&[
+                ("t", "task"), ("n/N", "session"), ("⏎", "attach"), ("␣", "collapse"),
+                ("d", "del"), ("R", "rename"), ("m", "merge"), ("u", "update"),
+                ("P", "push"), ("o", "PR"), ("b", "checkout"),
+                ("c/x", "term"), ("⇥", "switch"), ("J/K", "scroll"),
+                ("a", "project"), ("q", "quit"),
+            ])
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
@@ -516,12 +567,32 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::RenameProject
         | InputMode::RenameTask
         | InputMode::RenameSession
-        | InputMode::MergeCommitMessage => "Enter: confirm  Esc: cancel",
-        InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => "y: confirm  n/Esc: cancel",
+        | InputMode::MergeCommitMessage => {
+            help_bar(&[("⏎", "confirm"), ("Esc", "cancel")])
+        }
+        InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
+            help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
+        }
     };
 
-    let help = Paragraph::new(Span::styled(help_text, Style::default().fg(MUTED)));
+    let help = Paragraph::new(Line::from(help_spans));
     f.render_widget(help, area);
+}
+
+fn help_bar(items: &[(&str, &str)]) -> Vec<Span<'static>> {
+    let key_style = Style::default().fg(Color::Rgb(140, 140, 150));
+    let desc_style = Style::default().fg(MUTED);
+    let sep_style = Style::default().fg(Color::Rgb(50, 50, 60));
+
+    let mut spans = Vec::new();
+    for (i, (key, desc)) in items.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ", sep_style));
+        }
+        spans.push(Span::styled(key.to_string(), key_style));
+        spans.push(Span::styled(format!(" {desc}"), desc_style));
+    }
+    spans
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
