@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use crate::config::{Config, Project, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
+use crate::worker::{self, Worker};
 
 #[derive(Debug, Clone)]
 pub enum ListItem {
@@ -23,11 +24,7 @@ pub enum ListItem {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PreviewMode {
-    Output,
-    Diff,
-}
+pub use worker::PreviewMode;
 
 #[derive(Debug, PartialEq)]
 pub enum InputMode {
@@ -58,9 +55,8 @@ pub struct App {
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
-    session_content_hashes: HashMap<String, u64>,
-    session_stable_ticks: HashMap<String, u32>,
     pub tick: usize,
+    pub worker: Worker,
 }
 
 fn project_key(name: &str) -> String {
@@ -92,9 +88,8 @@ impl App {
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
-            session_content_hashes: HashMap::new(),
-            session_stable_ticks: HashMap::new(),
             tick: 0,
+            worker: Worker::spawn(),
         };
         app.rebuild_items();
         app.check_cwd();
@@ -114,9 +109,32 @@ impl App {
         }
     }
 
-    pub fn refresh_sessions(&mut self) {
-        self.sessions = tmux::list_sessions().unwrap_or_default();
-        self.rebuild_items();
+    /// Apply any pending updates from the background worker.
+    pub fn apply_worker_updates(&mut self) {
+        // Drain all pending updates, keep only the latest
+        let mut latest = None;
+        while let Ok(update) = self.worker.receiver.try_recv() {
+            latest = Some(update);
+        }
+        if let Some(update) = latest {
+            self.sessions = update.sessions;
+            self.session_statuses = update.statuses;
+            self.diff_stats = update.diff_stats;
+            self.preview_content = update.preview_content;
+            self.rebuild_items();
+        }
+    }
+
+    /// Tell the worker which session is selected and which preview mode.
+    pub fn sync_worker_hints(&self) {
+        let selected_session = match self.selected_item() {
+            Some(ListItem::Session { session, .. }) => Some(session.name.clone()),
+            _ => None,
+        };
+        if let Ok(mut hints) = self.worker.hints.lock() {
+            hints.selected_session = selected_session;
+            hints.preview_mode = self.preview_mode;
+        }
     }
 
     pub fn rebuild_items(&mut self) {
@@ -200,12 +218,14 @@ impl App {
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.sync_worker_hints();
         }
     }
 
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.items.len() {
             self.selected += 1;
+            self.sync_worker_hints();
         }
     }
 
@@ -420,7 +440,6 @@ impl App {
                     Ok(()) => {
                         self.status_message =
                             Some(format!("Killed session {}", session.session_name));
-                        self.refresh_sessions();
                     }
                     Err(e) => {
                         self.status_message = Some(format!("Error: {e}"));
@@ -492,7 +511,6 @@ impl App {
 
                     self.config.rename_project(&old_name, new_name.clone());
                     let _ = self.config.save();
-                    self.refresh_sessions();
                     self.status_message = Some(format!("Renamed project to {new_name}"));
                 }
             }
@@ -522,7 +540,6 @@ impl App {
                     self.config
                         .rename_task(&project_name, &task.name, new_name.clone());
                     let _ = self.config.save();
-                    self.refresh_sessions();
                     self.status_message = Some(format!("Renamed task to {new_name}"));
                 }
             }
@@ -546,7 +563,6 @@ impl App {
                     );
                     match tmux::rename_session(&session.name, &new_tmux) {
                         Ok(()) => {
-                            self.refresh_sessions();
                             self.status_message =
                                 Some(format!("Renamed session to {new_name}"));
                         }
@@ -574,83 +590,6 @@ impl App {
             PreviewMode::Output => PreviewMode::Diff,
             PreviewMode::Diff => PreviewMode::Output,
         };
-    }
-
-    pub fn refresh_preview(&mut self) {
-        self.preview_content = match self.selected_item() {
-            Some(ListItem::Session { session, .. }) => match self.preview_mode {
-                PreviewMode::Output => tmux::capture_pane(&session.name),
-                PreviewMode::Diff => self
-                    .diff_stats
-                    .get(&session.name)
-                    .map(|s| s.diff_output.clone()),
-            },
-            _ => None,
-        };
-    }
-
-    pub fn refresh_diff_stats(&mut self) {
-        for session in &self.sessions {
-            if let Some(stats) = tmux::get_diff_stats(&session.name) {
-                self.diff_stats.insert(session.name.clone(), stats);
-            }
-        }
-    }
-
-    pub fn refresh_statuses(&mut self) {
-        // Number of consecutive stable polls before we consider Claude idle.
-        // At ~250ms per poll, 3 ticks = ~750ms of no content change.
-        const STABLE_THRESHOLD: u32 = 3;
-
-        for session in &self.sessions {
-            let probe = tmux::probe_session(&session.name);
-
-            let status = match probe {
-                None => {
-                    // Pane dead or unreachable
-                    self.session_content_hashes.remove(&session.name);
-                    self.session_stable_ticks.remove(&session.name);
-                    SessionStatus::Finished
-                }
-                Some(probe) if !probe.claude_alive => {
-                    self.session_content_hashes.remove(&session.name);
-                    self.session_stable_ticks.remove(&session.name);
-                    SessionStatus::Finished
-                }
-                Some(probe) => {
-                    let prev_hash =
-                        self.session_content_hashes.get(&session.name).copied();
-                    let content_changed =
-                        prev_hash.is_some_and(|h| h != probe.content_hash);
-
-                    self.session_content_hashes
-                        .insert(session.name.clone(), probe.content_hash);
-
-                    if content_changed {
-                        // Content just changed — reset stable counter
-                        self.session_stable_ticks.insert(session.name.clone(), 0);
-                        SessionStatus::Running
-                    } else {
-                        // Content stable — increment counter
-                        let ticks = self
-                            .session_stable_ticks
-                            .entry(session.name.clone())
-                            .or_insert(0);
-                        *ticks = ticks.saturating_add(1);
-
-                        if *ticks < STABLE_THRESHOLD {
-                            // Recently changed, give it a moment
-                            SessionStatus::Running
-                        } else if probe.has_permission_prompt {
-                            SessionStatus::WaitingForPermission
-                        } else {
-                            SessionStatus::WaitingForInput
-                        }
-                    }
-                }
-            };
-
-            self.session_statuses.insert(session.name.clone(), status);
-        }
+        self.sync_worker_hints();
     }
 }

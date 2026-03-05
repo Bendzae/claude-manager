@@ -330,8 +330,16 @@ pub fn kill_session(name: &str) -> Result<()> {
         bail!("Failed to kill tmux session");
     }
 
-    // Clean up worktree if applicable
+    // Clean up worktree and its branch if applicable
     if let (Some(proj_path), Some(wt_path)) = (project_path, worktree_path) {
+        // Get the branch name before removing the worktree
+        let branch = Command::new("git")
+            .args(["-C", &wt_path, "rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
         if Path::new(&wt_path).exists() {
             let _ = Command::new("git")
                 .args([
@@ -343,6 +351,15 @@ pub fn kill_session(name: &str) -> Result<()> {
                     &wt_path,
                 ])
                 .status();
+        }
+
+        // Delete the worktree branch
+        if let Some(branch_name) = branch {
+            if !branch_name.is_empty() && branch_name != "main" && branch_name != "master" {
+                let _ = Command::new("git")
+                    .args(["-C", &proj_path, "branch", "-D", &branch_name])
+                    .status();
+            }
         }
     }
 

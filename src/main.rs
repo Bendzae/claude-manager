@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod tmux;
 mod ui;
+mod worker;
 
 use std::io;
 use std::time::Duration;
@@ -37,7 +38,7 @@ fn main() -> Result<()> {
 
         if let Some(session_name) = app.should_attach.take() {
             tmux::attach_session(&session_name)?;
-            app.refresh_sessions();
+            // Worker thread keeps running, will pick up changes automatically
         }
     }
 
@@ -45,10 +46,12 @@ fn main() -> Result<()> {
 }
 
 fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+    app.sync_worker_hints();
+
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
 
-        if event::poll(Duration::from_millis(250))? {
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -74,7 +77,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('N') => app.start_new_session(false),
                         KeyCode::Char('d') => app.start_delete(),
                         KeyCode::Char('a') => app.start_add_project(),
-                        KeyCode::Char('r') => app.refresh_sessions(),
                         KeyCode::Char('R') => app.start_rename(),
                         KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
@@ -129,15 +131,10 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     },
                 }
             }
-        } else {
-            app.refresh_sessions();
         }
 
-        app.refresh_preview();
-        app.refresh_statuses();
-        if app.tick % 4 == 0 {
-            app.refresh_diff_stats();
-        }
+        // Apply background worker updates (non-blocking)
+        app.apply_worker_updates();
         app.tick = app.tick.wrapping_add(1);
 
         if app.should_quit {
