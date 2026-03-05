@@ -484,6 +484,20 @@ impl App {
 
     pub fn start_delete(&mut self) {
         match self.selected_item() {
+            Some(ListItem::Project { project }) => {
+                let has_sessions = self.sessions.iter().any(|s| {
+                    s.project_name == tmux::sanitize(&project.name)
+                });
+                if has_sessions {
+                    self.status_message = Some(
+                        "Cannot delete project with active sessions. Delete sessions first."
+                            .into(),
+                    );
+                } else {
+                    self.input_mode = InputMode::ConfirmDelete;
+                    self.status_message = Some("Delete this project? (y/n)".into());
+                }
+            }
             Some(ListItem::Session { .. }) => {
                 self.input_mode = InputMode::ConfirmDelete;
                 self.status_message = Some("Delete this session? (y/n)".into());
@@ -510,6 +524,12 @@ impl App {
 
     pub fn confirm_delete(&mut self) {
         match self.selected_item().cloned() {
+            Some(ListItem::Project { project }) => {
+                self.config.remove_project(&project.path);
+                let _ = self.config.save();
+                self.status_message = Some(format!("Removed project '{}'", project.name));
+                self.rebuild_items();
+            }
             Some(ListItem::Session { session, .. }) => {
                 match tmux::kill_session(&session.name) {
                     Ok(()) => {
