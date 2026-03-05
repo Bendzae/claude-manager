@@ -218,8 +218,12 @@ pub fn create_session(
             bail!("Failed to create worktree: {stderr}");
         }
 
-        // Copy git-ignored files from the project into the new worktree
-        copy_ignored_files(project_path, &worktree_path_str);
+        // Copy git-ignored files in background to avoid blocking the UI
+        let bg_project = project_path.to_string();
+        let bg_worktree = worktree_path_str.clone();
+        std::thread::spawn(move || {
+            copy_ignored_files(&bg_project, &bg_worktree);
+        });
 
         work_dir = worktree_path_str.clone();
     } else {
@@ -476,6 +480,19 @@ pub fn commit_all(worktree_path: &str, message: &str) -> Result<()> {
 
 /// Rebase a session's worktree branch onto the task branch to pull in latest changes.
 /// Pull latest main and rebase the task branch onto it.
+pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["-C", project_path, "push", "-u", "origin", branch])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Push failed: {stderr}");
+    }
+
+    Ok(format!("Pushed {branch} to origin"))
+}
+
 pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
     // Fetch latest main
     let _ = Command::new("git")
@@ -1048,6 +1065,26 @@ fn capture_pane_plain(session_name: &str) -> Option<String> {
     }
 
     Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Get the PR URL for a branch using the `gh` CLI.
+pub fn get_pr_url(project_path: &str, branch: &str) -> Option<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr", "view", branch,
+            "--json", "url",
+            "-q", ".url",
+        ])
+        .current_dir(project_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() { None } else { Some(url) }
 }
 
 pub fn next_session_number(

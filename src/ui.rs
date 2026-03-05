@@ -152,6 +152,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     ));
                 }
 
+                // Show PR icon if a PR exists for this branch
+                if app.pr_urls.contains_key(&task.branch) {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "\u{e728}",
+                        Style::default().fg(Color::Magenta),
+                    ));
+                }
+
                 spans.push(Span::styled(
                     format!("  ({})", task.branch),
                     Style::default().fg(MUTED),
@@ -498,7 +507,7 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "t: task  n/N: session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  c: terminal  x: kill term  Tab: switch  J/K: scroll  a: project  q: quit"
+            "t: task  n/N: session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  P: push  o: open PR  c: terminal  x: kill term  Tab: switch  J/K: scroll  a: project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
@@ -508,7 +517,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::RenameTask
         | InputMode::RenameSession
         | InputMode::MergeCommitMessage => "Enter: confirm  Esc: cancel",
-        InputMode::ConfirmDelete => "y: confirm  n/Esc: cancel",
+        InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => "y: confirm  n/Esc: cancel",
     };
 
     let help = Paragraph::new(Span::styled(help_text, Style::default().fg(MUTED)));
@@ -516,6 +525,19 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Show PR URL when a task with a PR is selected and no other status message
+    if app.status_message.is_none() && app.input_mode == InputMode::Normal {
+        if let Some(app::ListItem::Task { task, .. }) = app.selected_item() {
+            if let Some(url) = app.pr_urls.get(&task.branch) {
+                let pr_line = Paragraph::new(Line::from(vec![
+                    Span::styled("\u{e728} ", Style::default().fg(Color::Magenta)),
+                    Span::styled(url.as_str(), Style::default().fg(MUTED)),
+                ]));
+                f.render_widget(pr_line, area);
+                return;
+            }
+        }
+    }
     if let Some(msg) = &app.status_message {
         let style = if msg.starts_with("Error") {
             Style::default().fg(Color::Red)
@@ -523,7 +545,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow)
         };
 
-        let content = if matches!(
+        let content = if app.loading {
+            let spinner = LOADING_SPINNER[app.tick % LOADING_SPINNER.len()];
+            format!("{spinner} {msg}")
+        } else if matches!(
             app.input_mode,
             InputMode::AddProjectName
                 | InputMode::AddSessionName

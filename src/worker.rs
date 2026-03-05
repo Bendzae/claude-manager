@@ -51,6 +51,8 @@ pub struct WorkerUpdate {
     pub task_diff_stats: HashMap<String, DiffStats>,
     /// Keyed by session tmux name.
     pub terminal_counts: HashMap<String, usize>,
+    /// PR URLs keyed by branch name.
+    pub pr_urls: HashMap<String, String>,
 }
 
 pub struct Worker {
@@ -81,6 +83,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
     let mut stable_ticks: HashMap<String, u32> = HashMap::new();
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
     let mut terminal_counts: HashMap<String, usize> = HashMap::new();
+    let mut pr_urls: HashMap<String, String> = HashMap::new();
     let mut tick: u64 = 0;
 
     loop {
@@ -163,6 +166,17 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             }
         }
 
+        // Check for PRs (infrequently, ~every 10 seconds)
+        if tick % 20 == 0 {
+            for task in &tasks {
+                if !pr_urls.contains_key(&task.branch) {
+                    if let Some(url) = tmux::get_pr_url(&task.project_path, &task.branch) {
+                        pr_urls.insert(task.branch.clone(), url);
+                    }
+                }
+            }
+        }
+
         let (preview_content, task_diff) = match &selection {
             Selection::None => (None, None),
             Selection::Task {
@@ -198,6 +212,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             task_diff,
             task_diff_stats,
             terminal_counts: terminal_counts.clone(),
+            pr_urls: pr_urls.clone(),
         };
 
         if tx.send(update).is_err() {

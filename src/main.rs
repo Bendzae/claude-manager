@@ -58,6 +58,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     continue;
                 }
 
+                if app.loading {
+                    // Only allow quit while loading
+                    if key.code == KeyCode::Char('q') {
+                        app.should_quit = true;
+                        return Ok(());
+                    }
+                    continue;
+                }
+
                 match app.input_mode {
                     InputMode::Normal => match key.code {
                         KeyCode::Char('q') => {
@@ -83,6 +92,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('R') => app.start_rename(),
                         KeyCode::Char('m') => app.start_merge(),
                         KeyCode::Char('u') => app.update_session(),
+                        KeyCode::Char('P') => app.push_task_branch(),
+                        KeyCode::Char('o') => app.open_pr(),
                         KeyCode::Char('c') => app.create_terminal(),
                         KeyCode::Char('x') => app.kill_terminal(),
                         KeyCode::Char('J') => app.scroll_preview_down(),
@@ -147,6 +158,11 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
+                    InputMode::ConfirmCreatePr => match key.code {
+                        KeyCode::Char('y') => app.confirm_create_pr(),
+                        KeyCode::Char('n') | KeyCode::Esc => app.cancel_input(),
+                        _ => {}
+                    },
                     InputMode::MergeCommitMessage => match key.code {
                         KeyCode::Enter => app.confirm_merge_commit(),
                         KeyCode::Esc => app.cancel_input(),
@@ -160,8 +176,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
-        // Apply background worker updates (non-blocking)
+        // Apply background updates (non-blocking)
         app.apply_worker_updates();
+        app.apply_op_results();
         app.tick = app.tick.wrapping_add(1);
 
         if app.should_quit {

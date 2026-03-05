@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::Result;
 
@@ -38,6 +40,7 @@ pub enum InputMode {
     RenameTask,
     RenameSession,
     MergeCommitMessage,
+    ConfirmCreatePr,
 }
 
 pub struct App {
@@ -64,8 +67,19 @@ pub struct App {
     pub preview_scroll: usize,
     /// Number of terminal windows per session (keyed by session tmux name)
     pub terminal_counts: HashMap<String, usize>,
+    /// PR URLs keyed by branch name
+    pub pr_urls: HashMap<String, String>,
+    pub loading: bool,
+    pub op_receiver: mpsc::Receiver<OpResult>,
+    pub op_sender: mpsc::Sender<OpResult>,
     pub tick: usize,
     pub worker: Worker,
+}
+
+pub struct OpResult {
+    pub message: String,
+    pub rebuild: bool,
+    pub reload_config: bool,
 }
 
 fn project_key(name: &str) -> String {
@@ -80,6 +94,7 @@ impl App {
     pub fn new() -> Result<Self> {
         let config = Config::load()?;
         let sessions = tmux::list_sessions().unwrap_or_default();
+        let (tx, rx) = mpsc::channel();
         let mut app = App {
             config,
             sessions,
@@ -103,6 +118,10 @@ impl App {
             task_diff_stats: HashMap::new(),
             preview_scroll: 0,
             terminal_counts: HashMap::new(),
+            pr_urls: HashMap::new(),
+            loading: false,
+            op_receiver: rx,
+            op_sender: tx,
             tick: 0,
             worker: Worker::spawn(),
         };
@@ -116,10 +135,6 @@ impl App {
             let cwd_str = cwd.to_string_lossy().to_string();
             if cwd.join(".git").is_dir() && !self.config.has_project_at(&cwd_str) {
                 self.pending_project_path = Some(cwd_str);
-                self.status_message = Some(
-                    "Current directory is a git repo but not registered. Press 'a' to add it."
-                        .into(),
-                );
             }
         }
     }
@@ -142,6 +157,9 @@ impl App {
             if !update.task_diff_stats.is_empty() {
                 self.task_diff_stats = update.task_diff_stats;
             }
+            if !update.pr_urls.is_empty() {
+                self.pr_urls.extend(update.pr_urls);
+            }
             if !update.terminal_counts.is_empty() {
                 self.terminal_counts = update.terminal_counts;
                 // If viewing a terminal that no longer exists, fall back
@@ -160,6 +178,35 @@ impl App {
             }
             self.rebuild_items();
         }
+    }
+
+    /// Poll for completed background operations.
+    pub fn apply_op_results(&mut self) {
+        while let Ok(result) = self.op_receiver.try_recv() {
+            self.loading = false;
+            self.status_message = Some(result.message);
+            if result.reload_config {
+                if let Ok(config) = Config::load() {
+                    self.config = config;
+                }
+            }
+            if result.rebuild {
+                self.rebuild_items();
+            }
+        }
+    }
+
+    fn start_op<F>(&mut self, loading_msg: &str, f: F)
+    where
+        F: FnOnce() -> OpResult + Send + 'static,
+    {
+        self.loading = true;
+        self.status_message = Some(loading_msg.into());
+        let tx = self.op_sender.clone();
+        thread::spawn(move || {
+            let result = f();
+            let _ = tx.send(result);
+        });
     }
 
     /// Tell the worker what is selected.
@@ -424,36 +471,49 @@ impl App {
             }
         };
 
-        // Check if branch already exists
-        let branch_exists = tmux::branch_exists(&project_path, &branch);
-
-        if branch_exists {
-            self.config
-                .add_task(&project_name, task_name.clone(), branch.clone());
-            let _ = self.config.save();
-            self.status_message =
-                Some(format!("Added task '{task_name}' using existing branch {branch}"));
-            self.collapsed.remove(&project_key(&project_name));
-            self.rebuild_items();
-        } else {
-            match tmux::create_task_branch(&project_path, &branch) {
-                Ok(()) => {
-                    self.config
-                        .add_task(&project_name, task_name.clone(), branch.clone());
-                    let _ = self.config.save();
-                    self.status_message =
-                        Some(format!("Created task '{task_name}' on branch {branch}"));
-                    self.collapsed.remove(&project_key(&project_name));
-                    self.rebuild_items();
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Error: {e}"));
-                }
-            }
-        }
-
+        self.collapsed.remove(&project_key(&project_name));
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
+
+        self.start_op("Creating task...", move || {
+            let branch_exists = tmux::branch_exists(&project_path, &branch);
+
+            if !branch_exists {
+                if let Err(e) = tmux::create_task_branch(&project_path, &branch) {
+                    return OpResult {
+                        message: format!("Error: {e}"),
+                        rebuild: false,
+                        reload_config: false,
+                    };
+                }
+            }
+
+            // Save config from background thread
+            let mut config = match Config::load() {
+                Ok(c) => c,
+                Err(e) => {
+                    return OpResult {
+                        message: format!("Error loading config: {e}"),
+                        rebuild: false,
+                        reload_config: false,
+                    };
+                }
+            };
+            config.add_task(&project_name, task_name.clone(), branch.clone());
+            let _ = config.save();
+
+            let msg = if branch_exists {
+                format!("Added task '{task_name}' using existing branch {branch}")
+            } else {
+                format!("Created task '{task_name}' on branch {branch}")
+            };
+
+            OpResult {
+                message: msg,
+                rebuild: true,
+                reload_config: true,
+            }
+        });
     }
 
     pub fn start_new_session(&mut self, use_worktree: bool) {
@@ -491,25 +551,33 @@ impl App {
             self.input_buffer.trim().to_string()
         };
 
-        match tmux::create_session(
-            &project_name,
-            &project_path,
-            &task.name,
-            &task.branch,
-            &session_name,
-            self.use_worktree,
-        ) {
-            Ok(tmux_name) => {
-                self.status_message = Some(format!("Created session {tmux_name}"));
-                self.rebuild_items();
-            }
-            Err(e) => {
-                self.status_message = Some(format!("Error: {e}"));
-            }
-        }
-
+        let use_worktree = self.use_worktree;
+        let task_name = task.name.clone();
+        let task_branch = task.branch.clone();
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
+
+        self.start_op("Creating session...", move || {
+            match tmux::create_session(
+                &project_name,
+                &project_path,
+                &task_name,
+                &task_branch,
+                &session_name,
+                use_worktree,
+            ) {
+                Ok(tmux_name) => OpResult {
+                    message: format!("Created session {tmux_name}"),
+                    rebuild: true,
+                    reload_config: false,
+                },
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
     }
 
     pub fn start_delete(&mut self) {
@@ -561,15 +629,24 @@ impl App {
                 self.rebuild_items();
             }
             Some(ListItem::Session { session, .. }) => {
-                match tmux::kill_session(&session.name) {
-                    Ok(()) => {
-                        self.status_message =
-                            Some(format!("Killed session {}", session.session_name));
+                let name = session.name.clone();
+                let display_name = session.session_name.clone();
+                self.input_mode = InputMode::Normal;
+                self.start_op("Deleting session...", move || {
+                    match tmux::kill_session(&name) {
+                        Ok(()) => OpResult {
+                            message: format!("Killed session {display_name}"),
+                            rebuild: true,
+                            reload_config: false,
+                        },
+                        Err(e) => OpResult {
+                            message: format!("Error: {e}"),
+                            rebuild: false,
+                            reload_config: false,
+                        },
                     }
-                    Err(e) => {
-                        self.status_message = Some(format!("Error: {e}"));
-                    }
-                }
+                });
+                return;
             }
             Some(ListItem::Task {
                 project_name,
@@ -734,7 +811,7 @@ impl App {
             let default_msg = tmux::next_commit_message(&wt_path, &session.session_name);
             self.status_message = Some(format!("Commit message (default: {default_msg}): "));
         } else {
-            self.do_merge(&project_path, &task.branch, &session.session_name, &wt_path);
+            self.do_merge(project_path, task.branch, session.session_name, wt_path);
         }
     }
 
@@ -766,25 +843,49 @@ impl App {
             self.input_buffer.trim().to_string()
         };
 
-        // Commit all changes
-        match tmux::commit_all(&wt_path, &msg) {
-            Ok(()) => {
-                self.do_merge(&project_path, &task.branch, &session.session_name, &wt_path);
-            }
-            Err(e) => {
-                self.status_message = Some(format!("Error committing: {e}"));
-            }
-        }
-
+        let task_branch = task.branch.clone();
+        let session_display = session.session_name.clone();
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
+
+        self.start_op("Merging...", move || {
+            if let Err(e) = tmux::commit_all(&wt_path, &msg) {
+                return OpResult {
+                    message: format!("Error committing: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                };
+            }
+            match tmux::merge_session_to_task(&project_path, &task_branch, &session_display, &wt_path) {
+                Ok(msg) => OpResult {
+                    message: msg,
+                    rebuild: false,
+                    reload_config: false,
+                },
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
     }
 
-    fn do_merge(&mut self, project_path: &str, task_branch: &str, session_name: &str, wt_path: &str) {
-        match tmux::merge_session_to_task(project_path, task_branch, session_name, wt_path) {
-            Ok(msg) => self.status_message = Some(msg),
-            Err(e) => self.status_message = Some(format!("Error: {e}")),
-        }
+    fn do_merge(&mut self, project_path: String, task_branch: String, session_name: String, wt_path: String) {
+        self.start_op("Merging...", move || {
+            match tmux::merge_session_to_task(&project_path, &task_branch, &session_name, &wt_path) {
+                Ok(msg) => OpResult {
+                    message: msg,
+                    rebuild: false,
+                    reload_config: false,
+                },
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
     }
 
     pub fn update_session(&mut self) {
@@ -794,42 +895,165 @@ impl App {
                 task,
                 ..
             }) => {
-                match tmux::update_task_branch(&project_path, &task.branch) {
-                    Ok(msg) => self.status_message = Some(msg),
-                    Err(e) => self.status_message = Some(format!("Error: {e}")),
-                }
-                return;
+                let branch = task.branch.clone();
+                self.start_op("Updating task branch...", move || {
+                    match tmux::update_task_branch(&project_path, &branch) {
+                        Ok(msg) => OpResult {
+                            message: msg,
+                            rebuild: false,
+                            reload_config: false,
+                        },
+                        Err(e) => OpResult {
+                            message: format!("Error: {e}"),
+                            rebuild: false,
+                            reload_config: false,
+                        },
+                    }
+                });
             }
-            Some(ListItem::Session { .. }) => {}
-            _ => {
-                self.status_message = Some("Select a session or task to update".into());
-                return;
-            }
-        }
-
-        let (project_path, task, session) = match self.selected_item().cloned() {
             Some(ListItem::Session {
                 project_path,
                 task,
                 session,
                 ..
-            }) => (project_path, task, session),
-            _ => return,
-        };
+            }) => {
+                let wt_path = match session.worktree_path() {
+                    Some(p) => p.to_string_lossy().to_string(),
+                    None => {
+                        self.status_message =
+                            Some("Cannot update: session has no worktree".into());
+                        return;
+                    }
+                };
+                let task_branch = task.branch.clone();
+                self.start_op("Updating session...", move || {
+                    match tmux::rebase_session_on_task(&project_path, &task_branch, &wt_path) {
+                        Ok(msg) => OpResult {
+                            message: msg,
+                            rebuild: false,
+                            reload_config: false,
+                        },
+                        Err(e) => OpResult {
+                            message: format!("Error: {e}"),
+                            rebuild: false,
+                            reload_config: false,
+                        },
+                    }
+                });
+            }
+            _ => {
+                self.status_message = Some("Select a session or task to update".into());
+            }
+        }
+    }
 
-        let wt_path = match session.worktree_path() {
-            Some(p) => p.to_string_lossy().to_string(),
-            None => {
-                self.status_message =
-                    Some("Cannot update: session has no worktree".into());
+    pub fn push_task_branch(&mut self) {
+        let (project_path, task) = match self.selected_item().cloned() {
+            Some(ListItem::Task {
+                project_path,
+                task,
+                ..
+            }) => (project_path, task),
+            _ => {
+                self.status_message = Some("Select a task to push".into());
                 return;
             }
         };
 
-        match tmux::rebase_session_on_task(&project_path, &task.branch, &wt_path) {
-            Ok(msg) => self.status_message = Some(msg),
-            Err(e) => self.status_message = Some(format!("Error: {e}")),
+        let branch = task.branch.clone();
+        self.start_op("Pushing...", move || {
+            match tmux::push_branch(&project_path, &branch) {
+                Ok(msg) => OpResult {
+                    message: msg,
+                    rebuild: false,
+                    reload_config: false,
+                },
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
+    }
+
+    pub fn open_pr(&mut self) {
+        if let Some(ListItem::Task { task, .. }) = self.selected_item() {
+            if let Some(url) = self.pr_urls.get(&task.branch) {
+                let _ = std::process::Command::new("open")
+                    .arg(url)
+                    .output();
+            } else {
+                self.input_mode = InputMode::ConfirmCreatePr;
+                self.status_message = Some("No PR found. Create one? (y/n)".into());
+            }
         }
+    }
+
+    pub fn confirm_create_pr(&mut self) {
+        let (project_path, task) = match self.selected_item().cloned() {
+            Some(ListItem::Task {
+                project_path,
+                task,
+                ..
+            }) => (project_path, task),
+            _ => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let branch = task.branch.clone();
+        let task_name = task.name.clone();
+        self.input_mode = InputMode::Normal;
+
+        self.start_op("Creating PR...", move || {
+            // Push branch first
+            if let Err(e) = tmux::push_branch(&project_path, &branch) {
+                return OpResult {
+                    message: format!("Error pushing: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                };
+            }
+
+            let output = std::process::Command::new("gh")
+                .args([
+                    "pr", "create",
+                    "--title", &task_name,
+                    "--body", "",
+                    "--head", &branch,
+                ])
+                .current_dir(&project_path)
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    let _ = std::process::Command::new("open")
+                        .arg(&url)
+                        .output();
+                    OpResult {
+                        message: format!("Created PR: {url}"),
+                        rebuild: false,
+                        reload_config: false,
+                    }
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    OpResult {
+                        message: format!("Error creating PR: {stderr}"),
+                        rebuild: false,
+                        reload_config: false,
+                    }
+                }
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
     }
 
     pub fn cancel_input(&mut self) {
