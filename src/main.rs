@@ -38,7 +38,8 @@ fn main() -> Result<()> {
 
         if let Some(session_name) = app.should_attach.take() {
             tmux::attach_session(&session_name)?;
-            // Worker thread keeps running, will pick up changes automatically
+        } else if let Some((session_name, window_idx)) = app.should_attach_window.take() {
+            tmux::attach_session_window(&session_name, window_idx)?;
         }
     }
 
@@ -67,7 +68,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                         KeyCode::Enter => {
                             app.enter_selected();
-                            if app.should_attach.is_some() {
+                            if app.should_attach.is_some()
+                                || app.should_attach_window.is_some()
+                            {
                                 return Ok(());
                             }
                         }
@@ -80,6 +83,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('R') => app.start_rename(),
                         KeyCode::Char('m') => app.start_merge(),
                         KeyCode::Char('u') => app.update_session(),
+                        KeyCode::Char('c') => app.create_terminal(),
+                        KeyCode::Char('x') => app.kill_terminal(),
                         KeyCode::Char('J') => app.scroll_preview_down(),
                         KeyCode::Char('K') => app.scroll_preview_up(),
                         KeyCode::Tab => app.toggle_preview_mode(),

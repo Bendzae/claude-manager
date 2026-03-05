@@ -24,6 +24,7 @@ pub enum Selection {
 pub enum PreviewMode {
     Output,
     Diff,
+    Terminal(usize), // 0-indexed terminal number
 }
 
 /// Task info for computing branch diffs.
@@ -48,6 +49,8 @@ pub struct WorkerUpdate {
     pub task_diff: Option<DiffStats>,
     /// Keyed by branch name.
     pub task_diff_stats: HashMap<String, DiffStats>,
+    /// Keyed by session tmux name.
+    pub terminal_counts: HashMap<String, usize>,
 }
 
 pub struct Worker {
@@ -77,6 +80,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
     let mut content_hashes: HashMap<String, u64> = HashMap::new();
     let mut stable_ticks: HashMap<String, u32> = HashMap::new();
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
+    let mut terminal_counts: HashMap<String, usize> = HashMap::new();
     let mut tick: u64 = 0;
 
     loop {
@@ -127,16 +131,19 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             statuses.insert(session.name.clone(), status);
         }
 
-        // Refresh diff stats less frequently (~every 2 seconds)
+        // Refresh diff stats and terminal counts less frequently (~every 2 seconds)
         if tick % 4 == 0 {
             let session_names: Vec<String> =
                 sessions.iter().map(|s| s.name.clone()).collect();
             diff_stats.retain(|k, _| session_names.contains(k));
+            terminal_counts.retain(|k, _| session_names.contains(k));
 
             for session in &sessions {
                 if let Some(stats) = tmux::get_diff_stats(&session.name) {
                     diff_stats.insert(session.name.clone(), stats);
                 }
+                let count = tmux::count_terminal_windows(&session.name);
+                terminal_counts.insert(session.name.clone(), count);
             }
         }
 
@@ -171,8 +178,13 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             }
             Selection::Session { name, preview_mode } => {
                 let content = match preview_mode {
-                    PreviewMode::Output => tmux::capture_pane(name),
+                    PreviewMode::Output => tmux::capture_pane(&format!("{name}:0")),
                     PreviewMode::Diff => diff_stats.get(name).map(|s| s.diff_output.clone()),
+                    PreviewMode::Terminal(idx) => {
+                        // Terminal windows are 1-indexed (window 0 is claude)
+                        let target = format!("{name}:{}", idx + 1);
+                        tmux::capture_pane(&target)
+                    }
                 };
                 (content, None)
             }
@@ -185,6 +197,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             preview_content,
             task_diff,
             task_diff_stats,
+            terminal_counts: terminal_counts.clone(),
         };
 
         if tx.send(update).is_err() {

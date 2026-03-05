@@ -51,6 +51,7 @@ pub struct App {
     pub status_message: Option<String>,
     pub should_quit: bool,
     pub should_attach: Option<String>,
+    pub should_attach_window: Option<(String, usize)>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
     pub preview_content: Option<String>,
@@ -61,6 +62,8 @@ pub struct App {
     pub diff_stats: HashMap<String, DiffStats>,
     pub task_diff_stats: HashMap<String, DiffStats>,
     pub preview_scroll: usize,
+    /// Number of terminal windows per session (keyed by session tmux name)
+    pub terminal_counts: HashMap<String, usize>,
     pub tick: usize,
     pub worker: Worker,
 }
@@ -88,6 +91,7 @@ impl App {
             status_message: None,
             should_quit: false,
             should_attach: None,
+            should_attach_window: None,
             pending_project_path: None,
             pending_task_name: None,
             preview_content: None,
@@ -98,6 +102,7 @@ impl App {
             diff_stats: HashMap::new(),
             task_diff_stats: HashMap::new(),
             preview_scroll: 0,
+            terminal_counts: HashMap::new(),
             tick: 0,
             worker: Worker::spawn(),
         };
@@ -136,6 +141,22 @@ impl App {
             }
             if !update.task_diff_stats.is_empty() {
                 self.task_diff_stats = update.task_diff_stats;
+            }
+            if !update.terminal_counts.is_empty() {
+                self.terminal_counts = update.terminal_counts;
+                // If viewing a terminal that no longer exists, fall back
+                if let PreviewMode::Terminal(idx) = self.preview_mode {
+                    let count = self.selected_terminal_count();
+                    if idx >= count {
+                        self.preview_mode = if count > 0 {
+                            PreviewMode::Terminal(count - 1)
+                        } else {
+                            PreviewMode::Output
+                        };
+                        self.preview_content = None;
+                        self.sync_worker_hints();
+                    }
+                }
             }
             self.rebuild_items();
         }
@@ -301,7 +322,12 @@ impl App {
 
     pub fn enter_selected(&mut self) {
         if let Some(ListItem::Session { session, .. }) = self.selected_item() {
-            self.should_attach = Some(session.name.clone());
+            if let PreviewMode::Terminal(idx) = self.preview_mode {
+                // Attach to specific terminal window
+                self.should_attach_window = Some((session.name.clone(), idx + 1));
+            } else {
+                self.should_attach = Some(session.name.clone());
+            }
         }
     }
 
@@ -797,13 +823,91 @@ impl App {
     }
 
     pub fn toggle_preview_mode(&mut self) {
+        let term_count = self.selected_terminal_count();
         self.preview_mode = match self.preview_mode {
             PreviewMode::Output => PreviewMode::Diff,
-            PreviewMode::Diff => PreviewMode::Output,
+            PreviewMode::Diff => {
+                if term_count > 0 {
+                    PreviewMode::Terminal(0)
+                } else {
+                    PreviewMode::Output
+                }
+            }
+            PreviewMode::Terminal(idx) => {
+                if idx + 1 < term_count {
+                    PreviewMode::Terminal(idx + 1)
+                } else {
+                    PreviewMode::Output
+                }
+            }
         };
-        self.preview_content = None; // Clear stale content from the other mode
+        self.preview_content = None;
         self.preview_scroll = 0;
         self.sync_worker_hints();
+    }
+
+    fn selected_terminal_count(&self) -> usize {
+        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
+            self.terminal_counts
+                .get(&session.name)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    pub fn create_terminal(&mut self) {
+        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
+            let count = self.selected_terminal_count();
+            if count >= 4 {
+                self.status_message = Some("Maximum 4 terminals per session".into());
+                return;
+            }
+            let session_name = session.name.clone();
+            match tmux::create_terminal_window(&session_name) {
+                Ok(_) => {
+                    let new_count = tmux::count_terminal_windows(&session_name);
+                    self.terminal_counts.insert(session_name, new_count);
+                    // Switch to the new terminal tab
+                    self.preview_mode = PreviewMode::Terminal(new_count.saturating_sub(1));
+                    self.preview_content = None;
+                    self.preview_scroll = 0;
+                    self.sync_worker_hints();
+                    self.status_message = Some("Created terminal".into());
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Error: {e}"));
+                }
+            }
+        }
+    }
+
+    pub fn kill_terminal(&mut self) {
+        if let PreviewMode::Terminal(idx) = self.preview_mode {
+            if let Some(ListItem::Session { session, .. }) = self.selected_item() {
+                let session_name = session.name.clone();
+                match tmux::kill_terminal_window(&session_name, idx) {
+                    Ok(()) => {
+                        let new_count = tmux::count_terminal_windows(&session_name);
+                        self.terminal_counts.insert(session_name, new_count);
+                        // Adjust preview mode
+                        if new_count == 0 {
+                            self.preview_mode = PreviewMode::Output;
+                        } else if idx >= new_count {
+                            self.preview_mode = PreviewMode::Terminal(new_count - 1);
+                        }
+                        self.preview_content = None;
+                        self.preview_scroll = 0;
+                        self.sync_worker_hints();
+                        self.status_message = Some("Killed terminal".into());
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("Error: {e}"));
+                    }
+                }
+            }
+        }
     }
 
     pub fn scroll_preview_down(&mut self) {

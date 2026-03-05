@@ -279,6 +279,11 @@ pub fn create_session(
 }
 
 pub fn attach_session(name: &str) -> Result<()> {
+    // Select window 0 (claude) before attaching
+    let _ = Command::new("tmux")
+        .args(["select-window", "-t", &format!("{name}:0")])
+        .output();
+
     let status = Command::new("tmux")
         .args(["attach-session", "-t", name])
         .status()?;
@@ -676,6 +681,101 @@ pub fn capture_pane(session_name: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Count the number of terminal windows (non-claude windows) in a session.
+/// Window 0 is always claude; terminals are windows 1+.
+pub fn count_terminal_windows(session_name: &str) -> usize {
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", session_name, "-F", "#{window_index}"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            // Count windows with index > 0
+            stdout
+                .lines()
+                .filter(|line| line.trim().parse::<usize>().is_ok_and(|i| i > 0))
+                .count()
+        }
+        _ => 0,
+    }
+}
+
+/// Create a new terminal window in the session. Returns the window index.
+pub fn create_terminal_window(session_name: &str) -> Result<usize> {
+    // Get the working directory from window 0 (claude)
+    let dir_output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            &format!("{session_name}:0"),
+            "-p",
+            "#{pane_current_path}",
+        ])
+        .output()?;
+    let work_dir = String::from_utf8_lossy(&dir_output.stdout).trim().to_string();
+
+    let output = Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            session_name,
+            "-c",
+            &work_dir,
+            "-P",
+            "-F",
+            "#{window_index}",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to create terminal window");
+    }
+
+    let idx = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(1);
+    Ok(idx)
+}
+
+/// Kill a terminal window by its 0-indexed terminal number (window index = terminal_idx + 1).
+pub fn kill_terminal_window(session_name: &str, terminal_idx: usize) -> Result<()> {
+    let window_idx = terminal_idx + 1;
+    let output = Command::new("tmux")
+        .args([
+            "kill-window",
+            "-t",
+            &format!("{session_name}:{window_idx}"),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to kill terminal window");
+    }
+    Ok(())
+}
+
+/// Attach to a specific window in a session.
+pub fn attach_session_window(session_name: &str, window_idx: usize) -> Result<()> {
+    // Select the window first, then attach
+    let _ = Command::new("tmux")
+        .args([
+            "select-window",
+            "-t",
+            &format!("{session_name}:{window_idx}"),
+        ])
+        .output();
+
+    let status = Command::new("tmux")
+        .args(["attach-session", "-t", session_name])
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to attach to tmux session");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DiffStats {
     pub added: usize,
@@ -787,12 +887,13 @@ pub struct SessionProbe {
 
 /// Probe a session for raw status signals.
 pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
+    let target = format!("{session_name}:0");
     // Check pane_pid and pane_dead
     let output = Command::new("tmux")
         .args([
             "display-message",
             "-t",
-            session_name,
+            &target,
             "-p",
             "#{pane_pid} #{pane_dead}",
         ])
@@ -827,7 +928,7 @@ pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
             .map(|o| o.status.success())
             .unwrap_or(false);
 
-    let content = capture_pane_plain(session_name).unwrap_or_default();
+    let content = capture_pane_plain(&target).unwrap_or_default();
     let content_hash = hash_content(&content);
     let has_permission_prompt = PERMISSION_PROMPTS.iter().any(|p| content.contains(p));
 

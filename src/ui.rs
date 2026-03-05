@@ -258,22 +258,33 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let active_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
     let inactive_style = Style::default().fg(MUTED);
 
-    let output_style = if app.preview_mode == PreviewMode::Output {
-        active_style
-    } else {
-        inactive_style
-    };
-    let diff_style = if app.preview_mode == PreviewMode::Diff {
-        active_style
-    } else {
-        inactive_style
-    };
+    let tab_style = |active: bool| if active { active_style } else { inactive_style };
+    let sep_span = Span::styled(" │ ", Style::default().fg(MUTED));
 
-    let tabs = Paragraph::new(Line::from(vec![
-        Span::styled("agent", output_style),
-        Span::styled(" │ ", Style::default().fg(MUTED)),
-        Span::styled("diff", diff_style),
-    ]));
+    let mut tab_spans = vec![
+        Span::styled("agent", tab_style(app.preview_mode == PreviewMode::Output)),
+        sep_span.clone(),
+        Span::styled("diff", tab_style(app.preview_mode == PreviewMode::Diff)),
+    ];
+
+    // Add terminal tabs
+    if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
+        let term_count = app
+            .terminal_counts
+            .get(&session.name)
+            .copied()
+            .unwrap_or(0);
+        for i in 0..term_count {
+            tab_spans.push(sep_span.clone());
+            let label = format!("term{}", i + 1);
+            tab_spans.push(Span::styled(
+                label,
+                tab_style(app.preview_mode == PreviewMode::Terminal(i)),
+            ));
+        }
+    }
+
+    let tabs = Paragraph::new(Line::from(tab_spans));
     f.render_widget(tabs, rows[0]);
 
     // Draw separator line
@@ -297,7 +308,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     };
 
     match app.preview_mode {
-        PreviewMode::Output => {
+        PreviewMode::Output | PreviewMode::Terminal(_) => {
             let text = match content.as_bytes().into_text() {
                 Ok(text) => text,
                 Err(_) => return,
@@ -487,7 +498,7 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "t: new task  n/N: new session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  Tab: diff  J/K: scroll  a: add project  q: quit"
+            "t: task  n/N: session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  c: terminal  x: kill term  Tab: switch  J/K: scroll  a: project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
