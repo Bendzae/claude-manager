@@ -12,7 +12,7 @@ const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::DarkGray;
 const TASK_COLOR: Color = Color::Yellow;
 const SESSION_COLOR: Color = Color::Green;
-const PAD_LEFT: u16 = 2;
+const PAD_LEFT: u16 = 1;
 const PAD_TOP: u16 = 1;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -62,7 +62,8 @@ fn draw_title(f: &mut Frame, area: Rect) {
         Style::default()
             .fg(ACCENT)
             .add_modifier(Modifier::BOLD),
-    )]));
+    )]))
+    .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(title, area);
 }
 
@@ -127,13 +128,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 };
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
-                    Span::raw("    "),
+                    Span::raw("  "),
                     Span::styled(chevron, Style::default().fg(MUTED)),
                     Span::styled(&task.name, style),
-                    Span::styled(
-                        format!("  ({})", task.branch),
-                        Style::default().fg(MUTED),
-                    ),
                 ];
 
                 // Show diff stats for the task branch vs main
@@ -154,6 +151,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Red),
                     ));
                 }
+
+                spans.push(Span::styled(
+                    format!("  ({})", task.branch),
+                    Style::default().fg(MUTED),
+                ));
 
                 lines.push(ListItem::new(Line::from(spans)));
             }
@@ -186,7 +188,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let wt = session.worktree_path();
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
-                    Span::raw("        "),
+                    Span::raw("    "),
                     Span::styled(
                         format!("{status_icon} "),
                         Style::default().fg(status_color),
@@ -199,16 +201,6 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     ));
                 }
                 spans.push(Span::styled(&session.session_name, style));
-                if let Some(ref path) = wt {
-                    let dir_name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    spans.push(Span::styled(
-                        format!("  {dir_name}"),
-                        Style::default().fg(MUTED),
-                    ));
-                }
                 if let Some(stats) = app.diff_stats.get(&session.name) {
                     if !stats.is_empty() {
                         spans.push(Span::raw("  "));
@@ -222,6 +214,16 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                             Style::default().fg(Color::Red),
                         ));
                     }
+                }
+                if let Some(ref path) = wt {
+                    let dir_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    spans.push(Span::styled(
+                        format!("  {dir_name}"),
+                        Style::default().fg(MUTED),
+                    ));
                 }
                 lines.push(ListItem::new(Line::from(spans)));
             }
