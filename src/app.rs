@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::config::{Config, Project, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
-use crate::worker::{self, Worker};
+use crate::worker::{self, Selection, Worker};
 
 #[derive(Debug, Clone)]
 pub enum ListItem {
@@ -52,6 +52,7 @@ pub struct App {
     pub pending_project_path: Option<String>,
     pub preview_content: Option<String>,
     pub preview_mode: PreviewMode,
+    pub task_diff: Option<DiffStats>,
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
@@ -85,6 +86,7 @@ impl App {
             pending_project_path: None,
             preview_content: None,
             preview_mode: PreviewMode::Output,
+            task_diff: None,
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
@@ -121,19 +123,32 @@ impl App {
             self.session_statuses = update.statuses;
             self.diff_stats = update.diff_stats;
             self.preview_content = update.preview_content;
+            if update.task_diff.is_some() {
+                self.task_diff = update.task_diff;
+            }
             self.rebuild_items();
         }
     }
 
-    /// Tell the worker which session is selected and which preview mode.
+    /// Tell the worker what is selected.
     pub fn sync_worker_hints(&self) {
-        let selected_session = match self.selected_item() {
-            Some(ListItem::Session { session, .. }) => Some(session.name.clone()),
-            _ => None,
+        let selection = match self.selected_item() {
+            Some(ListItem::Session { session, .. }) => Selection::Session {
+                name: session.name.clone(),
+                preview_mode: self.preview_mode,
+            },
+            Some(ListItem::Task {
+                project_path,
+                task,
+                ..
+            }) => Selection::Task {
+                project_path: project_path.clone(),
+                branch: task.branch.clone(),
+            },
+            _ => Selection::None,
         };
         if let Ok(mut hints) = self.worker.hints.lock() {
-            hints.selected_session = selected_session;
-            hints.preview_mode = self.preview_mode;
+            hints.selection = selection;
         }
     }
 
@@ -218,15 +233,21 @@ impl App {
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
-            self.sync_worker_hints();
+            self.on_selection_changed();
         }
     }
 
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.items.len() {
             self.selected += 1;
-            self.sync_worker_hints();
+            self.on_selection_changed();
         }
+    }
+
+    fn on_selection_changed(&mut self) {
+        self.preview_content = None;
+        self.task_diff = None;
+        self.sync_worker_hints();
     }
 
     pub fn toggle_collapse(&mut self) {
@@ -590,6 +611,7 @@ impl App {
             PreviewMode::Output => PreviewMode::Diff,
             PreviewMode::Diff => PreviewMode::Output,
         };
+        self.preview_content = None; // Clear stale content from the other mode
         self.sync_worker_hints();
     }
 }

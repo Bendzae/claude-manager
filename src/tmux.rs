@@ -440,6 +440,48 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
     })
 }
 
+/// Compute diff stats for a task branch against main.
+pub fn get_branch_diff(project_path: &str, branch: &str) -> Option<DiffStats> {
+    // Try origin/main first, fall back to main
+    let base = if Command::new("git")
+        .args(["-C", project_path, "rev-parse", "--verify", "origin/main"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        "origin/main"
+    } else {
+        "main"
+    };
+
+    let output = Command::new("git")
+        .args(["-C", project_path, "--no-pager", "diff", &format!("{base}...{branch}")])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let diff_output = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let mut added = 0;
+    let mut removed = 0;
+    for line in diff_output.lines() {
+        if line.starts_with('+') && !line.starts_with("+++") {
+            added += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            removed += 1;
+        }
+    }
+
+    Some(DiffStats {
+        added,
+        removed,
+        diff_output,
+    })
+}
+
 /// Raw signals from a tmux session for status detection.
 pub struct SessionProbe {
     pub claude_alive: bool,
