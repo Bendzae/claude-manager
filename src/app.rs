@@ -113,17 +113,33 @@ impl App {
     }
 
     pub fn start_add_project(&mut self) {
-        if let Some(path) = self.pending_project_path.clone() {
-            self.input_mode = InputMode::AddProjectName;
-            let default_name = std::path::Path::new(&path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            self.input_buffer.clear();
-            self.status_message = Some(format!(
-                "Enter project name (default: {default_name}): "
-            ));
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(_) => {
+                self.status_message = Some("Error: cannot determine current directory".into());
+                return;
+            }
+        };
+        let cwd_str = cwd.to_string_lossy().to_string();
+
+        if !cwd.join(".git").is_dir() {
+            self.status_message =
+                Some("Error: current directory is not a git repository".into());
+            return;
         }
+        if self.config.has_project_at(&cwd_str) {
+            self.status_message = Some("Project already registered".into());
+            return;
+        }
+
+        self.pending_project_path = Some(cwd_str.clone());
+        self.input_mode = InputMode::AddProjectName;
+        let default_name = cwd
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.input_buffer.clear();
+        self.status_message = Some(format!("Enter project name (default: {default_name}): "));
     }
 
     pub fn confirm_add_project(&mut self) {
@@ -203,7 +219,8 @@ impl App {
 
     pub fn confirm_delete(&mut self) {
         if let Some(ListItem::Session(session)) = self.selected_item().cloned() {
-            match tmux::kill_session(&session.name) {
+            let project_path = self.selected_project().map(|p| p.path.as_str());
+            match tmux::kill_session(&session.name, project_path) {
                 Ok(()) => {
                     self.status_message = Some(format!("Killed session {}", session.name));
                     self.refresh_sessions();
