@@ -149,9 +149,12 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "n: new session  N: new (no worktree)  Enter: attach  d: delete  a: add project  q: quit"
+            "n: new session  N: no worktree  Enter: attach  d: delete  R: rename  a: add project  q: quit"
         }
-        InputMode::AddProjectName | InputMode::AddSessionName => "Enter: confirm  Esc: cancel",
+        InputMode::AddProjectName
+        | InputMode::AddSessionName
+        | InputMode::RenameProject
+        | InputMode::RenameSession => "Enter: confirm  Esc: cancel",
         InputMode::ConfirmDelete => "y: confirm  n/Esc: cancel",
     };
 
@@ -169,7 +172,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
         let content = if matches!(
             app.input_mode,
-            InputMode::AddProjectName | InputMode::AddSessionName
+            InputMode::AddProjectName
+                | InputMode::AddSessionName
+                | InputMode::RenameProject
+                | InputMode::RenameSession
         ) {
             format!("{}{}", msg, app.input_buffer)
         } else {

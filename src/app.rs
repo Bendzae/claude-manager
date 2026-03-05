@@ -15,6 +15,8 @@ pub enum InputMode {
     AddProjectName,
     AddSessionName,
     ConfirmDelete,
+    RenameProject,
+    RenameSession,
 }
 
 pub struct App {
@@ -232,6 +234,94 @@ impl App {
                 }
             }
         }
+        self.input_mode = InputMode::Normal;
+    }
+
+    pub fn start_rename(&mut self) {
+        let (mode, name) = match self.selected_item() {
+            Some(ListItem::Project(project)) => {
+                (InputMode::RenameProject, project.name.clone())
+            }
+            Some(ListItem::Session(session)) => {
+                (InputMode::RenameSession, session.session_name.clone())
+            }
+            None => return,
+        };
+        self.input_mode = mode;
+        self.input_buffer = name;
+        self.status_message = Some(match self.input_mode {
+            InputMode::RenameProject => "Rename project: ".into(),
+            InputMode::RenameSession => "Rename session: ".into(),
+            _ => unreachable!(),
+        });
+    }
+
+    pub fn confirm_rename(&mut self) {
+        let new_name = self.input_buffer.trim().to_string();
+        if new_name.is_empty() {
+            self.cancel_input();
+            return;
+        }
+
+        match self.input_mode {
+            InputMode::RenameProject => {
+                if let Some(ListItem::Project(project)) = self.selected_item().cloned() {
+                    let old_name = project.name.clone();
+                    if old_name == new_name {
+                        self.cancel_input();
+                        return;
+                    }
+
+                    // Rename all tmux sessions for this project
+                    let mut rename_errors = vec![];
+                    for session in &self.sessions {
+                        if session.project_name == old_name {
+                            let new_tmux_name = format!("cm-{new_name}-{}", session.session_name);
+                            if let Err(e) = tmux::rename_session(&session.name, &new_tmux_name) {
+                                rename_errors.push(format!("{}: {e}", session.name));
+                            }
+                        }
+                    }
+
+                    self.config.rename_project(&old_name, new_name.clone());
+                    let _ = self.config.save();
+                    self.refresh_sessions();
+
+                    if rename_errors.is_empty() {
+                        self.status_message = Some(format!("Renamed project to {new_name}"));
+                    } else {
+                        self.status_message = Some(format!(
+                            "Renamed project but some sessions failed: {}",
+                            rename_errors.join(", ")
+                        ));
+                    }
+                }
+            }
+            InputMode::RenameSession => {
+                if let Some(ListItem::Session(session)) = self.selected_item().cloned() {
+                    if session.session_name == new_name {
+                        self.cancel_input();
+                        return;
+                    }
+
+                    let new_tmux_name =
+                        format!("cm-{}-{new_name}", session.project_name);
+                    match tmux::rename_session(&session.name, &new_tmux_name) {
+                        Ok(()) => {
+                            self.status_message =
+                                Some(format!("Renamed session to {new_name}"));
+                            self.refresh_sessions();
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("Error: {e}"));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
     }
 

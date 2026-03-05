@@ -259,6 +259,18 @@ pub fn kill_session(name: &str, project_path: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
+    let status = Command::new("tmux")
+        .args(["rename-session", "-t", old_name, new_name])
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to rename tmux session from {old_name} to {new_name}");
+    }
+
+    Ok(())
+}
+
 /// Capture the visible content of a tmux session's pane.
 pub fn capture_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")

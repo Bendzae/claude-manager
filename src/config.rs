@@ -52,6 +52,15 @@ impl Config {
         self.projects.iter().any(|p| p.path == path)
     }
 
+    pub fn rename_project(&mut self, old_name: &str, new_name: String) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == old_name) {
+            project.name = new_name;
+            true
+        } else {
+            false
+        }
+    }
+
     #[allow(dead_code)]
     pub fn remove_project(&mut self, path: &str) {
         self.projects.retain(|p| p.path != path);

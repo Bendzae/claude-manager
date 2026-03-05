@@ -73,6 +73,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('d') => app.start_delete(),
                         KeyCode::Char('a') => app.start_add_project(),
                         KeyCode::Char('r') => app.refresh_sessions(),
+                        KeyCode::Char('R') => app.start_rename(),
                         _ => {}
                     },
                     InputMode::AddProjectName => match key.code {
@@ -101,6 +102,16 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     InputMode::ConfirmDelete => match key.code {
                         KeyCode::Char('y') => app.confirm_delete(),
                         KeyCode::Char('n') | KeyCode::Esc => app.cancel_input(),
+                        _ => {}
+                    },
+                    InputMode::RenameProject | InputMode::RenameSession => match key.code
+                    {
+                        KeyCode::Enter => app.confirm_rename(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
                 }
