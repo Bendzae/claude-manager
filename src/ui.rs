@@ -507,7 +507,7 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "t: task  n/N: session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  P: push  o: open PR  c: terminal  x: kill term  Tab: switch  J/K: scroll  a: project  q: quit"
+            "t: task  n/N: session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  P: push  o: PR  b: checkout  c: terminal  x: kill term  Tab: switch  J/K: scroll  a: project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName

@@ -482,7 +482,7 @@ pub fn commit_all(worktree_path: &str, message: &str) -> Result<()> {
 /// Pull latest main and rebase the task branch onto it.
 pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
     let output = Command::new("git")
-        .args(["-C", project_path, "push", "-u", "origin", branch])
+        .args(["-C", project_path, "push", "--force-with-lease", "-u", "origin", branch])
         .output()?;
 
     if !output.status.success() {

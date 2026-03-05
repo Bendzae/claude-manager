@@ -94,6 +94,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('u') => app.update_session(),
                         KeyCode::Char('P') => app.push_task_branch(),
                         KeyCode::Char('o') => app.open_pr(),
+                        KeyCode::Char('b') => app.checkout_task_branch(),
                         KeyCode::Char('c') => app.create_terminal(),
                         KeyCode::Char('x') => app.kill_terminal(),
                         KeyCode::Char('J') => app.scroll_preview_down(),

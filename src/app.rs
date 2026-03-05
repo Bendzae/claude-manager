@@ -977,6 +977,48 @@ impl App {
         });
     }
 
+    pub fn checkout_task_branch(&mut self) {
+        let (project_path, task) = match self.selected_item().cloned() {
+            Some(ListItem::Task {
+                project_path,
+                task,
+                ..
+            }) => (project_path, task),
+            _ => {
+                self.status_message = Some("Select a task to checkout".into());
+                return;
+            }
+        };
+
+        let branch = task.branch.clone();
+        self.start_op("Checking out...", move || {
+            let output = std::process::Command::new("git")
+                .args(["-C", &project_path, "checkout", &branch])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => OpResult {
+                    message: format!("Checked out {branch}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    OpResult {
+                        message: format!("Error: {stderr}"),
+                        rebuild: false,
+                        reload_config: false,
+                    }
+                }
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
+    }
+
     pub fn open_pr(&mut self) {
         if let Some(ListItem::Task { task, .. }) = self.selected_item() {
             if let Some(url) = self.pr_urls.get(&task.branch) {
