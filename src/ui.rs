@@ -465,6 +465,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         InputMode::AddProjectName
         | InputMode::AddSessionName
         | InputMode::AddTaskName
+        | InputMode::AddTaskBranch
         | InputMode::RenameProject
         | InputMode::RenameTask
         | InputMode::RenameSession
@@ -489,6 +490,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             InputMode::AddProjectName
                 | InputMode::AddSessionName
                 | InputMode::AddTaskName
+                | InputMode::AddTaskBranch
                 | InputMode::RenameProject
                 | InputMode::RenameTask
                 | InputMode::RenameSession

@@ -31,6 +31,7 @@ pub enum InputMode {
     Normal,
     AddProjectName,
     AddTaskName,
+    AddTaskBranch,
     AddSessionName,
     ConfirmDelete,
     RenameProject,
@@ -51,6 +52,7 @@ pub struct App {
     pub should_quit: bool,
     pub should_attach: Option<String>,
     pub pending_project_path: Option<String>,
+    pub pending_task_name: Option<String>,
     pub preview_content: Option<String>,
     pub preview_mode: PreviewMode,
     pub task_diff: Option<DiffStats>,
@@ -86,6 +88,7 @@ impl App {
             should_quit: false,
             should_attach: None,
             pending_project_path: None,
+            pending_task_name: None,
             preview_content: None,
             preview_mode: PreviewMode::Output,
             task_diff: None,
@@ -363,6 +366,27 @@ impl App {
             return;
         }
 
+        self.pending_task_name = Some(task_name.clone());
+        self.input_buffer = tmux::to_branch_name(&task_name);
+        self.input_mode = InputMode::AddTaskBranch;
+        self.status_message = Some("Branch name (existing or new): ".into());
+    }
+
+    pub fn confirm_add_task_branch(&mut self) {
+        let branch = self.input_buffer.trim().to_string();
+        if branch.is_empty() {
+            self.cancel_input();
+            return;
+        }
+
+        let task_name = match self.pending_task_name.take() {
+            Some(n) => n,
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+
         let (project_name, project_path) = match self.selected_project_info() {
             Some((name, path)) => (name.to_string(), path.to_string()),
             None => {
@@ -371,20 +395,31 @@ impl App {
             }
         };
 
-        let branch = tmux::to_branch_name(&task_name);
+        // Check if branch already exists
+        let branch_exists = tmux::branch_exists(&project_path, &branch);
 
-        match tmux::create_task_branch(&project_path, &branch) {
-            Ok(()) => {
-                self.config
-                    .add_task(&project_name, task_name.clone(), branch.clone());
-                let _ = self.config.save();
-                self.status_message = Some(format!("Created task '{task_name}' on branch {branch}"));
-                // Expand the project so the new task is visible
-                self.collapsed.remove(&project_key(&project_name));
-                self.rebuild_items();
-            }
-            Err(e) => {
-                self.status_message = Some(format!("Error: {e}"));
+        if branch_exists {
+            self.config
+                .add_task(&project_name, task_name.clone(), branch.clone());
+            let _ = self.config.save();
+            self.status_message =
+                Some(format!("Added task '{task_name}' using existing branch {branch}"));
+            self.collapsed.remove(&project_key(&project_name));
+            self.rebuild_items();
+        } else {
+            match tmux::create_task_branch(&project_path, &branch) {
+                Ok(()) => {
+                    self.config
+                        .add_task(&project_name, task_name.clone(), branch.clone());
+                    let _ = self.config.save();
+                    self.status_message =
+                        Some(format!("Created task '{task_name}' on branch {branch}"));
+                    self.collapsed.remove(&project_key(&project_name));
+                    self.rebuild_items();
+                }
+                Err(e) => {
+                    self.status_message = Some(format!("Error: {e}"));
+                }
             }
         }
 
@@ -735,6 +770,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
         self.status_message = None;
+        self.pending_task_name = None;
     }
 
     pub fn toggle_preview_mode(&mut self) {

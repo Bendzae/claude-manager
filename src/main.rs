@@ -101,6 +101,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
+                    InputMode::AddTaskBranch => match key.code {
+                        KeyCode::Enter => app.confirm_add_task_branch(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
                     InputMode::AddSessionName => match key.code {
                         KeyCode::Enter => {
                             app.confirm_new_session();
