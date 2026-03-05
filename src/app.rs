@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 
 use crate::config::{Config, Project, Task};
-use crate::tmux::{self, SessionStatus, TmuxSession};
+use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
 
 #[derive(Debug, Clone)]
 pub enum ListItem {
@@ -21,6 +21,12 @@ pub enum ListItem {
         task: Task,
         session: TmuxSession,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PreviewMode {
+    Output,
+    Diff,
 }
 
 #[derive(Debug, PartialEq)]
@@ -48,8 +54,10 @@ pub struct App {
     pub should_attach: Option<String>,
     pub pending_project_path: Option<String>,
     pub preview_content: Option<String>,
+    pub preview_mode: PreviewMode,
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
+    pub diff_stats: HashMap<String, DiffStats>,
     session_content_hashes: HashMap<String, u64>,
     session_stable_ticks: HashMap<String, u32>,
     pub tick: usize,
@@ -80,8 +88,10 @@ impl App {
             should_attach: None,
             pending_project_path: None,
             preview_content: None,
+            preview_mode: PreviewMode::Output,
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
+            diff_stats: HashMap::new(),
             session_content_hashes: HashMap::new(),
             session_stable_ticks: HashMap::new(),
             tick: 0,
@@ -559,11 +569,32 @@ impl App {
         self.status_message = None;
     }
 
+    pub fn toggle_preview_mode(&mut self) {
+        self.preview_mode = match self.preview_mode {
+            PreviewMode::Output => PreviewMode::Diff,
+            PreviewMode::Diff => PreviewMode::Output,
+        };
+    }
+
     pub fn refresh_preview(&mut self) {
         self.preview_content = match self.selected_item() {
-            Some(ListItem::Session { session, .. }) => tmux::capture_pane(&session.name),
+            Some(ListItem::Session { session, .. }) => match self.preview_mode {
+                PreviewMode::Output => tmux::capture_pane(&session.name),
+                PreviewMode::Diff => self
+                    .diff_stats
+                    .get(&session.name)
+                    .map(|s| s.diff_output.clone()),
+            },
             _ => None,
         };
+    }
+
+    pub fn refresh_diff_stats(&mut self) {
+        for session in &self.sessions {
+            if let Some(stats) = tmux::get_diff_stats(&session.name) {
+                self.diff_stats.insert(session.name.clone(), stats);
+            }
+        }
     }
 
     pub fn refresh_statuses(&mut self) {

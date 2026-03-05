@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{self, App, InputMode};
+use crate::app::{self, App, InputMode, PreviewMode};
 use crate::tmux::SessionStatus;
 
 const ACCENT: Color = Color::Cyan;
@@ -23,7 +23,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let chunks = Layout::vertical([
         Constraint::Length(PAD_TOP),
-        Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(5),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -41,7 +41,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(chunks[2]);
 
         draw_list(f, app, columns[0]);
-        draw_preview(f, app, columns[1]);
+        draw_preview_panel(f, app, columns[1]);
     } else {
         draw_list(f, app, chunks[2]);
     }
@@ -183,6 +183,20 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(MUTED),
                     ));
                 }
+                if let Some(stats) = app.diff_stats.get(&session.name) {
+                    if !stats.is_empty() {
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(
+                            format!("+{}", stats.added),
+                            Style::default().fg(Color::Green),
+                        ));
+                        spans.push(Span::styled(",", Style::default().fg(MUTED)));
+                        spans.push(Span::styled(
+                            format!("-{}", stats.removed),
+                            Style::default().fg(Color::Red),
+                        ));
+                    }
+                }
                 lines.push(ListItem::new(Line::from(spans)));
             }
         }
@@ -192,38 +206,129 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
-    let content = app.preview_content.as_deref().unwrap_or("");
-
+fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(MUTED));
+        .border_style(Style::default().fg(ACCENT));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let visible_height = inner.height as usize;
+    if inner.height < 3 {
+        return;
+    }
+
+    // Split inner area: tabs (1 line) + separator (1 line) + content
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
+
+    // Draw tabs
+    let active_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(MUTED);
+
+    let output_style = if app.preview_mode == PreviewMode::Output {
+        active_style
+    } else {
+        inactive_style
+    };
+    let diff_style = if app.preview_mode == PreviewMode::Diff {
+        active_style
+    } else {
+        inactive_style
+    };
+
+    let tabs = Paragraph::new(Line::from(vec![
+        Span::styled("agent", output_style),
+        Span::styled(" │ ", Style::default().fg(MUTED)),
+        Span::styled("diff", diff_style),
+    ]));
+    f.render_widget(tabs, rows[0]);
+
+    // Draw separator line
+    let sep = "─".repeat(rows[1].width as usize);
+    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(ACCENT)));
+    f.render_widget(separator, rows[1]);
+
+    // Draw content
+    let content_area = rows[2];
+    let visible_height = content_area.height as usize;
     if visible_height == 0 {
         return;
     }
 
-    let text = match content.as_bytes().into_text() {
-        Ok(text) => text,
-        Err(_) => return,
-    };
+    let content = app.preview_content.as_deref().unwrap_or("");
 
-    let total_lines = text.lines.len();
-    let start = total_lines.saturating_sub(visible_height);
-    let visible_lines: Vec<Line> = text.lines.into_iter().skip(start).collect();
+    match app.preview_mode {
+        PreviewMode::Output => {
+            let text = match content.as_bytes().into_text() {
+                Ok(text) => text,
+                Err(_) => return,
+            };
+            let total_lines = text.lines.len();
+            let start = total_lines.saturating_sub(visible_height);
+            let visible_lines: Vec<Line> = text.lines.into_iter().skip(start).collect();
+            let paragraph = Paragraph::new(visible_lines);
+            f.render_widget(paragraph, content_area);
+        }
+        PreviewMode::Diff => {
+            let mut diff_lines: Vec<Line> = Vec::new();
 
-    let paragraph = Paragraph::new(visible_lines);
-    f.render_widget(paragraph, inner);
+            if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
+                if let Some(stats) = app.diff_stats.get(&session.name) {
+                    diff_lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{} additions(+)", stats.added),
+                            Style::default().fg(Color::Green),
+                        ),
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("{} deletions(-)", stats.removed),
+                            Style::default().fg(Color::Red),
+                        ),
+                    ]));
+                    diff_lines.push(Line::raw(""));
+                }
+            }
+
+            for line in content.lines() {
+                let styled_line = if line.starts_with("@@") {
+                    Line::styled(line, Style::default().fg(Color::Cyan))
+                } else if line.starts_with('+') && !line.starts_with("+++") {
+                    Line::styled(line, Style::default().fg(Color::Green))
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    Line::styled(line, Style::default().fg(Color::Red))
+                } else if line.starts_with("diff ") || line.starts_with("index ") {
+                    Line::styled(line, Style::default().fg(MUTED))
+                } else if line.starts_with("---") || line.starts_with("+++") {
+                    Line::styled(
+                        line,
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Line::raw(line)
+                };
+                diff_lines.push(styled_line);
+            }
+
+            let total_lines = diff_lines.len();
+            let start = total_lines.saturating_sub(visible_height);
+            let visible_lines: Vec<Line> = diff_lines.into_iter().skip(start).collect();
+            let paragraph = Paragraph::new(visible_lines);
+            f.render_widget(paragraph, content_area);
+        }
+    }
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "t: new task  n: new session  N: no worktree  Enter: attach  Space: collapse  d: delete  R: rename  a: add project  q: quit"
+            "t: new task  n: new session  N: no worktree  Enter: attach  Space: collapse  d: delete  R: rename  Tab: diff  a: add project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName

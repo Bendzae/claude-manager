@@ -76,6 +76,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('a') => app.start_add_project(),
                         KeyCode::Char('r') => app.refresh_sessions(),
                         KeyCode::Char('R') => app.start_rename(),
+                        KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },
                     InputMode::AddProjectName => match key.code {
@@ -134,6 +135,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         app.refresh_preview();
         app.refresh_statuses();
+        if app.tick % 4 == 0 {
+            app.refresh_diff_stats();
+        }
         app.tick = app.tick.wrapping_add(1);
 
         if app.should_quit {

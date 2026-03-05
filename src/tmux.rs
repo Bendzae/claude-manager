@@ -255,6 +255,25 @@ pub fn create_session(
                 &worktree_path_str,
             ])
             .status();
+
+        // Store the base commit so we can diff against it later
+        if let Ok(output) = Command::new("git")
+            .args(["-C", &worktree_path_str, "rev-parse", "HEAD"])
+            .output()
+        {
+            if output.status.success() {
+                let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let _ = Command::new("tmux")
+                    .args([
+                        "set-environment",
+                        "-t",
+                        &tmux_name,
+                        "CM_BASE_COMMIT",
+                        &sha,
+                    ])
+                    .status();
+            }
+        }
     }
 
     Ok(tmux_name)
@@ -347,6 +366,61 @@ pub fn capture_pane(session_name: &str) -> Option<String> {
     }
 
     Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DiffStats {
+    pub added: usize,
+    pub removed: usize,
+    pub diff_output: String,
+}
+
+impl DiffStats {
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.removed == 0
+    }
+}
+
+/// Compute diff stats for a session's worktree against its base commit.
+pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
+    let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
+    let base_commit = get_session_env(session_name, "CM_BASE_COMMIT")?;
+
+    if !std::path::Path::new(&worktree_path).exists() {
+        return None;
+    }
+
+    // Stage intent-to-add for untracked files so they show up in diff
+    let _ = Command::new("git")
+        .args(["-C", &worktree_path, "add", "-N", "."])
+        .output();
+
+    let output = Command::new("git")
+        .args(["-C", &worktree_path, "--no-pager", "diff", &base_commit])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let diff_output = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let mut added = 0;
+    let mut removed = 0;
+    for line in diff_output.lines() {
+        if line.starts_with('+') && !line.starts_with("+++") {
+            added += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            removed += 1;
+        }
+    }
+
+    Some(DiffStats {
+        added,
+        removed,
+        diff_output,
+    })
 }
 
 /// Raw signals from a tmux session for status detection.
