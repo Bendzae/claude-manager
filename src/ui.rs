@@ -24,16 +24,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let chunks = Layout::vertical([
         Constraint::Length(PAD_TOP),
-        Constraint::Length(1),
-        Constraint::Length(1),
         Constraint::Min(5),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(outer);
-
-    draw_title(f, chunks[1]);
-    // chunks[2] is a blank line after the title
 
     let show_panel = matches!(
         app.selected_item(),
@@ -44,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Percentage(30),
             Constraint::Percentage(70),
         ])
-        .split(chunks[3]);
+        .split(chunks[1]);
 
         draw_list(f, app, columns[0]);
         match app.selected_item() {
@@ -52,22 +47,11 @@ pub fn draw(f: &mut Frame, app: &App) {
             _ => draw_preview_panel(f, app, columns[1]),
         }
     } else {
-        draw_list(f, app, chunks[3]);
+        draw_list(f, app, chunks[1]);
     }
 
-    draw_help(f, app, chunks[4]);
-    draw_status(f, app, chunks[5]);
-}
-
-fn draw_title(f: &mut Frame, area: Rect) {
-    let title = Paragraph::new(Line::from(vec![Span::styled(
-        "Claude Manager",
-        Style::default()
-            .fg(ACCENT)
-            .add_modifier(Modifier::BOLD),
-    )]))
-    .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(title, area);
+    draw_help(f, app, chunks[2]);
+    draw_status(f, app, chunks[3]);
 }
 
 fn is_project_collapsed(app: &App, name: &str) -> bool {
