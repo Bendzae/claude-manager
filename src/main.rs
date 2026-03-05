@@ -78,6 +78,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('d') => app.start_delete(),
                         KeyCode::Char('a') => app.start_add_project(),
                         KeyCode::Char('R') => app.start_rename(),
+                        KeyCode::Char('m') => app.start_merge(),
+                        KeyCode::Char('u') => app.update_session(),
                         KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },
@@ -122,6 +124,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     | InputMode::RenameTask
                     | InputMode::RenameSession => match key.code {
                         KeyCode::Enter => app.confirm_rename(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
+                    InputMode::MergeCommitMessage => match key.code {
+                        KeyCode::Enter => app.confirm_merge_commit(),
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {
                             app.input_buffer.pop();

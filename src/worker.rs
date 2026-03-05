@@ -26,9 +26,17 @@ pub enum PreviewMode {
     Diff,
 }
 
+/// Task info for computing branch diffs.
+#[derive(Clone)]
+pub struct TaskInfo {
+    pub project_path: String,
+    pub branch: String,
+}
+
 /// Shared state the UI thread writes to, the worker thread reads from.
 pub struct WorkerHints {
     pub selection: Selection,
+    pub tasks: Vec<TaskInfo>,
 }
 
 /// Data produced by the background worker for the UI to consume.
@@ -38,6 +46,8 @@ pub struct WorkerUpdate {
     pub diff_stats: HashMap<String, DiffStats>,
     pub preview_content: Option<String>,
     pub task_diff: Option<DiffStats>,
+    /// Keyed by branch name.
+    pub task_diff_stats: HashMap<String, DiffStats>,
 }
 
 pub struct Worker {
@@ -49,6 +59,7 @@ impl Worker {
     pub fn spawn() -> Self {
         let hints = Arc::new(Mutex::new(WorkerHints {
             selection: Selection::None,
+            tasks: Vec::new(),
         }));
         let (tx, rx) = mpsc::channel();
 
@@ -130,10 +141,20 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
         }
 
         // Handle selection-based content
-        let selection = {
+        let (selection, tasks) = {
             let h = hints.lock().unwrap();
-            h.selection.clone()
+            (h.selection.clone(), h.tasks.clone())
         };
+
+        // Compute task branch diffs (less frequently)
+        let mut task_diff_stats: HashMap<String, DiffStats> = HashMap::new();
+        if tick % 4 == 0 {
+            for task in &tasks {
+                if let Some(stats) = tmux::get_branch_diff(&task.project_path, &task.branch) {
+                    task_diff_stats.insert(task.branch.clone(), stats);
+                }
+            }
+        }
 
         let (preview_content, task_diff) = match &selection {
             Selection::None => (None, None),
@@ -163,6 +184,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             diff_stats: diff_stats.clone(),
             preview_content,
             task_diff,
+            task_diff_stats,
         };
 
         if tx.send(update).is_err() {

@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::config::{Config, Project, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
-use crate::worker::{self, Selection, Worker};
+use crate::worker::{self, Selection, TaskInfo, Worker};
 
 #[derive(Debug, Clone)]
 pub enum ListItem {
@@ -36,6 +36,7 @@ pub enum InputMode {
     RenameProject,
     RenameTask,
     RenameSession,
+    MergeCommitMessage,
 }
 
 pub struct App {
@@ -56,6 +57,7 @@ pub struct App {
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
+    pub task_diff_stats: HashMap<String, DiffStats>,
     pub tick: usize,
     pub worker: Worker,
 }
@@ -90,6 +92,7 @@ impl App {
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
+            task_diff_stats: HashMap::new(),
             tick: 0,
             worker: Worker::spawn(),
         };
@@ -126,6 +129,9 @@ impl App {
             if update.task_diff.is_some() {
                 self.task_diff = update.task_diff;
             }
+            if !update.task_diff_stats.is_empty() {
+                self.task_diff_stats = update.task_diff_stats;
+            }
             self.rebuild_items();
         }
     }
@@ -147,8 +153,21 @@ impl App {
             },
             _ => Selection::None,
         };
+        let tasks: Vec<TaskInfo> = self
+            .config
+            .projects
+            .iter()
+            .flat_map(|p| {
+                p.tasks.iter().map(|t| TaskInfo {
+                    project_path: p.path.clone(),
+                    branch: t.branch.clone(),
+                })
+            })
+            .collect();
+
         if let Ok(mut hints) = self.worker.hints.lock() {
             hints.selection = selection;
+            hints.tasks = tasks;
         }
     }
 
@@ -598,6 +617,118 @@ impl App {
 
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
+    }
+
+    pub fn start_merge(&mut self) {
+        let (project_path, task, session) = match self.selected_item().cloned() {
+            Some(ListItem::Session {
+                project_path,
+                task,
+                session,
+                ..
+            }) => (project_path, task, session),
+            _ => {
+                self.status_message = Some("Select a session to merge".into());
+                return;
+            }
+        };
+
+        let wt_path = match session.worktree_path() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                self.status_message =
+                    Some("Cannot merge: session has no worktree".into());
+                return;
+            }
+        };
+
+        // Check if worktree has uncommitted changes
+        if tmux::worktree_is_dirty(&wt_path) {
+            self.input_mode = InputMode::MergeCommitMessage;
+            self.input_buffer.clear();
+            let default_msg = tmux::next_commit_message(&wt_path, &session.session_name);
+            self.status_message = Some(format!("Commit message (default: {default_msg}): "));
+        } else {
+            self.do_merge(&project_path, &task.branch, &session.session_name, &wt_path);
+        }
+    }
+
+    pub fn confirm_merge_commit(&mut self) {
+        let (project_path, task, session) = match self.selected_item().cloned() {
+            Some(ListItem::Session {
+                project_path,
+                task,
+                session,
+                ..
+            }) => (project_path, task, session),
+            _ => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let wt_path = match session.worktree_path() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let msg = if self.input_buffer.trim().is_empty() {
+            tmux::next_commit_message(&wt_path, &session.session_name)
+        } else {
+            self.input_buffer.trim().to_string()
+        };
+
+        // Commit all changes
+        match tmux::commit_all(&wt_path, &msg) {
+            Ok(()) => {
+                self.do_merge(&project_path, &task.branch, &session.session_name, &wt_path);
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Error committing: {e}"));
+            }
+        }
+
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+    }
+
+    fn do_merge(&mut self, project_path: &str, task_branch: &str, session_name: &str, wt_path: &str) {
+        match tmux::merge_session_to_task(project_path, task_branch, session_name, wt_path) {
+            Ok(msg) => self.status_message = Some(msg),
+            Err(e) => self.status_message = Some(format!("Error: {e}")),
+        }
+    }
+
+    pub fn update_session(&mut self) {
+        let (project_path, task, session) = match self.selected_item().cloned() {
+            Some(ListItem::Session {
+                project_path,
+                task,
+                session,
+                ..
+            }) => (project_path, task, session),
+            _ => {
+                self.status_message = Some("Select a session to update".into());
+                return;
+            }
+        };
+
+        let wt_path = match session.worktree_path() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                self.status_message =
+                    Some("Cannot update: session has no worktree".into());
+                return;
+            }
+        };
+
+        match tmux::rebase_session_on_task(&project_path, &task.branch, &wt_path) {
+            Ok(msg) => self.status_message = Some(msg),
+            Err(e) => self.status_message = Some(format!("Error: {e}")),
+        }
     }
 
     pub fn cancel_input(&mut self) {

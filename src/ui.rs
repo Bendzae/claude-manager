@@ -125,7 +125,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default().fg(TASK_COLOR)
                 };
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(indicator, indicator_style),
                     Span::raw("    "),
                     Span::styled(chevron, Style::default().fg(MUTED)),
@@ -134,8 +134,28 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         format!("  ({})", task.branch),
                         Style::default().fg(MUTED),
                     ),
-                ]);
-                lines.push(ListItem::new(line));
+                ];
+
+                // Show diff stats for the task branch vs main
+                let (added, removed) = app
+                    .task_diff_stats
+                    .get(&task.branch)
+                    .map(|s| (s.added, s.removed))
+                    .unwrap_or((0, 0));
+                if added > 0 || removed > 0 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        format!("+{added}"),
+                        Style::default().fg(Color::Green),
+                    ));
+                    spans.push(Span::styled(",", Style::default().fg(MUTED)));
+                    spans.push(Span::styled(
+                        format!("-{removed}"),
+                        Style::default().fg(Color::Red),
+                    ));
+                }
+
+                lines.push(ListItem::new(Line::from(spans)));
             }
             app::ListItem::Session { session, .. } => {
                 let indicator = if is_selected { "> " } else { "  " };
@@ -440,14 +460,15 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "t: new task  n: new session  N: no worktree  Enter: attach  Space: collapse  d: delete  R: rename  Tab: diff  a: add project  q: quit"
+            "t: new task  n: new session  N: no worktree  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  Tab: diff  a: add project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
         | InputMode::AddTaskName
         | InputMode::RenameProject
         | InputMode::RenameTask
-        | InputMode::RenameSession => "Enter: confirm  Esc: cancel",
+        | InputMode::RenameSession
+        | InputMode::MergeCommitMessage => "Enter: confirm  Esc: cancel",
         InputMode::ConfirmDelete => "y: confirm  n/Esc: cancel",
     };
 
@@ -471,6 +492,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 | InputMode::RenameProject
                 | InputMode::RenameTask
                 | InputMode::RenameSession
+                | InputMode::MergeCommitMessage
         ) {
             format!("{}{}", msg, app.input_buffer)
         } else {

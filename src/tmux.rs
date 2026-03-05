@@ -256,24 +256,16 @@ pub fn create_session(
             ])
             .status();
 
-        // Store the base commit so we can diff against it later
-        if let Ok(output) = Command::new("git")
-            .args(["-C", &worktree_path_str, "rev-parse", "HEAD"])
-            .output()
-        {
-            if output.status.success() {
-                let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let _ = Command::new("tmux")
-                    .args([
-                        "set-environment",
-                        "-t",
-                        &tmux_name,
-                        "CM_BASE_COMMIT",
-                        &sha,
-                    ])
-                    .status();
-            }
-        }
+        // Store the task branch so we can diff against it later
+        let _ = Command::new("tmux")
+            .args([
+                "set-environment",
+                "-t",
+                &tmux_name,
+                "CM_TASK_BRANCH",
+                task_branch,
+            ])
+            .status();
     }
 
     Ok(tmux_name)
@@ -366,6 +358,220 @@ pub fn kill_session(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Check if a worktree has uncommitted changes.
+pub fn worktree_is_dirty(worktree_path: &str) -> bool {
+    Command::new("git")
+        .args(["-C", worktree_path, "status", "--porcelain"])
+        .output()
+        .map(|o| {
+            o.status.success()
+                && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+        })
+        .unwrap_or(false)
+}
+
+/// Generate a default commit message: "<session_name>-<N>" where N increments.
+pub fn next_commit_message(worktree_path: &str, session_name: &str) -> String {
+    let count = Command::new("git")
+        .args(["-C", worktree_path, "rev-list", "--count", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    format!("{session_name}-{count}")
+}
+
+/// Stage all changes and commit.
+pub fn commit_all(worktree_path: &str, message: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["-C", worktree_path, "add", "-A"])
+        .output()?;
+    if !output.status.success() {
+        bail!("Failed to stage changes");
+    }
+
+    let output = Command::new("git")
+        .args(["-C", worktree_path, "commit", "-m", message])
+        .output()?;
+    if !output.status.success() {
+        bail!("Failed to commit");
+    }
+
+    Ok(())
+}
+
+/// Rebase a session's worktree branch onto the task branch to pull in latest changes.
+pub fn rebase_session_on_task(
+    project_path: &str,
+    task_branch: &str,
+    worktree_path: &str,
+) -> Result<String> {
+    // Check for uncommitted changes
+    if worktree_is_dirty(worktree_path) {
+        bail!("Worktree has uncommitted changes. Commit or stash first.");
+    }
+
+    // Get the session branch name
+    let output = Command::new("git")
+        .args(["-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        bail!("Failed to determine worktree branch");
+    }
+    let session_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Check if already up to date
+    let is_ancestor = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "merge-base",
+            "--is-ancestor",
+            task_branch,
+            &session_branch,
+        ])
+        .output()?
+        .status
+        .success();
+
+    if is_ancestor {
+        return Ok(format!("{session_branch} is already up to date with {task_branch}"));
+    }
+
+    // Rebase onto task branch
+    let output = Command::new("git")
+        .args(["-C", worktree_path, "rebase", task_branch])
+        .output()?;
+
+    if !output.status.success() {
+        let _ = Command::new("git")
+            .args(["-C", worktree_path, "rebase", "--abort"])
+            .output();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Rebase conflict. Aborted. Resolve manually.\n{stderr}");
+    }
+
+    Ok(format!("Rebased {session_branch} onto {task_branch}"))
+}
+
+/// Merge a session's worktree branch into the task branch.
+pub fn merge_session_to_task(
+    project_path: &str,
+    task_branch: &str,
+    _session_name: &str,
+    worktree_path: &str,
+) -> Result<String> {
+    // Get the session branch name from the worktree
+    let output = Command::new("git")
+        .args(["-C", worktree_path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        bail!("Failed to determine worktree branch");
+    }
+    let session_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if session_branch.is_empty() {
+        bail!("Could not determine session branch");
+    }
+
+    // Check if task branch is an ancestor of session branch (fast-forward possible)
+    let is_ancestor = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "merge-base",
+            "--is-ancestor",
+            task_branch,
+            &session_branch,
+        ])
+        .output()?
+        .status
+        .success();
+
+    if is_ancestor {
+        // Get the session branch SHA
+        let output = Command::new("git")
+            .args(["-C", project_path, "rev-parse", &session_branch])
+            .output()?;
+        if !output.status.success() {
+            bail!("Failed to resolve {session_branch}");
+        }
+        let session_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Count commits before moving
+        let output = Command::new("git")
+            .args([
+                "-C",
+                project_path,
+                "rev-list",
+                "--count",
+                &format!("{task_branch}..{session_branch}"),
+            ])
+            .output()?;
+        let count = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Fast-forward using update-ref (works even if branch is checked out in a worktree)
+        let output = Command::new("git")
+            .args([
+                "-C",
+                project_path,
+                "update-ref",
+                &format!("refs/heads/{task_branch}"),
+                &session_sha,
+            ])
+            .output()?;
+        if !output.status.success() {
+            bail!("Failed to fast-forward {task_branch} to {session_branch}");
+        }
+
+        Ok(format!(
+            "Fast-forwarded {task_branch} ({count} commit(s) from {session_branch})"
+        ))
+    } else {
+        // Need a real merge — do it in the worktree
+        // First, checkout the task branch in the worktree
+        let output = Command::new("git")
+            .args(["-C", worktree_path, "checkout", task_branch])
+            .output()?;
+        if !output.status.success() {
+            bail!("Failed to checkout {task_branch} in worktree");
+        }
+
+        // Merge the session branch
+        let output = Command::new("git")
+            .args([
+                "-C",
+                worktree_path,
+                "merge",
+                &session_branch,
+                "-m",
+                &format!("Merge {session_branch} into {task_branch}"),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            // Abort the merge and restore the session branch
+            let _ = Command::new("git")
+                .args(["-C", worktree_path, "merge", "--abort"])
+                .output();
+            let _ = Command::new("git")
+                .args(["-C", worktree_path, "checkout", &session_branch])
+                .output();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Merge conflict. Aborted. Resolve manually.\n{stderr}");
+        }
+
+        // Switch back to session branch
+        let _ = Command::new("git")
+            .args(["-C", worktree_path, "checkout", &session_branch])
+            .output();
+
+        Ok(format!("Merged {session_branch} into {task_branch}"))
+    }
+}
+
 pub fn capture_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args([
@@ -401,7 +607,10 @@ impl DiffStats {
 /// Compute diff stats for a session's worktree against its base commit.
 pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
     let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
-    let base_commit = get_session_env(session_name, "CM_BASE_COMMIT")?;
+
+    // Try task branch first, fall back to base commit for older sessions
+    let diff_target = get_session_env(session_name, "CM_TASK_BRANCH")
+        .or_else(|| get_session_env(session_name, "CM_BASE_COMMIT"))?;
 
     if !std::path::Path::new(&worktree_path).exists() {
         return None;
@@ -412,8 +621,9 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
         .args(["-C", &worktree_path, "add", "-N", "."])
         .output();
 
+    // Diff working tree against the task branch (includes committed + uncommitted changes)
     let output = Command::new("git")
-        .args(["-C", &worktree_path, "--no-pager", "diff", &base_commit])
+        .args(["-C", &worktree_path, "--no-pager", "diff", &diff_target])
         .output()
         .ok()?;
 
