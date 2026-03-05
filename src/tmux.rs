@@ -252,6 +252,17 @@ pub fn create_session(
         ])
         .output();
 
+    // Store the task branch so we can diff against it later
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            &tmux_name,
+            "CM_TASK_BRANCH",
+            task_branch,
+        ])
+        .output();
+
     if use_worktree {
         let _ = Command::new("tmux")
             .args([
@@ -260,17 +271,6 @@ pub fn create_session(
                 &tmux_name,
                 "CM_WORKTREE_PATH",
                 &worktree_path_str,
-            ])
-            .output();
-
-        // Store the task branch so we can diff against it later
-        let _ = Command::new("tmux")
-            .args([
-                "set-environment",
-                "-t",
-                &tmux_name,
-                "CM_TASK_BRANCH",
-                task_branch,
             ])
             .output();
     }
@@ -691,7 +691,8 @@ impl DiffStats {
 
 /// Compute diff stats for a session's worktree against its base commit.
 pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
-    let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
+    let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")
+        .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))?;
 
     // Try task branch first, fall back to base commit for older sessions
     let diff_target = get_session_env(session_name, "CM_TASK_BRANCH")

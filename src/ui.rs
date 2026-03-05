@@ -380,60 +380,108 @@ fn render_loading(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(loading, area);
 }
 
-fn style_diff_lines(content: &str) -> Vec<Line<'_>> {
-    content
-        .lines()
-        .map(|line| {
-            if line.starts_with("@@") {
-                Line::styled(line, Style::default().fg(Color::Cyan))
-            } else if line.starts_with('+') && !line.starts_with("+++") {
-                Line::styled(line, Style::default().fg(Color::Green))
-            } else if line.starts_with('-') && !line.starts_with("---") {
-                Line::styled(line, Style::default().fg(Color::Red))
-            } else if line.starts_with("diff ") || line.starts_with("index ") {
-                Line::styled(line, Style::default().fg(MUTED))
-            } else if line.starts_with("---") || line.starts_with("+++") {
-                Line::styled(
-                    line,
+fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
+    let mut lines = Vec::new();
+    let mut first_file = true;
+
+    for line in content.lines() {
+        if line.starts_with("diff ") {
+            // Extract filename from "diff --git a/path b/path"
+            let filename = line
+                .split(" b/")
+                .nth(1)
+                .unwrap_or(line);
+            if !first_file {
+                lines.push(Line::raw(""));
+            }
+            first_file = false;
+            let sep_len = width.saturating_sub(filename.len() + 3);
+            let sep = "─".repeat(sep_len);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("── {filename} "),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Line::raw(line)
-            }
-        })
-        .collect()
+                ),
+                Span::styled(sep, Style::default().fg(MUTED)),
+            ]));
+        } else if line.starts_with("index ") || line.starts_with("---") || line.starts_with("+++")
+        {
+            // Skip verbose git diff metadata
+            continue;
+        } else if line.starts_with("@@") {
+            lines.push(Line::styled(line, Style::default().fg(Color::Cyan)));
+        } else if line.starts_with('+') {
+            lines.push(Line::styled(line, Style::default().fg(Color::Green)));
+        } else if line.starts_with('-') {
+            lines.push(Line::styled(line, Style::default().fg(Color::Red)));
+        } else {
+            lines.push(Line::raw(line));
+        }
+    }
+    lines
 }
 
 fn render_diff_content(f: &mut Frame, content: &str, area: Rect, visible_height: usize, scroll: usize) {
-    let diff_lines = style_diff_lines(content);
+    let diff_lines = style_diff_lines(content, area.width as usize);
     let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(visible_height).collect();
     let paragraph = Paragraph::new(visible_lines);
     f.render_widget(paragraph, area);
 }
 
 fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: usize, area: Rect, visible_height: usize, scroll: usize) {
-    let mut diff_lines: Vec<Line> = Vec::new();
+    // Extract changed file names from diff headers
+    let files: Vec<&str> = content
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("+++ b/")
+                .or_else(|| line.strip_prefix("+++ ").filter(|s| *s != "/dev/null"))
+        })
+        .collect();
 
-    diff_lines.push(Line::from(vec![
+    // Build sticky header
+    let mut header_lines: Vec<Line> = Vec::new();
+    header_lines.push(Line::from(vec![
         Span::styled(
-            format!("{added} additions(+)"),
+            format!("+{added}"),
             Style::default().fg(Color::Green),
         ),
-        Span::raw("  "),
+        Span::styled(",", Style::default().fg(MUTED)),
         Span::styled(
-            format!("{removed} deletions(-)"),
+            format!("-{removed}"),
             Style::default().fg(Color::Red),
         ),
+        Span::styled(
+            format!("  {} file(s)", files.len()),
+            Style::default().fg(MUTED),
+        ),
     ]));
-    diff_lines.push(Line::raw(""));
+    header_lines.push(Line::raw(""));
 
-    diff_lines.extend(style_diff_lines(content));
+    let header_height = header_lines.len().min(visible_height);
+    let remaining_height = visible_height.saturating_sub(header_height);
 
-    let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(visible_height).collect();
-    let paragraph = Paragraph::new(visible_lines);
-    f.render_widget(paragraph, area);
+    // Render sticky header
+    let header_area = Rect {
+        height: header_height as u16,
+        ..area
+    };
+    let header_paragraph = Paragraph::new(header_lines);
+    f.render_widget(header_paragraph, header_area);
+
+    // Render scrollable diff content below
+    if remaining_height > 0 {
+        let diff_area = Rect {
+            y: area.y + header_height as u16,
+            height: remaining_height as u16,
+            ..area
+        };
+        let diff_lines = style_diff_lines(content, diff_area.width as usize);
+        let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(remaining_height).collect();
+        let paragraph = Paragraph::new(visible_lines);
+        f.render_widget(paragraph, diff_area);
+    }
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
