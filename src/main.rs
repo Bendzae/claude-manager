@@ -80,6 +80,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('R') => app.start_rename(),
                         KeyCode::Char('m') => app.start_merge(),
                         KeyCode::Char('u') => app.update_session(),
+                        KeyCode::Char('J') => app.scroll_preview_down(),
+                        KeyCode::Char('K') => app.scroll_preview_up(),
                         KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },

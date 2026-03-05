@@ -60,6 +60,7 @@ pub struct App {
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
     pub task_diff_stats: HashMap<String, DiffStats>,
+    pub preview_scroll: usize,
     pub tick: usize,
     pub worker: Worker,
 }
@@ -96,6 +97,7 @@ impl App {
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
             task_diff_stats: HashMap::new(),
+            preview_scroll: 0,
             tick: 0,
             worker: Worker::spawn(),
         };
@@ -269,6 +271,7 @@ impl App {
     fn on_selection_changed(&mut self) {
         self.preview_content = None;
         self.task_diff = None;
+        self.preview_scroll = 0;
         self.sync_worker_hints();
     }
 
@@ -799,6 +802,15 @@ impl App {
             PreviewMode::Diff => PreviewMode::Output,
         };
         self.preview_content = None; // Clear stale content from the other mode
+        self.preview_scroll = 0;
         self.sync_worker_hints();
+    }
+
+    pub fn scroll_preview_down(&mut self) {
+        self.preview_scroll = self.preview_scroll.saturating_add(3);
+    }
+
+    pub fn scroll_preview_up(&mut self) {
+        self.preview_scroll = self.preview_scroll.saturating_sub(3);
     }
 }

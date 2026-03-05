@@ -302,21 +302,19 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
                 Ok(text) => text,
                 Err(_) => return,
             };
-            let total_lines = text.lines.len();
-            let start = total_lines.saturating_sub(visible_height);
-            let visible_lines: Vec<Line> = text.lines.into_iter().skip(start).collect();
+            let visible_lines: Vec<Line> = text.lines.into_iter().skip(app.preview_scroll).take(visible_height).collect();
             let paragraph = Paragraph::new(visible_lines);
             f.render_widget(paragraph, content_area);
         }
         PreviewMode::Diff => {
             if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
                 if let Some(stats) = app.diff_stats.get(&session.name) {
-                    render_diff_with_stats(f, content, stats.added, stats.removed, content_area, visible_height);
+                    render_diff_with_stats(f, content, stats.added, stats.removed, content_area, visible_height, app.preview_scroll);
                 } else {
-                    render_diff_content(f, content, content_area, visible_height);
+                    render_diff_content(f, content, content_area, visible_height, app.preview_scroll);
                 }
             } else {
-                render_diff_content(f, content, content_area, visible_height);
+                render_diff_content(f, content, content_area, visible_height, app.preview_scroll);
             }
         }
     }
@@ -368,7 +366,7 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
         }
     };
 
-    render_diff_with_stats(f, &stats.diff_output, stats.added, stats.removed, content_area, visible_height);
+    render_diff_with_stats(f, &stats.diff_output, stats.added, stats.removed, content_area, visible_height, app.preview_scroll);
 }
 
 const LOADING_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -382,39 +380,40 @@ fn render_loading(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(loading, area);
 }
 
-fn render_diff_content(f: &mut Frame, content: &str, area: Rect, visible_height: usize) {
-    let mut diff_lines: Vec<Line> = Vec::new();
+fn style_diff_lines(content: &str) -> Vec<Line<'_>> {
+    content
+        .lines()
+        .map(|line| {
+            if line.starts_with("@@") {
+                Line::styled(line, Style::default().fg(Color::Cyan))
+            } else if line.starts_with('+') && !line.starts_with("+++") {
+                Line::styled(line, Style::default().fg(Color::Green))
+            } else if line.starts_with('-') && !line.starts_with("---") {
+                Line::styled(line, Style::default().fg(Color::Red))
+            } else if line.starts_with("diff ") || line.starts_with("index ") {
+                Line::styled(line, Style::default().fg(MUTED))
+            } else if line.starts_with("---") || line.starts_with("+++") {
+                Line::styled(
+                    line,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Line::raw(line)
+            }
+        })
+        .collect()
+}
 
-    for line in content.lines() {
-        let styled_line = if line.starts_with("@@") {
-            Line::styled(line, Style::default().fg(Color::Cyan))
-        } else if line.starts_with('+') && !line.starts_with("+++") {
-            Line::styled(line, Style::default().fg(Color::Green))
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            Line::styled(line, Style::default().fg(Color::Red))
-        } else if line.starts_with("diff ") || line.starts_with("index ") {
-            Line::styled(line, Style::default().fg(MUTED))
-        } else if line.starts_with("---") || line.starts_with("+++") {
-            Line::styled(
-                line,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Line::raw(line)
-        };
-        diff_lines.push(styled_line);
-    }
-
-    let total_lines = diff_lines.len();
-    let start = total_lines.saturating_sub(visible_height);
-    let visible_lines: Vec<Line> = diff_lines.into_iter().skip(start).collect();
+fn render_diff_content(f: &mut Frame, content: &str, area: Rect, visible_height: usize, scroll: usize) {
+    let diff_lines = style_diff_lines(content);
+    let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(visible_height).collect();
     let paragraph = Paragraph::new(visible_lines);
     f.render_widget(paragraph, area);
 }
 
-fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: usize, area: Rect, visible_height: usize) {
+fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: usize, area: Rect, visible_height: usize, scroll: usize) {
     let mut diff_lines: Vec<Line> = Vec::new();
 
     diff_lines.push(Line::from(vec![
@@ -430,31 +429,9 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
     ]));
     diff_lines.push(Line::raw(""));
 
-    for line in content.lines() {
-        let styled_line = if line.starts_with("@@") {
-            Line::styled(line, Style::default().fg(Color::Cyan))
-        } else if line.starts_with('+') && !line.starts_with("+++") {
-            Line::styled(line, Style::default().fg(Color::Green))
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            Line::styled(line, Style::default().fg(Color::Red))
-        } else if line.starts_with("diff ") || line.starts_with("index ") {
-            Line::styled(line, Style::default().fg(MUTED))
-        } else if line.starts_with("---") || line.starts_with("+++") {
-            Line::styled(
-                line,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Line::raw(line)
-        };
-        diff_lines.push(styled_line);
-    }
+    diff_lines.extend(style_diff_lines(content));
 
-    let total_lines = diff_lines.len();
-    let start = total_lines.saturating_sub(visible_height);
-    let visible_lines: Vec<Line> = diff_lines.into_iter().skip(start).collect();
+    let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(visible_height).collect();
     let paragraph = Paragraph::new(visible_lines);
     f.render_widget(paragraph, area);
 }
@@ -462,7 +439,7 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.input_mode {
         InputMode::Normal => {
-            "t: new task  n: new session  N: no worktree  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  Tab: diff  a: add project  q: quit"
+            "t: new task  n/N: new session  Enter: attach  Space: collapse  d: delete  R: rename  m: merge  u: update  Tab: diff  J/K: scroll  a: add project  q: quit"
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
