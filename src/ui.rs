@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{self, App, InputMode, PreviewMode};
-use crate::tmux::SessionStatus;
+use crate::tmux::{self, SessionStatus};
 
 const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::Rgb(90, 90, 100);
@@ -191,6 +191,26 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     format!("  ({})", task.branch),
                     Style::default().fg(MUTED),
                 ));
+
+                // Show active session count when task is collapsed
+                if app.collapsed.contains(&format!("t:{project_name}:{}", task.name)) {
+                    let sessions =
+                        tmux::sessions_for_task(project_name, &task.name, &app.sessions);
+                    let active = sessions
+                        .iter()
+                        .filter(|s| {
+                            app.session_statuses
+                                .get(&s.name)
+                                .map_or(false, |st| *st != SessionStatus::Finished)
+                        })
+                        .count();
+                    if active > 0 {
+                        spans.push(Span::styled(
+                            format!("  [{active} active]"),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                }
 
                 lines.push(ListItem::new(Line::from(spans)));
             }
