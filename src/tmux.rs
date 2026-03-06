@@ -234,13 +234,13 @@ pub fn create_session(
     let context_path = crate::config::task_context_path(project_name, task_branch);
     let context_path_str = context_path.to_string_lossy().to_string();
 
+    // Set up shared task context with hooks BEFORE starting Claude so it picks up settings
+    setup_task_context(&work_dir, task_name, task_branch, &context_path);
+
     let system_prompt = format!(
         "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
-         A shared context file exists at {context_path_str} — its contents are injected into every prompt automatically. \
-         You MUST regularly update this file using the Edit tool with anything useful for other agents: \
-         progress, research findings, decisions, learnings, caveats, and relevant discoveries — even if no code was changed. \
-         Use sections: ## Task, ## Progress, ## Learnings, ## Caveats. \
-         Be concise, remove outdated info."
+         A shared context file at {context_path_str} is automatically injected into every prompt. \
+         Sections: ## Task, ## Progress, ## Key Files & References, ## Learnings, ## Caveats."
     );
 
     let claude_cmd = format!(
@@ -297,9 +297,6 @@ pub fn create_session(
             ])
             .output();
     }
-
-    // Set up shared task context with hooks
-    setup_task_context(&work_dir, task_name, task_branch, &context_path);
 
     Ok(tmux_name)
 }
@@ -383,6 +380,11 @@ pub fn kill_session(name: &str) -> Result<()> {
                 .output();
         }
 
+        // Prune stale worktree references so git no longer considers the branch checked out
+        let _ = Command::new("git")
+            .args(["-C", &proj_path, "worktree", "prune"])
+            .output();
+
         // Delete the worktree branch
         if let Some(branch_name) = branch {
             if !branch_name.is_empty() && branch_name != "main" && branch_name != "master" {
@@ -445,7 +447,7 @@ fn setup_task_context(
             let _ = fs::create_dir_all(parent);
         }
         let initial = format!(
-            "## Task\n{task_name} (branch: {task_branch})\n\n## Progress\n\n## Learnings\n\n## Caveats\n"
+            "## Task\n{task_name} (branch: {task_branch})\n\n## Progress\n\n## Key Files & References\n\n## Learnings\n\n## Caveats\n"
         );
         let _ = fs::write(&context_path, initial);
     }
@@ -454,12 +456,85 @@ fn setup_task_context(
     let claude_dir = Path::new(work_dir).join(".claude");
     let _ = fs::create_dir_all(&claude_dir);
 
+    // Stop hook: reads JSON input from stdin to check stop_hook_active.
+    // If already re-running from a stop hook, allow stopping.
+    // Otherwise, output JSON with decision:block to force context update.
+    // Write stop hook as a script that runs claude -p in the background to update context.
+    let hook_dir = context_path.parent().unwrap_or(context_path);
+    let hook_script_path = hook_dir.join("stop-hook.sh");
+    let log_path = hook_dir.join("stop-hook.log");
+    let log_str = log_path.to_string_lossy().to_string();
+    let stop_script = format!(
+        r#"#!/bin/bash
+LOG='{log}'
+CONTEXT_FILE='{context}'
+log() {{ echo "$(date '+%H:%M:%S') $1" >> "$LOG"; }}
+
+# Read stdin
+INPUT=$(cat)
+MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
+log "start pid=$$ msg_len=${{#MSG}}"
+
+[ -z "$MSG" ] && {{ log "no msg, exit"; exit 0; }}
+
+# Build prompt in a temp file
+TMPFILE=$(mktemp)
+cat > "$TMPFILE" <<PROMPT_END
+You maintain a shared task context file. Below is the current file content between <current> tags and the latest agent message between <message> tags.
+
+<current>
+$(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
+</current>
+
+<message>
+$MSG
+</message>
+
+Update the file with any new progress, findings, decisions, key files, learnings, or caveats from the message. Remove outdated info. Keep it concise. Output ONLY the raw file content, no wrapping, no fences, no delimiters.
+Sections: ## Task, ## Progress, ## Key Files & References, ## Learnings, ## Caveats.
+PROMPT_END
+
+log "tmpfile ready, calling claude -p"
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
+cd /tmp
+claude -p < "$TMPFILE" > "$CONTEXT_FILE.tmp" 2>> "$LOG"
+RC=$?
+log "claude -p exited rc=$RC output=$(wc -c < "$CONTEXT_FILE.tmp" 2>/dev/null || echo 0) bytes"
+
+if [ $RC -eq 0 ]; then
+  mv "$CONTEXT_FILE.tmp" "$CONTEXT_FILE"
+  log "context updated"
+else
+  rm -f "$CONTEXT_FILE.tmp"
+  log "claude -p failed"
+fi
+
+rm -f "$TMPFILE"
+log "done"
+exit 0"#,
+        context = context_path_str,
+        log = log_str
+    );
+    let _ = fs::write(&hook_script_path, &stop_script);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&hook_script_path, fs::Permissions::from_mode(0o755));
+    }
+    let hook_script_str = hook_script_path.to_string_lossy().to_string();
+
     let settings = serde_json::json!({
         "hooks": {
             "UserPromptSubmit": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!("cat '{}' 2>/dev/null || true", context_path_str)
+                    "command": format!("echo '--- SHARED TASK CONTEXT (other agents working on this task update this file) ---' && cat '{}' 2>/dev/null || true", context_path_str)
+                }]
+            }],
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_script_str
                 }]
             }]
         }
