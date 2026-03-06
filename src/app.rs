@@ -524,7 +524,13 @@ impl App {
                 }
             };
             config.add_task(&project_name, task_name.clone(), branch.clone());
-            let _ = config.save();
+            if let Err(e) = config.save() {
+                return OpResult {
+                    message: format!("Error saving config: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                };
+            }
 
             let msg = if branch_exists {
                 format!("Added task '{task_name}' using existing branch {branch}")
