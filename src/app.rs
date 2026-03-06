@@ -554,6 +554,13 @@ impl App {
         let use_worktree = self.use_worktree;
         let task_name = task.name.clone();
         let task_branch = task.branch.clone();
+        let copy_patterns = self
+            .config
+            .projects
+            .iter()
+            .find(|p| p.name == project_name)
+            .map(|p| p.copy_patterns.clone())
+            .unwrap_or_default();
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
 
@@ -565,6 +572,7 @@ impl App {
                 &task_branch,
                 &session_name,
                 use_worktree,
+                &copy_patterns,
             ) {
                 Ok(tmux_name) => OpResult {
                     message: format!("Created session {tmux_name}"),
@@ -653,6 +661,11 @@ impl App {
                 task,
                 ..
             }) => {
+                // Delete task context files
+                let context_path = crate::config::task_context_path(&project_name, &task.branch);
+                if let Some(parent) = context_path.parent() {
+                    let _ = std::fs::remove_dir_all(parent);
+                }
                 self.config.remove_task(&project_name, &task.name);
                 let _ = self.config.save();
                 self.status_message = Some(format!("Removed task '{}'", task.name));

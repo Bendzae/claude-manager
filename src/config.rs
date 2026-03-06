@@ -16,6 +16,9 @@ pub struct Project {
     pub path: String,
     #[serde(default)]
     pub tasks: Vec<Task>,
+    /// File patterns to copy into new worktrees (e.g. [".env", "build/"])
+    #[serde(default)]
+    pub copy_patterns: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -29,6 +32,15 @@ pub fn base_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".claude-manager")
+}
+
+/// Path to the shared task context file for a given project/branch.
+pub fn task_context_path(project_name: &str, branch: &str) -> PathBuf {
+    base_dir()
+        .join("tasks")
+        .join(crate::tmux::sanitize(project_name))
+        .join(crate::tmux::sanitize(branch))
+        .join("TASK_CONTEXT.md")
 }
 
 impl Config {
@@ -60,6 +72,7 @@ impl Config {
                 name,
                 path,
                 tasks: vec![],
+                copy_patterns: vec![],
             });
         }
     }

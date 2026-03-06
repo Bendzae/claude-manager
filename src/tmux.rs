@@ -105,6 +105,10 @@ pub fn to_branch_name(task_name: &str) -> String {
     result.trim_end_matches('-').to_string()
 }
 
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn build_tmux_name(project: &str, task: &str, session: &str) -> String {
     format!(
         "cm{sep}{}{sep}{}{sep}{}",
@@ -181,6 +185,7 @@ pub fn create_session(
     task_branch: &str,
     session_name: &str,
     use_worktree: bool,
+    copy_patterns: &[String],
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
 
@@ -216,19 +221,32 @@ pub fn create_session(
             bail!("Failed to create worktree: {stderr}");
         }
 
-        // Copy git-ignored files in background to avoid blocking the UI
-        let bg_project = project_path.to_string();
-        let bg_worktree = worktree_path_str.clone();
-        std::thread::spawn(move || {
-            copy_ignored_files(&bg_project, &bg_worktree);
-        });
+        // Always copy .claude/ folder, plus any configured patterns (sync, before hooks setup)
+        let mut all_patterns = vec![".claude/***".to_string()];
+        all_patterns.extend_from_slice(copy_patterns);
+        copy_patterns_to_worktree(project_path, &worktree_path_str, &all_patterns);
 
         work_dir = worktree_path_str.clone();
     } else {
         work_dir = project_path.to_string();
     }
 
-    let claude_cmd = "claude --dangerously-skip-permissions";
+    let context_path = crate::config::task_context_path(project_name, task_branch);
+    let context_path_str = context_path.to_string_lossy().to_string();
+
+    let system_prompt = format!(
+        "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
+         A shared context file exists at {context_path_str} — its contents are injected into every prompt automatically. \
+         You MUST regularly update this file using the Edit tool with anything useful for other agents: \
+         progress, research findings, decisions, learnings, caveats, and relevant discoveries — even if no code was changed. \
+         Use sections: ## Task, ## Progress, ## Learnings, ## Caveats. \
+         Be concise, remove outdated info."
+    );
+
+    let claude_cmd = format!(
+        "claude --dangerously-skip-permissions --append-system-prompt {}",
+        shell_escape(&system_prompt)
+    );
 
     let output = Command::new("tmux")
         .args([
@@ -238,7 +256,7 @@ pub fn create_session(
             &tmux_name,
             "-c",
             &work_dir,
-            claude_cmd,
+            &claude_cmd,
         ])
         .output()?;
 
@@ -279,6 +297,9 @@ pub fn create_session(
             ])
             .output();
     }
+
+    // Set up shared task context with hooks
+    setup_task_context(&work_dir, task_name, task_branch, &context_path);
 
     Ok(tmux_name)
 }
@@ -375,31 +396,9 @@ pub fn kill_session(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copy git-ignored files from the project into a new worktree.
-/// This ensures .env files, build caches, node_modules etc. are available.
-fn copy_ignored_files(project_path: &str, worktree_path: &str) {
-    // Get list of ignored files (newline-separated)
-    let output = match Command::new("git")
-        .args([
-            "-C",
-            project_path,
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-        ])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return,
-    };
-
-    let file_list = String::from_utf8_lossy(&output.stdout);
-    if file_list.trim().is_empty() {
-        return;
-    }
-
-    // Ensure project_path ends with / for rsync
+/// Copy specific file patterns from the project into a new worktree.
+/// Patterns can be files (`.env`) or directories (`build/`).
+fn copy_patterns_to_worktree(project_path: &str, worktree_path: &str, patterns: &[String]) {
     let src = if project_path.ends_with('/') {
         project_path.to_string()
     } else {
@@ -412,24 +411,73 @@ fn copy_ignored_files(project_path: &str, worktree_path: &str) {
         format!("{worktree_path}/")
     };
 
-    // Use rsync with --files-from reading from stdin
-    let mut child = match Command::new("rsync")
-        .args(["-a", "--files-from=-", &src, &dst])
-        .stdin(std::process::Stdio::piped())
+    let mut args = vec!["-a".to_string()];
+    for pattern in patterns {
+        args.push("--include".to_string());
+        args.push(pattern.to_string());
+    }
+    // Exclude everything not matched
+    args.push("--exclude".to_string());
+    args.push("*".to_string());
+    args.push(src);
+    args.push(dst);
+
+    let _ = Command::new("rsync")
+        .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+        .output();
+}
 
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        let _ = stdin.write_all(file_list.as_bytes());
+/// Set up shared task context for a session.
+/// Creates the context file if it doesn't exist and writes hooks into the work directory.
+fn setup_task_context(
+    work_dir: &str,
+    task_name: &str,
+    task_branch: &str,
+    context_path: &Path,
+) {
+    let context_path_str = context_path.to_string_lossy().to_string();
+
+    // Create context file with initial content if it doesn't exist
+    if !context_path.exists() {
+        if let Some(parent) = context_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let initial = format!(
+            "## Task\n{task_name} (branch: {task_branch})\n\n## Progress\n\n## Learnings\n\n## Caveats\n"
+        );
+        let _ = fs::write(&context_path, initial);
     }
 
-    let _ = child.wait();
+    // Write .claude/settings.local.json with hooks
+    let claude_dir = Path::new(work_dir).join(".claude");
+    let _ = fs::create_dir_all(&claude_dir);
+
+    let settings = serde_json::json!({
+        "hooks": {
+            "UserPromptSubmit": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("cat '{}' 2>/dev/null || true", context_path_str)
+                }]
+            }]
+        }
+    });
+
+    let settings_path = claude_dir.join("settings.local.json");
+
+    // Merge with existing settings if present
+    let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if let Some(obj) = existing.as_object_mut() {
+        obj.insert("hooks".to_string(), settings["hooks"].clone());
+    }
+
+    let _ = fs::write(&settings_path, serde_json::to_string_pretty(&existing).unwrap_or_default());
 }
 
 /// Check if a worktree has uncommitted changes.
