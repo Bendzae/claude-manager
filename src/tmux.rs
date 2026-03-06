@@ -239,8 +239,7 @@ pub fn create_session(
 
     let system_prompt = format!(
         "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
-         A shared context file at {context_path_str} is automatically injected into every prompt. \
-         Sections: ## Task, ## Progress, ## Key Files & References, ## Learnings, ## Caveats."
+         A shared context file at {context_path_str} is automatically injected into every prompt."
     );
 
     let claude_cmd = format!(
@@ -447,7 +446,7 @@ fn setup_task_context(
             let _ = fs::create_dir_all(parent);
         }
         let initial = format!(
-            "## Task\n{task_name} (branch: {task_branch})\n\n## Progress\n\n## Key Files & References\n\n## Learnings\n\n## Caveats\n"
+            "# {task_name}\nBranch: {task_branch}\n"
         );
         let _ = fs::write(&context_path, initial);
     }
@@ -481,8 +480,7 @@ $(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
 $MSG
 </message>
 
-Update the file with any new progress, findings, decisions, key files, learnings, or caveats from the message. Remove outdated info. Keep it concise. Output ONLY the raw file content, no wrapping, no fences, no delimiters.
-Sections: ## Task, ## Progress, ## Key Files & References, ## Learnings, ## Caveats.
+Update the file based on the latest agent message. Maintain a clear, evolving summary of what the task is trying to achieve, what has been done, and what is known. Include anything useful for other agents picking up this task. Remove outdated info. Keep it concise. Output ONLY the raw file content, no wrapping, no fences, no delimiters.
 PROMPT_END
 
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
@@ -1211,4 +1209,70 @@ pub fn sessions_for_task(
         })
         .cloned()
         .collect()
+}
+
+/// Name for the tmux session that hosts the vim context editor.
+pub fn context_session_name(project_name: &str, task_branch: &str) -> String {
+    format!(
+        "cm-ctx__{}_{}",
+        sanitize(project_name),
+        sanitize(task_branch)
+    )
+}
+
+/// Ensure a tmux session running vim on the context file exists.
+/// Returns the session name. Creates it if it doesn't already exist.
+pub fn ensure_context_session(project_name: &str, task_branch: &str) -> String {
+    let name = context_session_name(project_name, task_branch);
+    let context_path = crate::config::task_context_path(project_name, task_branch);
+    let context_str = context_path.to_string_lossy().to_string();
+
+    // Check if session already exists
+    let exists = Command::new("tmux")
+        .args(["has-session", "-t", &name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !exists {
+        // Ensure context file exists
+        if !context_path.exists() {
+            if let Some(parent) = context_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&context_path, format!("# {task_branch}\n"));
+        }
+
+        let _ = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &name,
+                "-x",
+                "200",
+                "-y",
+                "50",
+                "nvim",
+                &context_str,
+            ])
+            .output();
+    }
+
+    name
+}
+
+/// Send keys to a tmux session.
+pub fn send_keys(session_name: &str, keys: &str) {
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", session_name, keys])
+        .output();
+}
+
+/// Kill the context vim session for a task.
+pub fn kill_context_session(project_name: &str, task_branch: &str) {
+    let name = context_session_name(project_name, task_branch);
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &name])
+        .output();
 }

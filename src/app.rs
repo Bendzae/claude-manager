@@ -60,6 +60,7 @@ pub struct App {
     pub preview_content: Option<String>,
     pub preview_mode: PreviewMode,
     pub task_diff: Option<DiffStats>,
+    pub task_context_content: Option<String>,
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
@@ -112,6 +113,7 @@ impl App {
             preview_content: None,
             preview_mode: PreviewMode::Output,
             task_diff: None,
+            task_context_content: None,
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
@@ -154,6 +156,7 @@ impl App {
             if update.task_diff.is_some() {
                 self.task_diff = update.task_diff;
             }
+            self.task_context_content = update.task_context_content;
             if !update.task_diff_stats.is_empty() {
                 self.task_diff_stats = update.task_diff_stats;
             }
@@ -217,10 +220,12 @@ impl App {
                 preview_mode: self.preview_mode,
             },
             Some(ListItem::Task {
+                project_name,
                 project_path,
                 task,
                 ..
             }) => Selection::Task {
+                project_name: project_name.clone(),
                 project_path: project_path.clone(),
                 branch: task.branch.clone(),
             },
@@ -340,6 +345,12 @@ impl App {
         self.preview_content = None;
         self.task_diff = None;
         self.preview_scroll = 0;
+        // Default to Context for tasks, Output for sessions
+        if matches!(self.selected_item(), Some(ListItem::Task { .. })) {
+            self.preview_mode = PreviewMode::Context;
+        } else if matches!(self.selected_item(), Some(ListItem::Session { .. })) {
+            self.preview_mode = PreviewMode::Output;
+        }
         self.sync_worker_hints();
     }
 
@@ -368,6 +379,19 @@ impl App {
     }
 
     pub fn enter_selected(&mut self) {
+        if let Some(ListItem::Task {
+            project_name,
+            task,
+            ..
+        }) = self.selected_item()
+        {
+            if self.preview_mode == PreviewMode::Context {
+                let ctx_session =
+                    crate::tmux::context_session_name(&project_name, &task.branch);
+                self.should_attach = Some(ctx_session);
+                return;
+            }
+        }
         if let Some(ListItem::Session { session, .. }) = self.selected_item() {
             if let PreviewMode::Terminal(idx) = self.preview_mode {
                 // Attach to specific terminal window
@@ -661,6 +685,8 @@ impl App {
                 task,
                 ..
             }) => {
+                // Kill context vim session if running
+                crate::tmux::kill_context_session(&project_name, &task.branch);
                 // Delete task context files
                 let context_path = crate::config::task_context_path(&project_name, &task.branch);
                 if let Some(parent) = context_path.parent() {
@@ -1119,24 +1145,33 @@ impl App {
     }
 
     pub fn toggle_preview_mode(&mut self) {
-        let term_count = self.selected_terminal_count();
-        self.preview_mode = match self.preview_mode {
-            PreviewMode::Output => PreviewMode::Diff,
-            PreviewMode::Diff => {
-                if term_count > 0 {
-                    PreviewMode::Terminal(0)
-                } else {
-                    PreviewMode::Output
+        let is_task = matches!(self.selected_item(), Some(ListItem::Task { .. }));
+        if is_task {
+            self.preview_mode = match self.preview_mode {
+                PreviewMode::Context => PreviewMode::Diff,
+                _ => PreviewMode::Context,
+            };
+        } else {
+            let term_count = self.selected_terminal_count();
+            self.preview_mode = match self.preview_mode {
+                PreviewMode::Output => PreviewMode::Diff,
+                PreviewMode::Diff => {
+                    if term_count > 0 {
+                        PreviewMode::Terminal(0)
+                    } else {
+                        PreviewMode::Output
+                    }
                 }
-            }
-            PreviewMode::Terminal(idx) => {
-                if idx + 1 < term_count {
-                    PreviewMode::Terminal(idx + 1)
-                } else {
-                    PreviewMode::Output
+                PreviewMode::Context => PreviewMode::Output,
+                PreviewMode::Terminal(idx) => {
+                    if idx + 1 < term_count {
+                        PreviewMode::Terminal(idx + 1)
+                    } else {
+                        PreviewMode::Output
+                    }
                 }
-            }
-        };
+            };
+        }
         self.preview_content = None;
         self.preview_scroll = 0;
         self.sync_worker_hints();
@@ -1207,10 +1242,33 @@ impl App {
     }
 
     pub fn scroll_preview_down(&mut self) {
-        self.preview_scroll = self.preview_scroll.saturating_add(3);
+        if self.is_task_context_selected() {
+            if let Some(ListItem::Task { project_name, task, .. }) = self.selected_item() {
+                let session = crate::tmux::context_session_name(&project_name, &task.branch);
+                crate::tmux::send_keys(&session, "C-e");
+                crate::tmux::send_keys(&session, "C-e");
+                crate::tmux::send_keys(&session, "C-e");
+            }
+        } else {
+            self.preview_scroll = self.preview_scroll.saturating_add(3);
+        }
     }
 
     pub fn scroll_preview_up(&mut self) {
-        self.preview_scroll = self.preview_scroll.saturating_sub(3);
+        if self.is_task_context_selected() {
+            if let Some(ListItem::Task { project_name, task, .. }) = self.selected_item() {
+                let session = crate::tmux::context_session_name(&project_name, &task.branch);
+                crate::tmux::send_keys(&session, "C-y");
+                crate::tmux::send_keys(&session, "C-y");
+                crate::tmux::send_keys(&session, "C-y");
+            }
+        } else {
+            self.preview_scroll = self.preview_scroll.saturating_sub(3);
+        }
+    }
+
+    fn is_task_context_selected(&self) -> bool {
+        self.preview_mode == PreviewMode::Context
+            && matches!(self.selected_item(), Some(ListItem::Task { .. }))
     }
 }

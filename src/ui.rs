@@ -365,6 +365,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
                 render_diff_content(f, content, content_area, visible_height, app.preview_scroll);
             }
         }
+        PreviewMode::Context => {}
     }
 }
 
@@ -388,12 +389,16 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    // Tab header (diff only, no switching)
+    let active_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(MUTED);
+    let tab_style = |active: bool| if active { active_style } else { inactive_style };
+    let sep_span = Span::styled(" │ ", Style::default().fg(TREE));
+    let is_context = app.preview_mode == PreviewMode::Context;
+
     let tab = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " diff",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(" context", tab_style(is_context)),
+        sep_span,
+        Span::styled("diff", tab_style(!is_context)),
     ]));
     f.render_widget(tab, rows[0]);
 
@@ -407,15 +412,36 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let stats = match &app.task_diff {
-        Some(stats) => stats,
-        None => {
-            render_loading(f, app, content_area);
-            return;
+    if is_context {
+        match &app.task_context_content {
+            Some(content) => {
+                let text = match content.as_bytes().into_text() {
+                    Ok(text) => text,
+                    Err(_) => return,
+                };
+                let visible_lines: Vec<Line> = text
+                    .lines
+                    .into_iter()
+                    .take(visible_height)
+                    .collect();
+                let paragraph = Paragraph::new(visible_lines);
+                f.render_widget(paragraph, content_area);
+            }
+            None => {
+                let msg = Paragraph::new(Span::styled("No task context", Style::default().fg(MUTED)));
+                f.render_widget(msg, content_area);
+            }
         }
-    };
-
-    render_diff_with_stats(f, &stats.diff_output, stats.added, stats.removed, content_area, visible_height, app.preview_scroll);
+    } else {
+        let stats = match &app.task_diff {
+            Some(stats) => stats,
+            None => {
+                render_loading(f, app, content_area);
+                return;
+            }
+        };
+        render_diff_with_stats(f, &stats.diff_output, stats.added, stats.removed, content_area, visible_height, app.preview_scroll);
+    }
 }
 
 const LOADING_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

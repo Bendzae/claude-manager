@@ -11,6 +11,7 @@ use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
 pub enum Selection {
     None,
     Task {
+        project_name: String,
         project_path: String,
         branch: String,
     },
@@ -24,6 +25,7 @@ pub enum Selection {
 pub enum PreviewMode {
     Output,
     Diff,
+    Context,
     Terminal(usize), // 0-indexed terminal number
 }
 
@@ -47,6 +49,7 @@ pub struct WorkerUpdate {
     pub diff_stats: HashMap<String, DiffStats>,
     pub preview_content: Option<String>,
     pub task_diff: Option<DiffStats>,
+    pub task_context_content: Option<String>,
     /// Keyed by branch name.
     pub task_diff_stats: HashMap<String, DiffStats>,
     /// Keyed by session tmux name.
@@ -177,9 +180,10 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             }
         }
 
-        let (preview_content, task_diff) = match &selection {
-            Selection::None => (None, None),
+        let (preview_content, task_diff, task_context_content) = match &selection {
+            Selection::None => (None, None, None),
             Selection::Task {
+                project_name,
                 project_path,
                 branch,
             } => {
@@ -188,19 +192,24 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
                 } else {
                     None
                 };
-                (None, diff)
+                let context = {
+                    let ctx_session = tmux::ensure_context_session(project_name, branch);
+                    tmux::capture_pane(&ctx_session)
+                };
+                (None, diff, context)
             }
             Selection::Session { name, preview_mode } => {
                 let content = match preview_mode {
                     PreviewMode::Output => tmux::capture_pane(&format!("{name}:0")),
                     PreviewMode::Diff => diff_stats.get(name).map(|s| s.diff_output.clone()),
+                    PreviewMode::Context => None,
                     PreviewMode::Terminal(idx) => {
                         // Terminal windows are 1-indexed (window 0 is claude)
                         let target = format!("{name}:{}", idx + 1);
                         tmux::capture_pane(&target)
                     }
                 };
-                (content, None)
+                (content, None, None)
             }
         };
 
@@ -210,6 +219,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             diff_stats: diff_stats.clone(),
             preview_content,
             task_diff,
+            task_context_content,
             task_diff_stats,
             terminal_counts: terminal_counts.clone(),
             pr_urls: pr_urls.clone(),
