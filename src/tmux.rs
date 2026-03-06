@@ -466,21 +466,26 @@ fn setup_task_context(
 CONTEXT_FILE='{context}'
 INPUT=$(cat)
 MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
+SUMMARY=$(echo "$INPUT" | jq -r '.transcript_summary // empty')
 [ -z "$MSG" ] && exit 0
 
 TMPFILE=$(mktemp)
 cat > "$TMPFILE" <<PROMPT_END
-You maintain a shared task context file. Below is the current file content between <current> tags and the latest agent message between <message> tags.
+You maintain a shared task context file. Below is the current file content between <current> tags, a summary of the full conversation between <summary> tags, and the latest agent message between <message> tags.
 
 <current>
 $(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
 </current>
 
+<summary>
+$SUMMARY
+</summary>
+
 <message>
 $MSG
 </message>
 
-Update the file based on the latest agent message. Maintain a clear, evolving summary of what the task is trying to achieve, what has been done, and what is known. Include anything useful for other agents picking up this task. Remove outdated info. Keep it concise. Output ONLY the raw file content, no wrapping, no fences, no delimiters.
+Update the file based on the conversation summary and latest message. Maintain a clear, evolving summary of what the task is trying to achieve, what has been done, and what is known. Include anything useful for other agents picking up this task. Remove outdated info. Keep it concise. Output ONLY the raw file content, no wrapping, no fences, no delimiters.
 PROMPT_END
 
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
