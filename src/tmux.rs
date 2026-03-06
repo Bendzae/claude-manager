@@ -462,22 +462,13 @@ fn setup_task_context(
     // Write stop hook as a script that runs claude -p in the background to update context.
     let hook_dir = context_path.parent().unwrap_or(context_path);
     let hook_script_path = hook_dir.join("stop-hook.sh");
-    let log_path = hook_dir.join("stop-hook.log");
-    let log_str = log_path.to_string_lossy().to_string();
     let stop_script = format!(
         r#"#!/bin/bash
-LOG='{log}'
 CONTEXT_FILE='{context}'
-log() {{ echo "$(date '+%H:%M:%S') $1" >> "$LOG"; }}
-
-# Read stdin
 INPUT=$(cat)
 MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
-log "start pid=$$ msg_len=${{#MSG}}"
+[ -z "$MSG" ] && exit 0
 
-[ -z "$MSG" ] && {{ log "no msg, exit"; exit 0; }}
-
-# Build prompt in a temp file
 TMPFILE=$(mktemp)
 cat > "$TMPFILE" <<PROMPT_END
 You maintain a shared task context file. Below is the current file content between <current> tags and the latest agent message between <message> tags.
@@ -494,26 +485,12 @@ Update the file with any new progress, findings, decisions, key files, learnings
 Sections: ## Task, ## Progress, ## Key Files & References, ## Learnings, ## Caveats.
 PROMPT_END
 
-log "tmpfile ready, calling claude -p"
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
 cd /tmp
-claude -p < "$TMPFILE" > "$CONTEXT_FILE.tmp" 2>> "$LOG"
-RC=$?
-log "claude -p exited rc=$RC output=$(wc -c < "$CONTEXT_FILE.tmp" 2>/dev/null || echo 0) bytes"
-
-if [ $RC -eq 0 ]; then
-  mv "$CONTEXT_FILE.tmp" "$CONTEXT_FILE"
-  log "context updated"
-else
-  rm -f "$CONTEXT_FILE.tmp"
-  log "claude -p failed"
-fi
-
-rm -f "$TMPFILE"
-log "done"
+claude -p < "$TMPFILE" > "$CONTEXT_FILE.tmp" 2>/dev/null && mv "$CONTEXT_FILE.tmp" "$CONTEXT_FILE"
+rm -f "$TMPFILE" "$CONTEXT_FILE.tmp"
 exit 0"#,
-        context = context_path_str,
-        log = log_str
+        context = context_path_str
     );
     let _ = fs::write(&hook_script_path, &stop_script);
     #[cfg(unix)]
