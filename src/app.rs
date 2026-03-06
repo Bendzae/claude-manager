@@ -246,6 +246,7 @@ impl App {
             .iter()
             .flat_map(|p| {
                 p.tasks.iter().map(|t| TaskInfo {
+                    project_name: p.name.clone(),
                     project_path: p.path.clone(),
                     branch: t.branch.clone(),
                 })

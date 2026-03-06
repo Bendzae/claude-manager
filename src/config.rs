@@ -43,6 +43,15 @@ pub fn task_context_path(project_name: &str, branch: &str) -> PathBuf {
         .join("TASK_CONTEXT.md")
 }
 
+/// Path to the cached PR URL file for a given project/branch.
+pub fn pr_url_path(project_name: &str, branch: &str) -> PathBuf {
+    base_dir()
+        .join("tasks")
+        .join(crate::tmux::sanitize(project_name))
+        .join(crate::tmux::sanitize(branch))
+        .join("pr_url.txt")
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
         base_dir().join("config.toml")

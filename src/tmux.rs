@@ -508,12 +508,23 @@ exit 0"#,
     }
     let hook_script_str = hook_script_path.to_string_lossy().to_string();
 
+    let pr_url_path = context_path
+        .parent()
+        .unwrap_or(context_path)
+        .join("pr_url.txt");
+    let pr_url_path_str = pr_url_path.to_string_lossy().to_string();
+
     let settings = serde_json::json!({
         "hooks": {
             "UserPromptSubmit": [{
                 "hooks": [{
                     "type": "command",
-                    "command": format!("echo '--- SHARED TASK CONTEXT (other agents working on this task update this file) ---' && cat '{}' 2>/dev/null || true", context_path_str)
+                    "command": format!(
+                        "echo '--- SHARED TASK CONTEXT (other agents working on this task update this file) ---' && \
+                         (PR_URL=$(cat '{}' 2>/dev/null) && [ -n \"$PR_URL\" ] && echo \"PR: $PR_URL\"; true) && \
+                         cat '{}' 2>/dev/null || true",
+                        pr_url_path_str, context_path_str
+                    )
                 }]
             }],
             "Stop": [{

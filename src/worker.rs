@@ -32,6 +32,7 @@ pub enum PreviewMode {
 /// Task info for computing branch diffs.
 #[derive(Clone)]
 pub struct TaskInfo {
+    pub project_name: String,
     pub project_path: String,
     pub branch: String,
 }
@@ -174,6 +175,12 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             for task in &tasks {
                 if !pr_urls.contains_key(&task.branch) {
                     if let Some(url) = tmux::get_pr_url(&task.project_path, &task.branch) {
+                        // Write PR URL to file so hooks can read it without network calls
+                        let pr_path = crate::config::pr_url_path(&task.project_name, &task.branch);
+                        if let Some(parent) = pr_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&pr_path, &url);
                         pr_urls.insert(task.branch.clone(), url);
                     }
                 }
