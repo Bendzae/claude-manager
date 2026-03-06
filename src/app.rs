@@ -130,6 +130,12 @@ impl App {
             tick: 0,
             worker: Worker::spawn(),
         };
+        // Start with all tasks collapsed
+        for project in &app.config.projects {
+            for task in &project.tasks {
+                app.collapsed.insert(task_key(&project.name, &task.name));
+            }
+        }
         app.rebuild_items();
         app.check_cwd();
         Ok(app)
