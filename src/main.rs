@@ -132,9 +132,17 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     InputMode::AddSessionName => match key.code {
                         KeyCode::Enter => {
                             app.confirm_new_session();
-                            if app.should_attach.is_some() {
-                                return Ok(());
-                            }
+                        }
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
+                    InputMode::AddSessionPrompt => match key.code {
+                        KeyCode::Enter => {
+                            app.confirm_new_session_with_prompt();
                         }
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {

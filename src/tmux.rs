@@ -186,6 +186,7 @@ pub fn create_session(
     session_name: &str,
     use_worktree: bool,
     copy_patterns: &[String],
+    initial_prompt: Option<&str>,
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
 
@@ -242,10 +243,14 @@ pub fn create_session(
          A shared context file at {context_path_str} is automatically injected into every prompt."
     );
 
-    let claude_cmd = format!(
+    let mut claude_cmd = format!(
         "claude --dangerously-skip-permissions --append-system-prompt {}",
         shell_escape(&system_prompt)
     );
+    if let Some(prompt) = initial_prompt {
+        claude_cmd.push(' ');
+        claude_cmd.push_str(&shell_escape(prompt));
+    }
 
     let output = Command::new("tmux")
         .args([

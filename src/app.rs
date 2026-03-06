@@ -35,6 +35,7 @@ pub enum InputMode {
     AddTaskName,
     AddTaskBranch,
     AddSessionName,
+    AddSessionPrompt,
     ConfirmDelete,
     RenameProject,
     RenameTask,
@@ -57,6 +58,7 @@ pub struct App {
     pub should_attach_window: Option<(String, usize)>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
+    pub pending_session_name: Option<String>,
     pub preview_content: Option<String>,
     pub preview_mode: PreviewMode,
     pub task_diff: Option<DiffStats>,
@@ -110,6 +112,7 @@ impl App {
             should_attach_window: None,
             pending_project_path: None,
             pending_task_name: None,
+            pending_session_name: None,
             preview_content: None,
             preview_mode: PreviewMode::Output,
             task_diff: None,
@@ -567,7 +570,7 @@ impl App {
     }
 
     pub fn confirm_new_session(&mut self) {
-        let (project_name, project_path, task) = match self.selected_task_info() {
+        let (project_name, _, task) = match self.selected_task_info() {
             Some((pn, pp, t)) => (pn.to_string(), pp.to_string(), t.clone()),
             None => {
                 self.cancel_input();
@@ -579,6 +582,35 @@ impl App {
             tmux::next_session_number(&project_name, &task.name, &self.sessions).to_string()
         } else {
             self.input_buffer.trim().to_string()
+        };
+
+        self.pending_session_name = Some(session_name);
+        self.input_buffer.clear();
+        self.input_mode = InputMode::AddSessionPrompt;
+        self.status_message = Some("Initial prompt (empty to skip): ".into());
+    }
+
+    pub fn confirm_new_session_with_prompt(&mut self) {
+        let (project_name, project_path, task) = match self.selected_task_info() {
+            Some((pn, pp, t)) => (pn.to_string(), pp.to_string(), t.clone()),
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let session_name = match self.pending_session_name.take() {
+            Some(name) => name,
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let prompt = if self.input_buffer.trim().is_empty() {
+            None
+        } else {
+            Some(self.input_buffer.trim().to_string())
         };
 
         let use_worktree = self.use_worktree;
@@ -603,6 +635,7 @@ impl App {
                 &session_name,
                 use_worktree,
                 &copy_patterns,
+                prompt.as_deref(),
             ) {
                 Ok(tmux_name) => OpResult {
                     message: format!("Created session {tmux_name}"),
@@ -1148,6 +1181,7 @@ impl App {
         self.input_buffer.clear();
         self.status_message = None;
         self.pending_task_name = None;
+        self.pending_session_name = None;
     }
 
     pub fn toggle_preview_mode(&mut self) {
