@@ -1,6 +1,6 @@
 # Claude Manager
 
-A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across projects.
+A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across projects via tmux.
 
 ## Concepts
 
@@ -8,66 +8,127 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - A git repository registered in the central config file
 - Must contain a `.git` folder (required for worktree support)
 - Projects are globally visible regardless of where the TUI is launched
-- When opening the TUI in an unregistered project directory, prompt the user to add it
 - Collapsible in the UI
 
 ### Task
 - A unit of work within a project, backed by a git branch
-- Branch is auto-generated from the task name (e.g. "Fix Login Bug" -> `fix-login-bug`)
-- Branch is created from `main` after pulling latest
+- Branch can be auto-generated from the task name (e.g. "Fix Login Bug" -> `fix-login-bug`) or use an existing branch
+- New branches are created from `origin/main` (falls back to local `main`)
 - Every session must belong to a task
 - Stored in the config file under its parent project
 - Collapsible in the UI
+- Shows aggregated diff stats (+/-) against main
 
 ### Session
-- A tmux session containing a Claude Code instance
+- A tmux session containing a Claude Code instance (window 0)
 - Only sessions created by this tool are visible/managed
 - Tmux naming convention: `cm__<project>__<task>__<session>` (double underscore separator)
-- User is prompted for a session name; if left empty, auto-generate one (e.g. incrementing number)
+- User is prompted for a session name; if left empty, auto-increments
 - By default, a git worktree is created from the task branch for each session
   - Worktree branch: `<task-branch>-<session-name>`
-  - Worktree location: `~/.local/share/claude-manager/worktrees/<project>/<task>-<session>`
+  - Worktree location: `~/.claude-manager/worktrees/<project>/<task>-<session>`
+  - Git-ignored files (`.env`, build caches, etc.) are copied from the original project via `rsync` in a background thread
 - Claude Code is launched with `--dangerously-skip-permissions` in the worktree directory
-- Worktree cleanup is handled by the manager on session deletion
-- Hotkey variant: without worktree (runs in project directory)
+- Worktree and session branch cleanup is handled on session deletion
+- Hotkey variant (`N`): without worktree (runs in project directory)
+- Shows diff stats (+/-) for the session's changes against the task branch
 
 ### Config
-- Central config file (`~/.config/claude-manager/config.toml`)
+- Central config file: `~/.claude-manager/config.toml`
+- Worktrees stored under: `~/.claude-manager/worktrees/`
 - Stores the list of registered projects with their tasks
 - Project display name is prompted when adding; defaults to directory name if left empty
-- Directory path is shown in a muted font alongside the display name in the UI
 
-## Features (MVP)
+## Features
 
-- Three-level hierarchy: Project > Task > Session (all collapsible)
-- Create a new task for a project (creates a git branch from latest main)
-- Create a new session for a task (opens a tmux session with Claude Code)
-  - Default: with git worktree based on task branch
-  - Hotkey variant: without worktree
-- Attach to an existing session (press Enter) to interact with it
-- Detach from a session using standard tmux keybind (`Ctrl-b d`) to return to the TUI
-- Delete a session (kills the tmux session, cleans up worktree)
-- Delete a task (only if no active sessions)
-- Rename projects, tasks, and sessions
-- Prompt to add current directory as a project if not yet registered
-- Preview of the hovered session to the right (via `tmux capture-pane`)
-- Session status detection with colored indicators:
-  - Running/thinking: yellow indicator — Claude process alive, no input prompt visible
-  - Waiting for input: blue indicator — Claude process alive, `⏵⏵` prompt detected in pane
-  - Finished/exited: red indicator — no Claude child process or pane is dead
-  - Detection via: tmux `#{pane_pid}` + child process check + `capture-pane` content analysis
+### Session Management
+- Three-level hierarchy: Project > Task > Session (all collapsible with `Space`)
+- Create a new task (`t`) — prompts for name then branch (existing or new)
+- Create a new session (`n` with worktree, `N` without)
+- Attach to a session (`Enter`) to interact with Claude Code
+- Detach via standard tmux keybind (`Ctrl-b d`) to return to the TUI
+- Delete sessions, tasks, and projects (`d`) with confirmation
+- Rename projects, tasks, and sessions (`R`)
 
-## Features (Later)
+### Preview Panel
+- Tabbed preview panel to the right of the list with tabs:
+  - **agent** — live Claude Code output (ANSI-rendered via `tmux capture-pane`)
+  - **diff** — session's changes with styled diff, file separator headers, and sticky stats header
+  - **term1, term2, ...** — terminal window previews
+- Scrollable with `J`/`K` (3-line increments)
+- Tab switching with `Tab`
 
-- Hotkey to open a plain terminal in the worktree folder (persistent, for long-running commands)
+### Terminal Windows
+- Create up to 4 persistent terminal windows per session (`c`)
+- Terminals open in the session's working directory as additional tmux windows
+- Kill the currently viewed terminal (`x`)
+- Attach to a terminal by pressing `Enter` while on its tab
+- Terminal count shown as tabs in the preview panel
+
+### Git Operations
+- **Merge** (`m`) — merge a session's worktree branch into the task branch (ff-only, falls back to merge commit). Prompts for commit message if worktree has uncommitted changes.
+- **Update** (`u`) — on a task: fetch and rebase onto `origin/main`. On a session: rebase onto task branch.
+- **Push** (`P`) — push task branch to origin with `--force-with-lease`
+- **Checkout** (`b`) — checkout the task branch in the main worktree
+
+### GitHub Integration
+- PR detection via `gh pr view` (checked every ~10 seconds in background)
+- PR icon (Nerd Font) shown on task lines that have an open PR
+- PR URL shown in status bar when a task with a PR is selected
+- Open PR in browser (`o`), or create a new PR if none exists (with confirmation)
+
+### Session Status Detection
+- Background worker polls every 500ms with colored indicators:
+  - **Spinning** (yellow) — Claude process alive, content actively changing
+  - **● green** — Claude process alive, content stable, waiting for input
+  - **! magenta** — permission prompt detected
+  - **● red** — Claude process exited / session finished
+- Detection via tmux `pane_pid` + child process check + content hash diffing + `capture-pane` analysis
+
+### Background Operations
+- Long-running operations (create session, delete, merge, update, push, create PR) run in background threads
+- Loading spinner shown in status bar during operations
+- UI remains responsive; only `q` (quit) is accepted during loading
+
+## Visual Design
+- Tree-drawing characters (`├─`, `└─`, `│`) for hierarchy
+- Selection indicator (`▸`) and collapse chevrons (`▶`/`▼`)
+- Rounded borders on preview panel
+- Subtle color palette: cyan accent, muted grays for secondary info, distinct colors for tasks (yellow), sessions (green), status indicators
+- Compact help bar with highlighted keys
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `t` | Create task |
+| `n` / `N` | Create session (with / without worktree) |
+| `Enter` | Attach to session or terminal |
+| `Space` | Collapse/expand |
+| `d` | Delete |
+| `R` | Rename |
+| `m` | Merge session into task branch |
+| `u` | Update (rebase task on main / session on task) |
+| `P` | Push task branch |
+| `o` | Open/create PR |
+| `b` | Checkout task branch |
+| `c` | Create terminal |
+| `x` | Kill terminal |
+| `Tab` | Switch preview tab |
+| `J` / `K` | Scroll preview |
+| `a` | Add project |
+| `q` | Quit |
 
 ## Tech Stack
 
 - Rust with ratatui for the TUI
 - tmux for session management
+- `ansi-to-tui` for rendering terminal output with ANSI colors
+- `gh` CLI for GitHub PR integration
 
 ## Non-Functional Requirements
 
-- Non-blocking UI: never block on tmux operations
+- Non-blocking UI: long operations run in background threads
+- Background worker for status polling, diff computation, terminal counts, and PR detection
 - Fast and snappy
 - Clean dark aesthetic with color accents
