@@ -478,6 +478,10 @@ fn render_loading(f: &mut Frame, app: &App, area: Rect) {
 fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
     let mut first_file = true;
+    let mut old_line: usize = 0;
+    let mut new_line: usize = 0;
+    // Width of line number gutter: "old | new │ "
+    let gutter_width = 13;
 
     for line in content.lines() {
         if line.starts_with("diff ") {
@@ -506,13 +510,52 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
             // Skip verbose git diff metadata
             continue;
         } else if line.starts_with("@@") {
-            lines.push(Line::styled(line, Style::default().fg(Color::Cyan)));
+            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            if let Some(header) = line.strip_prefix("@@ ") {
+                let parts: Vec<&str> = header.splitn(3, ' ').collect();
+                if parts.len() >= 2 {
+                    if let Some(old_start) = parts[0].strip_prefix('-') {
+                        old_line = old_start.split(',').next()
+                            .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    }
+                    if let Some(new_start) = parts[1].strip_prefix('+') {
+                        new_line = new_start.split(',').next()
+                            .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    }
+                }
+            }
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:>gutter_width$}", ""), Style::default().fg(MUTED)),
+                Span::styled(line, Style::default().fg(Color::Cyan)),
+            ]));
         } else if line.starts_with('+') {
-            lines.push(Line::styled(line, Style::default().fg(Color::Green)));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("     │{:>5} │ ", new_line),
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled(line, Style::default().fg(Color::Green)),
+            ]));
+            new_line += 1;
         } else if line.starts_with('-') {
-            lines.push(Line::styled(line, Style::default().fg(Color::Red)));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:>5}│      │ ", old_line),
+                    Style::default().fg(MUTED),
+                ),
+                Span::styled(line, Style::default().fg(Color::Red)),
+            ]));
+            old_line += 1;
         } else {
-            lines.push(Line::raw(line));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:>5}│{:>5} │ ", old_line, new_line),
+                    Style::default().fg(MUTED),
+                ),
+                Span::raw(line),
+            ]));
+            old_line += 1;
+            new_line += 1;
         }
     }
     lines
