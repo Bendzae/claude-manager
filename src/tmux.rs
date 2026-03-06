@@ -1286,3 +1286,153 @@ pub fn kill_context_session(project_name: &str, task_branch: &str) {
         .args(["kill-session", "-t", &name])
         .output();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- sanitize ---
+
+    #[test]
+    fn sanitize_alphanumeric_unchanged() {
+        assert_eq!(sanitize("hello123"), "hello123");
+    }
+
+    #[test]
+    fn sanitize_replaces_special_chars() {
+        assert_eq!(sanitize("hello world!"), "hello-world");
+    }
+
+    #[test]
+    fn sanitize_collapses_hyphens() {
+        assert_eq!(sanitize("a--b---c"), "a-b-c");
+    }
+
+    #[test]
+    fn sanitize_trims_leading_trailing_hyphens() {
+        assert_eq!(sanitize("-hello-"), "hello");
+    }
+
+    #[test]
+    fn sanitize_replaces_dots_and_slashes() {
+        assert_eq!(sanitize("my.project/path"), "my-project-path");
+    }
+
+    #[test]
+    fn sanitize_replaces_underscores_with_hyphens() {
+        // Underscores are not alphanumeric or '-', so they become hyphens
+        assert_eq!(sanitize("a__b"), "a-b");
+    }
+
+    // --- to_branch_name ---
+
+    #[test]
+    fn branch_name_lowercases() {
+        assert_eq!(to_branch_name("Fix Bug"), "fix-bug");
+    }
+
+    #[test]
+    fn branch_name_strips_special_chars() {
+        assert_eq!(to_branch_name("Add feature #123!"), "add-feature-123");
+    }
+
+    #[test]
+    fn branch_name_collapses_hyphens() {
+        assert_eq!(to_branch_name("a   b"), "a-b");
+    }
+
+    #[test]
+    fn branch_name_trims_edges() {
+        assert_eq!(to_branch_name(" hello "), "hello");
+    }
+
+    // --- TmuxSession::from_tmux_name ---
+
+    #[test]
+    fn parse_valid_session_name() {
+        let session = TmuxSession::from_tmux_name("cm__myproject__mytask__mysession").unwrap();
+        assert_eq!(session.project_name, "myproject");
+        assert_eq!(session.task_name, "mytask");
+        assert_eq!(session.session_name, "mysession");
+        assert_eq!(session.name, "cm__myproject__mytask__mysession");
+    }
+
+    #[test]
+    fn parse_session_with_hyphens() {
+        let session = TmuxSession::from_tmux_name("cm__my-project__my-task__my-session").unwrap();
+        assert_eq!(session.project_name, "my-project");
+        assert_eq!(session.task_name, "my-task");
+        assert_eq!(session.session_name, "my-session");
+    }
+
+    #[test]
+    fn parse_rejects_no_prefix() {
+        assert!(TmuxSession::from_tmux_name("myproject__task__session").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_too_few_parts() {
+        assert!(TmuxSession::from_tmux_name("cm__project__task").is_none());
+    }
+
+    #[test]
+    fn parse_rejects_unrelated_session() {
+        assert!(TmuxSession::from_tmux_name("random-session").is_none());
+    }
+
+    // --- build_tmux_name ---
+
+    #[test]
+    fn build_tmux_name_basic() {
+        assert_eq!(
+            build_tmux_name("proj", "task", "sess"),
+            "cm__proj__task__sess"
+        );
+    }
+
+    #[test]
+    fn build_tmux_name_sanitizes_parts() {
+        let name = build_tmux_name("my project", "my task", "my session");
+        assert_eq!(name, "cm__my-project__my-task__my-session");
+    }
+
+    #[test]
+    fn build_tmux_name_roundtrips() {
+        let name = build_tmux_name("proj", "task", "sess");
+        let parsed = TmuxSession::from_tmux_name(&name).unwrap();
+        assert_eq!(parsed.project_name, "proj");
+        assert_eq!(parsed.task_name, "task");
+        assert_eq!(parsed.session_name, "sess");
+    }
+
+    // --- shell_escape ---
+
+    #[test]
+    fn shell_escape_simple() {
+        assert_eq!(shell_escape("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_escape_with_single_quotes() {
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_escape_with_spaces() {
+        assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    // --- DiffStats ---
+
+    #[test]
+    fn diff_stats_empty() {
+        let stats = DiffStats { added: 0, removed: 0, diff_output: String::new() };
+        assert!(stats.is_empty());
+    }
+
+    #[test]
+    fn diff_stats_not_empty() {
+        let stats = DiffStats { added: 5, removed: 3, diff_output: "some diff".into() };
+        assert!(!stats.is_empty());
+    }
+}

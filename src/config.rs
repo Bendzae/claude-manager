@@ -142,3 +142,136 @@ impl Config {
         self.projects.retain(|p| p.path != path);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_config() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn add_project_stores_it() {
+        let mut cfg = empty_config();
+        cfg.add_project("My App".into(), "/tmp/my-app".into());
+        assert_eq!(cfg.projects.len(), 1);
+        assert_eq!(cfg.projects[0].name, "My App");
+        assert_eq!(cfg.projects[0].path, "/tmp/my-app");
+    }
+
+    #[test]
+    fn add_project_deduplicates_by_path() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_project("App2".into(), "/tmp/app".into());
+        assert_eq!(cfg.projects.len(), 1);
+    }
+
+    #[test]
+    fn has_project_at() {
+        let mut cfg = empty_config();
+        assert!(!cfg.has_project_at("/tmp/app"));
+        cfg.add_project("App".into(), "/tmp/app".into());
+        assert!(cfg.has_project_at("/tmp/app"));
+    }
+
+    #[test]
+    fn rename_project_success() {
+        let mut cfg = empty_config();
+        cfg.add_project("Old".into(), "/tmp/app".into());
+        assert!(cfg.rename_project("Old", "New".into()));
+        assert_eq!(cfg.projects[0].name, "New");
+    }
+
+    #[test]
+    fn rename_project_not_found() {
+        let mut cfg = empty_config();
+        assert!(!cfg.rename_project("Missing", "New".into()));
+    }
+
+    #[test]
+    fn add_task_to_project() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        assert!(cfg.add_task("App", "fix-bug".into(), "fix-bug-branch".into()));
+        assert_eq!(cfg.projects[0].tasks.len(), 1);
+        assert_eq!(cfg.projects[0].tasks[0].name, "fix-bug");
+        assert_eq!(cfg.projects[0].tasks[0].branch, "fix-bug-branch");
+    }
+
+    #[test]
+    fn add_task_deduplicates_by_name() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "fix-bug".into(), "branch-1".into());
+        assert!(!cfg.add_task("App", "fix-bug".into(), "branch-2".into()));
+        assert_eq!(cfg.projects[0].tasks.len(), 1);
+    }
+
+    #[test]
+    fn add_task_to_missing_project() {
+        let mut cfg = empty_config();
+        assert!(!cfg.add_task("Missing", "task".into(), "branch".into()));
+    }
+
+    #[test]
+    fn remove_task() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "t1".into(), "b1".into());
+        cfg.add_task("App", "t2".into(), "b2".into());
+        assert!(cfg.remove_task("App", "t1"));
+        assert_eq!(cfg.projects[0].tasks.len(), 1);
+        assert_eq!(cfg.projects[0].tasks[0].name, "t2");
+    }
+
+    #[test]
+    fn remove_task_not_found() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        assert!(!cfg.remove_task("App", "nope"));
+    }
+
+    #[test]
+    fn rename_task() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "old".into(), "branch".into());
+        assert!(cfg.rename_task("App", "old", "new".into()));
+        assert_eq!(cfg.projects[0].tasks[0].name, "new");
+    }
+
+    #[test]
+    fn find_task() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "t1".into(), "b1".into());
+        let task = cfg.find_task("App", "t1");
+        assert!(task.is_some());
+        assert_eq!(task.unwrap().branch, "b1");
+        assert!(cfg.find_task("App", "missing").is_none());
+        assert!(cfg.find_task("Missing", "t1").is_none());
+    }
+
+    #[test]
+    fn remove_project() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.remove_project("/tmp/app");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn roundtrip_serialization() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "task1".into(), "branch1".into());
+
+        let serialized = toml::to_string_pretty(&cfg).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.projects.len(), 1);
+        assert_eq!(deserialized.projects[0].tasks.len(), 1);
+        assert_eq!(deserialized.projects[0].tasks[0].name, "task1");
+    }
+}
