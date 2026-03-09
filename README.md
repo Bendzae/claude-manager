@@ -6,7 +6,7 @@ Claude Manager uses tmux to run Claude Code sessions in the background, letting 
 
 ## Prerequisites
 
-- **Rust** (1.85+) — [install via rustup](https://rustup.rs/)
+- **Cargo** (Rust 1.85+) — [install via rustup](https://rustup.rs/)
 - **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
 - **Claude Code CLI** (`claude`) — must be installed and available in your PATH
 - **git** — for worktree and branch management
@@ -15,12 +15,16 @@ Claude Manager uses tmux to run Claude Code sessions in the background, letting 
 ## Installation
 
 ```bash
+cargo install claude-manager
+```
+
+Or build from source:
+
+```bash
 git clone git@github.com:Bendzae/claude-manager.git
 cd claude-manager
 cargo install --path .
 ```
-
-This installs the `claude-manager` binary to `~/.cargo/bin/`.
 
 ## Usage
 
