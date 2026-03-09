@@ -747,16 +747,17 @@ impl App {
     pub fn start_delete(&mut self) {
         match self.selected_item() {
             Some(ListItem::Project { project }) => {
-                let has_sessions = self.sessions.iter().any(|s| {
+                let session_count = self.sessions.iter().filter(|s| {
                     s.project_name == tmux::sanitize(&project.name)
-                });
-                if has_sessions {
-                    self.status_message = Some(
-                        "Cannot delete project with active sessions. Delete sessions first."
-                            .into(),
-                    );
+                }).count();
+                let task_count = project.tasks.len();
+                self.input_mode = InputMode::ConfirmDelete;
+                if session_count > 0 || task_count > 0 {
+                    self.status_message = Some(format!(
+                        "Delete project and all {} task(s), {} session(s)? (y/n)",
+                        task_count, session_count
+                    ));
                 } else {
-                    self.input_mode = InputMode::ConfirmDelete;
                     self.status_message = Some("Delete this project? (y/n)".into());
                 }
             }
@@ -770,12 +771,12 @@ impl App {
                 ..
             }) => {
                 let active = tmux::sessions_for_task(project_name, &task.name, &self.sessions);
+                self.input_mode = InputMode::ConfirmDelete;
                 if active.is_empty() {
-                    self.input_mode = InputMode::ConfirmDelete;
                     self.status_message = Some("Delete this task? (y/n)".into());
                 } else {
                     self.status_message = Some(format!(
-                        "Cannot delete task with {} active session(s). Delete sessions first.",
+                        "Delete task and kill {} active session(s)? (y/n)",
                         active.len()
                     ));
                 }
@@ -787,10 +788,43 @@ impl App {
     pub fn confirm_delete(&mut self) {
         match self.selected_item().cloned() {
             Some(ListItem::Project { project }) => {
+                let project_name = project.name.clone();
+                let project_path = project.path.clone();
+                let tasks: Vec<_> = project.tasks.clone();
+                let sessions = self.sessions.clone();
+                self.input_mode = InputMode::Normal;
+                self.start_op("Deleting project...", move || {
+                    let mut total_sessions = 0;
+                    for task in &tasks {
+                        let msg = tmux::delete_task(
+                            &project_name,
+                            &project_path,
+                            &task.name,
+                            &task.branch,
+                            &sessions,
+                        );
+                        // Count sessions from message
+                        if msg.contains("session(s)") {
+                            total_sessions += tmux::sessions_for_task(
+                                &project_name,
+                                &task.name,
+                                &sessions,
+                            ).len();
+                        }
+                    }
+                    let _ = total_sessions;
+                    // Clean up leftover worktree and task config directories
+                    tmux::cleanup_project_dirs(&project_name);
+                    OpResult {
+                        message: format!("Deleted project '{}'", project_name),
+                        rebuild: true,
+                        reload_config: true,
+                    }
+                });
+                // Remove project from config (done here so it's saved even if op thread is slow)
                 self.config.remove_project(&project.path);
                 let _ = self.config.save();
-                self.status_message = Some(format!("Removed project '{}'", project.name));
-                self.rebuild_items();
+                return;
             }
             Some(ListItem::Session { session, .. }) => {
                 let name = session.name.clone();
@@ -814,20 +848,33 @@ impl App {
             }
             Some(ListItem::Task {
                 project_name,
+                project_path,
                 task,
-                ..
             }) => {
-                // Kill context vim session if running
-                crate::tmux::kill_context_session(&project_name, &task.branch);
-                // Delete task context files
-                let context_path = crate::config::task_context_path(&project_name, &task.branch);
-                if let Some(parent) = context_path.parent() {
-                    let _ = std::fs::remove_dir_all(parent);
-                }
+                let task_name = task.name.clone();
+                let task_branch = task.branch.clone();
+                let pname = project_name.clone();
+                let ppath = project_path.clone();
+                let sessions = self.sessions.clone();
+                self.input_mode = InputMode::Normal;
+                self.start_op("Deleting task...", move || {
+                    let msg = tmux::delete_task(
+                        &pname,
+                        &ppath,
+                        &task_name,
+                        &task_branch,
+                        &sessions,
+                    );
+                    OpResult {
+                        message: msg,
+                        rebuild: true,
+                        reload_config: true,
+                    }
+                });
+                // Remove task from config immediately
                 self.config.remove_task(&project_name, &task.name);
                 let _ = self.config.save();
-                self.status_message = Some(format!("Removed task '{}'", task.name));
-                self.rebuild_items();
+                return;
             }
             _ => {}
         }

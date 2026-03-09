@@ -1298,6 +1298,67 @@ pub fn kill_context_session(project_name: &str, task_branch: &str) {
         .output();
 }
 
+/// Delete a task and all its sessions, worktrees, branches, and config files.
+/// Returns a description of what was cleaned up.
+pub fn delete_task(
+    project_name: &str,
+    project_path: &str,
+    task_name: &str,
+    task_branch: &str,
+    sessions: &[TmuxSession],
+) -> String {
+    let task_sessions = sessions_for_task(project_name, task_name, sessions);
+    let session_count = task_sessions.len();
+
+    // Kill all sessions for this task (this also removes worktrees + session branches)
+    for session in &task_sessions {
+        let _ = kill_session(&session.name);
+    }
+
+    // Kill the context vim session
+    kill_context_session(project_name, task_branch);
+
+    // Delete task context files
+    let context_path = crate::config::task_context_path(project_name, task_branch);
+    if let Some(parent) = context_path.parent() {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    // Delete the task branch itself (session branches are already cleaned up by kill_session)
+    if !task_branch.is_empty() && task_branch != "main" && task_branch != "master" {
+        let _ = Command::new("git")
+            .args(["-C", project_path, "branch", "-D", task_branch])
+            .output();
+    }
+
+    if session_count > 0 {
+        format!(
+            "Deleted task '{}' and {} session(s)",
+            task_name, session_count
+        )
+    } else {
+        format!("Deleted task '{}'", task_name)
+    }
+}
+
+/// Clean up worktree and task config directories for a project.
+pub fn cleanup_project_dirs(project_name: &str) {
+    let sanitized = sanitize(project_name);
+    let base = crate::config::base_dir();
+
+    // Remove worktree directory for this project
+    let wt_dir = base.join("worktrees").join(&sanitized);
+    if wt_dir.exists() {
+        let _ = std::fs::remove_dir_all(&wt_dir);
+    }
+
+    // Remove task config directory for this project
+    let task_dir = base.join("tasks").join(&sanitized);
+    if task_dir.exists() {
+        let _ = std::fs::remove_dir_all(&task_dir);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
