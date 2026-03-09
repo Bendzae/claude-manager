@@ -127,7 +127,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
                 };
-                let line = Line::from(vec![
+                let mut spans = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(chevron, Style::default().fg(MUTED)),
                     Span::styled(&project.name, name_style),
@@ -135,8 +135,44 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         format!("  {}", project.path),
                         Style::default().fg(MUTED),
                     ),
-                ]);
-                lines.push(ListItem::new(line));
+                ];
+
+                // Show task/session counts when project is collapsed
+                if collapsed {
+                    let task_count = project.tasks.len();
+                    let sanitized = tmux::sanitize(&project.name);
+                    let active_sessions = app
+                        .sessions
+                        .iter()
+                        .filter(|s| {
+                            s.project_name == sanitized
+                                && app
+                                    .session_statuses
+                                    .get(&s.name)
+                                    .map_or(false, |st| *st != SessionStatus::Finished)
+                        })
+                        .count();
+                    if task_count > 0 || active_sessions > 0 {
+                        let mut parts = Vec::new();
+                        if task_count > 0 {
+                            parts.push(format!(
+                                "{task_count} task{}",
+                                if task_count == 1 { "" } else { "s" }
+                            ));
+                        }
+                        if active_sessions > 0 {
+                            parts.push(format!(
+                                "{active_sessions} active"
+                            ));
+                        }
+                        spans.push(Span::styled(
+                            format!("  [{}]", parts.join(", ")),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                }
+
+                lines.push(ListItem::new(Line::from(spans)));
             }
             app::ListItem::Task {
                 project_name,
