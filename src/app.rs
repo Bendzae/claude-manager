@@ -130,8 +130,11 @@ impl App {
             tick: 0,
             worker: Worker::spawn(),
         };
-        // Start with all tasks collapsed
+        // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
+            if project.tasks.is_empty() {
+                app.collapsed.insert(project_key(&project.name));
+            }
             for task in &project.tasks {
                 app.collapsed.insert(task_key(&project.name, &task.name));
             }
