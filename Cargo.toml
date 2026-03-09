@@ -2,6 +2,12 @@
 name = "claude-manager"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal UI for managing multiple Claude Code sessions organized by projects and tasks"
+license = "MIT"
+repository = "https://github.com/Bendzae/claude-manager"
+readme = "README.md"
+keywords = ["claude", "tui", "tmux", "ai", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.30"
