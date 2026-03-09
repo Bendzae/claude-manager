@@ -8,7 +8,8 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - A git repository registered in the central config file
 - Must contain a `.git` folder (required for worktree support)
 - Projects are globally visible regardless of where the TUI is launched
-- Collapsible in the UI
+- Collapsible in the UI; collapsed by default when empty
+- When collapsed, shows summary counts: `[3 tasks, 2 active]`
 
 ### Task
 - A unit of work within a project, backed by a git branch
@@ -16,14 +17,16 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - New branches are created from `origin/main` (falls back to local `main`)
 - Every session must belong to a task
 - Stored in the config file under its parent project
-- Collapsible in the UI
+- Collapsible in the UI; all tasks collapsed by default
 - Shows aggregated diff stats (+/-) against main
+- Shows active session count
 
 ### Session
 - A tmux session containing a Claude Code instance (window 0)
 - Only sessions created by this tool are visible/managed
 - Tmux naming convention: `cm__<project>__<task>__<session>` (double underscore separator)
 - User is prompted for a session name; if left empty, auto-increments
+- User is prompted for an initial message which is passed to the `claude` command on launch
 - By default, a git worktree is created from the task branch for each session
   - Worktree branch: `<task-branch>-<session-name>`
   - Worktree location: `~/.claude-manager/worktrees/<project>/<task>-<session>`
@@ -33,10 +36,18 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - Hotkey variant (`N`): without worktree (runs in project directory)
 - Shows diff stats (+/-) for the session's changes against the task branch
 
+### Shared Task Context
+- Each task has a shared context file at `~/.claude-manager/tasks/<project>/<branch>/TASK_CONTEXT.md`
+- Automatically injected into every Claude Code prompt via `UserPromptSubmit` hook
+- Automatically updated when a Claude session stops via `Stop` hook (uses `claude -p` to summarize)
+- PR URL is stored alongside the context and included in updates
+- Editable via nvim in the context preview tab
+
 ### Config
 - Central config file: `~/.claude-manager/config.toml`
 - Worktrees stored under: `~/.claude-manager/worktrees/`
 - Stores the list of registered projects with their tasks
+- Projects support configurable `copy_patterns` for files to sync to worktrees (in addition to `.gitignore`d files)
 - Project display name is prompted when adding; defaults to directory name if left empty
 
 ## Features
@@ -52,11 +63,13 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 
 ### Preview Panel
 - Tabbed preview panel to the right of the list with tabs:
+  - **context** — task context file rendered via nvim in a tmux session (default tab for tasks)
   - **agent** — live Claude Code output (ANSI-rendered via `tmux capture-pane`)
-  - **diff** — session's changes with styled diff, file separator headers, and sticky stats header
+  - **diff** — session's changes with styled diff, file separator headers, sticky stats header, and line number gutter
   - **term1, term2, ...** — terminal window previews
-- Scrollable with `J`/`K` (3-line increments)
+- Scrollable with `J`/`K` (3-line increments; sends `C-y`/`C-e` to nvim on context tab)
 - Tab switching with `Tab`
+- `Enter` on context tab attaches to the nvim session for editing
 
 ### Terminal Windows
 - Create up to 4 persistent terminal windows per session (`c`)
