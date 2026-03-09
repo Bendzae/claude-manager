@@ -38,27 +38,54 @@ Launch from any directory. Configuration is stored in `~/.claude-manager/config.
 
 ### Keybindings
 
+#### Global
+
 | Key | Action |
 |-----|--------|
 | `j/k` or `Up/Down` | Navigate |
 | `Enter` | Attach to session / expand item |
 | `Space` | Collapse/expand project or task |
-| `a` | Add project |
-| `t` | Add task to selected project |
-| `n` | New session (with worktree) |
-| `N` | New session (without worktree) |
-| `d` | Delete selected item |
-| `R` | Rename selected item |
-| `u` | Update/refresh session |
-| `m` | Merge task branch |
-| `P` | Push task branch |
-| `o` | Open/create PR for task |
-| `b` | Checkout task branch |
-| `c` | Create a terminal window in session |
-| `x` | Kill terminal window |
+| `a` | Open context menu (actions for selected item) |
+| `p` | Add project |
 | `Tab` | Toggle preview mode (diff/context) |
 | `J/K` | Scroll preview pane |
 | `q` | Quit |
+
+#### Context Menu (press `a` to open)
+
+The context menu shows actions relevant to the selected item. Press the hotkey character to execute directly, or navigate with `j/k` and confirm with `Enter`.
+
+**Project actions:**
+
+| Key | Action |
+|-----|--------|
+| `t` | Add task |
+| `R` | Rename |
+| `d` | Delete |
+
+**Task actions:**
+
+| Key | Action |
+|-----|--------|
+| `n` | New session (with worktree) |
+| `N` | New session (without worktree) |
+| `u` | Update/rebase branch onto main |
+| `P` | Push branch |
+| `b` | Checkout branch in project dir |
+| `o` | Open/create PR |
+| `R` | Rename |
+| `d` | Delete |
+
+**Session actions:**
+
+| Key | Action |
+|-----|--------|
+| `m` | Merge into task branch |
+| `u` | Update/rebase onto task branch |
+| `c` | Create terminal window |
+| `k` | Kill terminal window |
+| `R` | Rename |
+| `d` | Delete |
 
 ### Session Status Indicators
 
@@ -70,7 +97,7 @@ Sessions display their current status:
 
 ### Worktrees
 
-When creating a session with `n`, Claude Manager creates a git worktree so each session works on an isolated copy of the codebase. Use `N` to skip worktree creation and work directly in the project directory.
+When creating a session with `n` (via the context menu on a task), Claude Manager creates a git worktree so each session works on an isolated copy of the codebase. Use `N` to skip worktree creation and work directly in the project directory.
 
 You can configure file patterns to copy into new worktrees (e.g. `.env` files) by adding `copy_patterns` to your project config:
 

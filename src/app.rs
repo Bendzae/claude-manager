@@ -31,6 +31,7 @@ pub use worker::PreviewMode;
 #[derive(Debug, PartialEq)]
 pub enum InputMode {
     Normal,
+    ContextMenu,
     AddProjectName,
     AddTaskName,
     AddTaskBranch,
@@ -42,6 +43,29 @@ pub enum InputMode {
     RenameSession,
     MergeCommitMessage,
     ConfirmCreatePr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextMenuItem {
+    pub key: char,
+    pub label: &'static str,
+    pub action: ContextAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContextAction {
+    AddTask,
+    NewSession,
+    NewSessionNoWorktree,
+    Delete,
+    Rename,
+    Merge,
+    Update,
+    Push,
+    OpenPr,
+    Checkout,
+    CreateTerminal,
+    KillTerminal,
 }
 
 pub struct App {
@@ -77,6 +101,8 @@ pub struct App {
     pub op_sender: mpsc::Sender<OpResult>,
     pub tick: usize,
     pub worker: Worker,
+    pub context_menu_items: Vec<ContextMenuItem>,
+    pub context_menu_selected: usize,
 }
 
 pub struct OpResult {
@@ -129,6 +155,8 @@ impl App {
             op_sender: tx,
             tick: 0,
             worker: Worker::spawn(),
+            context_menu_items: vec![],
+            context_menu_selected: 0,
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -412,6 +440,61 @@ impl App {
             } else {
                 self.should_attach = Some(session.name.clone());
             }
+        }
+    }
+
+    pub fn open_context_menu(&mut self) {
+        let items = match self.selected_item() {
+            Some(ListItem::Project { .. }) => vec![
+                ContextMenuItem { key: 't', label: "Add task", action: ContextAction::AddTask },
+                ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
+                ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
+            ],
+            Some(ListItem::Task { .. }) => vec![
+                ContextMenuItem { key: 'n', label: "New session", action: ContextAction::NewSession },
+                ContextMenuItem { key: 'N', label: "New session (no worktree)", action: ContextAction::NewSessionNoWorktree },
+                ContextMenuItem { key: 'u', label: "Update branch", action: ContextAction::Update },
+                ContextMenuItem { key: 'P', label: "Push", action: ContextAction::Push },
+                ContextMenuItem { key: 'b', label: "Checkout", action: ContextAction::Checkout },
+                ContextMenuItem { key: 'o', label: "Open PR", action: ContextAction::OpenPr },
+                ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
+                ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
+            ],
+            Some(ListItem::Session { .. }) => {
+                let mut items = vec![
+                    ContextMenuItem { key: 'm', label: "Merge", action: ContextAction::Merge },
+                    ContextMenuItem { key: 'u', label: "Update", action: ContextAction::Update },
+                    ContextMenuItem { key: 'c', label: "Create terminal", action: ContextAction::CreateTerminal },
+                ];
+                if let PreviewMode::Terminal(_) = self.preview_mode {
+                    items.push(ContextMenuItem { key: 'k', label: "Kill terminal", action: ContextAction::KillTerminal });
+                }
+                items.push(ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename });
+                items.push(ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete });
+                items
+            }
+            None => return,
+        };
+        self.context_menu_items = items;
+        self.context_menu_selected = 0;
+        self.input_mode = InputMode::ContextMenu;
+    }
+
+    pub fn execute_context_action(&mut self, action: ContextAction) {
+        self.input_mode = InputMode::Normal;
+        match action {
+            ContextAction::AddTask => self.start_add_task(),
+            ContextAction::NewSession => self.start_new_session(true),
+            ContextAction::NewSessionNoWorktree => self.start_new_session(false),
+            ContextAction::Delete => self.start_delete(),
+            ContextAction::Rename => self.start_rename(),
+            ContextAction::Merge => self.start_merge(),
+            ContextAction::Update => self.update_session(),
+            ContextAction::Push => self.push_task_branch(),
+            ContextAction::OpenPr => self.open_pr(),
+            ContextAction::Checkout => self.checkout_task_branch(),
+            ContextAction::CreateTerminal => self.create_terminal(),
+            ContextAction::KillTerminal => self.kill_terminal(),
         }
     }
 

@@ -52,6 +52,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_help(f, app, chunks[2]);
     draw_status(f, app, chunks[3]);
+
+    if app.input_mode == InputMode::ContextMenu {
+        draw_context_menu(f, app, chunks[1]);
+    }
 }
 
 fn is_project_collapsed(app: &App, name: &str) -> bool {
@@ -658,16 +662,89 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
     }
 }
 
+fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
+    let items = &app.context_menu_items;
+    if items.is_empty() {
+        return;
+    }
+
+    let max_label_width = items.iter().map(|i| i.label.len()).max().unwrap_or(0);
+    // "  label   key  " — padding + label + gap + key + padding
+    let menu_width = (max_label_width + 8).max(16) as u16;
+    let menu_height = items.len() as u16 + 2; // +2 for border
+
+    // Position: left-aligned near the list, vertically centered on selected item
+    let x = area.x + 4;
+    let y = area.y + (area.height.saturating_sub(menu_height)) / 2;
+
+    let menu_area = Rect {
+        x: x.min(area.x + area.width - menu_width),
+        y: y.min(area.y + area.height - menu_height),
+        width: menu_width.min(area.width),
+        height: menu_height.min(area.height),
+    };
+
+    // Clear background
+    let clear = ratatui::widgets::Clear;
+    f.render_widget(clear, menu_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT));
+
+    let inner = block.inner(menu_area);
+    f.render_widget(block, menu_area);
+
+    for (i, item) in items.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let is_selected = i == app.context_menu_selected;
+        let row_area = Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        };
+
+        let label_style = if is_selected {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let key_style = Style::default().fg(MUTED);
+
+        let key_str = if item.key.is_uppercase() {
+            format!("S-{}", item.key.to_lowercase())
+        } else {
+            item.key.to_string()
+        };
+        let padding = inner.width as usize - key_str.len() - 2; // 1 left pad + 1 right pad
+        let line = Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                format!("{:<width$}", item.label, width = padding),
+                label_style,
+            ),
+            Span::styled(key_str, key_style),
+            Span::styled(" ", Style::default()),
+        ]);
+        f.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_spans = match app.input_mode {
         InputMode::Normal => {
             help_bar(&[
-                ("t", "task"), ("n/N", "session"), ("⏎", "attach"), ("␣", "collapse"),
-                ("d", "del"), ("R", "rename"), ("m", "merge"), ("u", "update"),
-                ("P", "push"), ("o", "PR"), ("b", "checkout"),
-                ("c/x", "term"), ("⇥", "switch"), ("J/K", "scroll"),
-                ("a", "project"), ("q", "quit"),
+                ("⏎", "attach"), ("␣", "collapse"), ("a", "actions"),
+                ("⇥", "switch"), ("J/K", "scroll"),
+                ("p", "project"), ("q", "quit"),
             ])
+        }
+        InputMode::ContextMenu => {
+            help_bar(&[("⏎", "select"), ("j/k", "navigate"), ("Esc", "close")])
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName

@@ -84,22 +84,39 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             }
                         }
                         KeyCode::Char(' ') => app.toggle_collapse(),
-                        KeyCode::Char('t') => app.start_add_task(),
-                        KeyCode::Char('n') => app.start_new_session(true),
-                        KeyCode::Char('N') => app.start_new_session(false),
-                        KeyCode::Char('d') => app.start_delete(),
-                        KeyCode::Char('a') => app.start_add_project(),
-                        KeyCode::Char('R') => app.start_rename(),
-                        KeyCode::Char('m') => app.start_merge(),
-                        KeyCode::Char('u') => app.update_session(),
-                        KeyCode::Char('P') => app.push_task_branch(),
-                        KeyCode::Char('o') => app.open_pr(),
-                        KeyCode::Char('b') => app.checkout_task_branch(),
-                        KeyCode::Char('c') => app.create_terminal(),
-                        KeyCode::Char('x') => app.kill_terminal(),
+                        KeyCode::Char('a') => app.open_context_menu(),
+                        KeyCode::Char('p') => app.start_add_project(),
                         KeyCode::Char('J') => app.scroll_preview_down(),
                         KeyCode::Char('K') => app.scroll_preview_up(),
                         KeyCode::Tab => app.toggle_preview_mode(),
+                        _ => {}
+                    },
+                    InputMode::ContextMenu => match key.code {
+                        KeyCode::Esc | KeyCode::Char('a') => {
+                            app.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if app.context_menu_selected > 0 {
+                                app.context_menu_selected -= 1;
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if app.context_menu_selected + 1 < app.context_menu_items.len() {
+                                app.context_menu_selected += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(item) = app.context_menu_items.get(app.context_menu_selected) {
+                                let action = item.action;
+                                app.execute_context_action(action);
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let Some(item) = app.context_menu_items.iter().find(|i| i.key == c) {
+                                let action = item.action;
+                                app.execute_context_action(action);
+                            }
+                        }
                         _ => {}
                     },
                     InputMode::AddProjectName => match key.code {
