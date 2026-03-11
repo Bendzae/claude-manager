@@ -574,6 +574,10 @@ impl App {
             self.cancel_input();
             return;
         }
+        if branch == "main" || branch == "master" {
+            self.status_message = Some("Cannot use 'main' or 'master' as a task branch".into());
+            return;
+        }
 
         let task_name = match self.pending_task_name.take() {
             Some(n) => n,
