@@ -305,6 +305,105 @@ pub fn create_session(
     Ok(tmux_name)
 }
 
+/// Recreate a tmux session from a saved record (e.g. after tmux dies).
+/// Reuses the existing worktree if present; does NOT send an initial prompt.
+/// `tmux_name` is the expected session name (which may differ from what
+/// build_tmux_name would produce if the session was renamed).
+pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) -> Result<String> {
+
+    let work_dir = if record.use_worktree {
+        let wt_path = worktree_dir(
+            &record.project_name,
+            &record.task_name,
+            &record.session_name,
+        );
+        if wt_path.exists() {
+            wt_path.to_string_lossy().to_string()
+        } else {
+            // Worktree is gone — cannot recreate this session
+            bail!(
+                "Worktree no longer exists for session {}",
+                record.session_name
+            );
+        }
+    } else {
+        record.project_path.clone()
+    };
+
+    let context_path =
+        crate::config::task_context_path(&record.project_name, &record.task_branch);
+    let context_path_str = context_path.to_string_lossy().to_string();
+
+    // Re-apply hooks (they may have been lost if worktree was recreated externally)
+    setup_task_context(
+        &work_dir,
+        &record.task_name,
+        &record.task_branch,
+        &context_path,
+    );
+
+    let system_prompt = format!(
+        "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
+         A shared context file at {context_path_str} is automatically injected into every prompt."
+    );
+
+    let claude_cmd = format!(
+        "claude --dangerously-skip-permissions --continue --append-system-prompt {}",
+        shell_escape(&system_prompt)
+    );
+
+    let output = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            tmux_name,
+            "-c",
+            &work_dir,
+            &claude_cmd,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to create tmux session for recreation");
+    }
+
+    // Restore environment variables
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            tmux_name,
+            "CM_PROJECT_PATH",
+            &record.project_path,
+        ])
+        .output();
+
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            tmux_name,
+            "CM_TASK_BRANCH",
+            &record.task_branch,
+        ])
+        .output();
+
+    if record.use_worktree {
+        let _ = Command::new("tmux")
+            .args([
+                "set-environment",
+                "-t",
+                tmux_name,
+                "CM_WORKTREE_PATH",
+                &work_dir,
+            ])
+            .output();
+    }
+
+    Ok(tmux_name.to_string())
+}
+
 pub fn attach_session(name: &str) -> Result<()> {
     // Select window 0 (claude) before attaching
     let _ = Command::new("tmux")

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -50,6 +51,87 @@ pub fn pr_url_path(project_name: &str, branch: &str) -> PathBuf {
         .join(crate::tmux::sanitize(project_name))
         .join(crate::tmux::sanitize(branch))
         .join("pr_url.txt")
+}
+
+/// Metadata needed to recreate a tmux session after tmux dies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub project_name: String,
+    pub project_path: String,
+    pub task_name: String,
+    pub task_branch: String,
+    pub session_name: String,
+    pub use_worktree: bool,
+}
+
+/// Path to the persisted sessions file.
+pub fn sessions_path() -> PathBuf {
+    base_dir().join("sessions.json")
+}
+
+/// Load all saved session records, keyed by tmux session name.
+pub fn load_sessions() -> HashMap<String, SessionRecord> {
+    let path = sessions_path();
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Save all session records to disk.
+fn save_sessions(sessions: &HashMap<String, SessionRecord>) -> Result<()> {
+    let path = sessions_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = serde_json::to_string_pretty(sessions)?;
+    fs::write(&path, content).context("Failed to write sessions file")
+}
+
+/// Add a session record and persist.
+pub fn add_session_record(tmux_name: &str, record: SessionRecord) {
+    let mut sessions = load_sessions();
+    sessions.insert(tmux_name.to_string(), record);
+    let _ = save_sessions(&sessions);
+}
+
+/// Remove a session record by tmux name and persist.
+pub fn remove_session_record(tmux_name: &str) {
+    let mut sessions = load_sessions();
+    if sessions.remove(tmux_name).is_some() {
+        let _ = save_sessions(&sessions);
+    }
+}
+
+/// Remove all session records matching a project+task and persist.
+pub fn remove_task_session_records(project_name: &str, task_name: &str) {
+    let mut sessions = load_sessions();
+    let before = sessions.len();
+    sessions.retain(|_, r| !(r.project_name == project_name && r.task_name == task_name));
+    if sessions.len() < before {
+        let _ = save_sessions(&sessions);
+    }
+}
+
+/// Re-key a session record under a new tmux name.
+/// The record fields are kept as-is since they reflect the original creation
+/// state (worktree paths, project paths, etc.) which don't change on rename.
+pub fn rename_session_record(old_tmux_name: &str, new_tmux_name: &str) {
+    let mut sessions = load_sessions();
+    if let Some(record) = sessions.remove(old_tmux_name) {
+        sessions.insert(new_tmux_name.to_string(), record);
+        let _ = save_sessions(&sessions);
+    }
+}
+
+/// Remove all session records matching a project and persist.
+pub fn remove_project_session_records(project_name: &str) {
+    let mut sessions = load_sessions();
+    let before = sessions.len();
+    sessions.retain(|_, r| r.project_name != project_name);
+    if sessions.len() < before {
+        let _ = save_sessions(&sessions);
+    }
 }
 
 impl Config {

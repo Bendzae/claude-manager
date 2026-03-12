@@ -5,7 +5,7 @@ use std::thread;
 
 use anyhow::Result;
 
-use crate::config::{Config, Project, Task};
+use crate::config::{self, Config, Project, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
 use crate::worker::{self, Selection, TaskInfo, Worker};
 
@@ -124,7 +124,26 @@ fn task_key(project: &str, task: &str) -> String {
 impl App {
     pub fn new() -> Result<Self> {
         let config = Config::load()?;
-        let sessions = tmux::list_sessions().unwrap_or_default();
+        let mut sessions = tmux::list_sessions().unwrap_or_default();
+
+        // Recreate any saved sessions that are no longer in tmux (e.g. tmux died)
+        let saved = config::load_sessions();
+        if !saved.is_empty() {
+            let live_names: HashSet<_> = sessions.iter().map(|s| s.name.as_str()).collect();
+            for (tmux_name, record) in &saved {
+                if !live_names.contains(tmux_name.as_str()) {
+                    match tmux::recreate_session(tmux_name, record) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            // Could not recreate (e.g. worktree gone) — remove stale record
+                            config::remove_session_record(tmux_name);
+                        }
+                    }
+                }
+            }
+            // Re-list sessions after recreation
+            sessions = tmux::list_sessions().unwrap_or_default();
+        }
         let (tx, rx) = mpsc::channel();
         let mut app = App {
             config,
@@ -736,11 +755,24 @@ impl App {
                 &copy_patterns,
                 prompt.as_deref(),
             ) {
-                Ok(tmux_name) => OpResult {
-                    message: format!("Created session {tmux_name}"),
-                    rebuild: true,
-                    reload_config: false,
-                },
+                Ok(tmux_name) => {
+                    config::add_session_record(
+                        &tmux_name,
+                        config::SessionRecord {
+                            project_name: project_name.clone(),
+                            project_path: project_path.clone(),
+                            task_name: task_name.clone(),
+                            task_branch: task_branch.clone(),
+                            session_name: session_name.clone(),
+                            use_worktree,
+                        },
+                    );
+                    OpResult {
+                        message: format!("Created session {tmux_name}"),
+                        rebuild: true,
+                        reload_config: false,
+                    }
+                }
                 Err(e) => OpResult {
                     message: format!("Error: {e}"),
                     rebuild: false,
@@ -821,6 +853,7 @@ impl App {
                     let _ = total_sessions;
                     // Clean up leftover worktree and task config directories
                     tmux::cleanup_project_dirs(&project_name);
+                    config::remove_project_session_records(&project_name);
                     OpResult {
                         message: format!("Deleted project '{}'", project_name),
                         rebuild: true,
@@ -838,11 +871,14 @@ impl App {
                 self.input_mode = InputMode::Normal;
                 self.start_op("Deleting session...", move || {
                     match tmux::kill_session(&name) {
-                        Ok(()) => OpResult {
-                            message: format!("Killed session {display_name}"),
-                            rebuild: true,
-                            reload_config: false,
-                        },
+                        Ok(()) => {
+                            config::remove_session_record(&name);
+                            OpResult {
+                                message: format!("Killed session {display_name}"),
+                                rebuild: true,
+                                reload_config: false,
+                            }
+                        }
                         Err(e) => OpResult {
                             message: format!("Error: {e}"),
                             rebuild: false,
@@ -871,6 +907,7 @@ impl App {
                         &task_branch,
                         &sessions,
                     );
+                    config::remove_task_session_records(&pname, &task_name);
                     OpResult {
                         message: msg,
                         rebuild: true,
@@ -932,6 +969,7 @@ impl App {
                         if session.project_name == old_san {
                             let new_tmux = session.name.replacen(&old_san, &new_san, 1);
                             let _ = tmux::rename_session(&session.name, &new_tmux);
+                            config::rename_session_record(&session.name, &new_tmux);
                         }
                     }
 
@@ -960,6 +998,7 @@ impl App {
                         {
                             let new_tmux = session.name.replacen(&old_san, &new_san, 1);
                             let _ = tmux::rename_session(&session.name, &new_tmux);
+                            config::rename_session_record(&session.name, &new_tmux);
                         }
                     }
 
@@ -989,6 +1028,7 @@ impl App {
                     );
                     match tmux::rename_session(&session.name, &new_tmux) {
                         Ok(()) => {
+                            config::rename_session_record(&session.name, &new_tmux);
                             self.status_message =
                                 Some(format!("Renamed session to {new_name}"));
                         }
