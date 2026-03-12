@@ -226,7 +226,14 @@ impl App {
                 self.pr_urls.extend(update.pr_urls);
             }
             if !update.terminal_counts.is_empty() {
-                self.terminal_counts = update.terminal_counts;
+                // Merge by taking the max of local and worker counts to avoid
+                // stale worker data reverting a freshly created terminal.
+                for (name, count) in &update.terminal_counts {
+                    let local = self.terminal_counts.get(name).copied().unwrap_or(0);
+                    self.terminal_counts.insert(name.clone(), (*count).max(local));
+                }
+                // Remove sessions that the worker no longer knows about
+                self.terminal_counts.retain(|k, _| update.terminal_counts.contains_key(k));
                 // If viewing a terminal that no longer exists, fall back
                 if let PreviewMode::Terminal(idx) = self.preview_mode {
                     let count = self.selected_terminal_count();
