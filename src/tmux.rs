@@ -615,10 +615,16 @@ pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
 }
 
 pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
-    // Fetch latest main
-    let _ = Command::new("git")
-        .args(["-C", project_path, "fetch", "origin", "main"])
-        .output();
+    // Pull latest main into local main and update origin/main tracking ref
+    let fetch = Command::new("git")
+        .args(["-C", project_path, "fetch", "origin", "main:main"])
+        .output()?;
+    if !fetch.status.success() {
+        // Fetch may fail if main is currently checked out; fall back to fetch-only
+        let _ = Command::new("git")
+            .args(["-C", project_path, "fetch", "origin", "main"])
+            .output();
+    }
 
     // Find worktree with this branch, or use project path
     let rebase_dir = find_worktree_for_branch(project_path, branch)

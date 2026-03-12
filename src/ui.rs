@@ -5,6 +5,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
+use termimad::minimad::Alignment;
+use termimad::MadSkin;
+
 use crate::app::{self, App, InputMode, PreviewMode};
 use crate::tmux::{self, SessionStatus};
 
@@ -15,6 +18,33 @@ const TASK_COLOR: Color = Color::Yellow;
 const SESSION_COLOR: Color = Color::Green;
 const PAD_LEFT: u16 = 1;
 const PAD_TOP: u16 = 1;
+
+fn md_skin() -> MadSkin {
+    use termimad::crossterm::style::{Attribute, Color as CtColor};
+
+    let mut skin = MadSkin::default_dark();
+
+    // Left-align all headers
+    for h in &mut skin.headers {
+        h.align = Alignment::Left;
+    }
+
+    // Colorful headers
+    skin.headers[0].set_fg(CtColor::Cyan);
+    skin.headers[0].add_attr(Attribute::Bold);
+    skin.headers[1].set_fg(CtColor::Magenta);
+    skin.headers[1].add_attr(Attribute::Bold);
+    skin.headers[2].set_fg(CtColor::Yellow);
+
+    skin.bold.set_fg(CtColor::White);
+    skin.italic.set_fg(CtColor::AnsiValue(183)); // light purple
+    skin.inline_code.set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
+    skin.code_block.set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
+    skin.bullet = termimad::StyledChar::from_fg_char(CtColor::Cyan, '•');
+    skin.quote_mark = termimad::StyledChar::from_fg_char(CtColor::Cyan, '▐');
+
+    skin
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let outer = f.area().inner(Margin {
@@ -475,7 +505,13 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     if is_context {
         match &app.task_context_content {
             Some(content) => {
-                let text = tui_markdown::from_str(content);
+                let skin = md_skin();
+                let rendered = skin.text(content, Some(content_area.width as usize));
+                let rendered_str = rendered.to_string();
+                let text = match rendered_str.as_bytes().into_text() {
+                    Ok(text) => text,
+                    Err(_) => return,
+                };
                 let visible_lines: Vec<Line> = text
                     .lines
                     .into_iter()
