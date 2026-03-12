@@ -574,28 +574,48 @@ SUMMARY=$(echo "$INPUT" | jq -r '.transcript_summary // empty')
 [ -z "$MSG" ] && exit 0
 
 TMPFILE=$(mktemp)
+CURRENT=$(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
 cat > "$TMPFILE" <<PROMPT_END
-You maintain a shared task context file. Below is the current file content between <current> tags, a summary of the full conversation between <summary> tags, and the latest agent message between <message> tags.
+You are a file writer. You read context and produce updated file content. You NEVER produce commentary, explanations, or meta-text. Your entire output is written directly to a file.
 
+Current file:
 <current>
-$(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
+$CURRENT
 </current>
 
+Conversation summary:
 <summary>
 $SUMMARY
 </summary>
 
+Latest message:
 <message>
 $MSG
 </message>
 
-Update the file based on the conversation summary and latest message. Maintain a clear, evolving summary of what the task is trying to achieve, what has been done, and what is known. Include anything useful for other agents picking up this task. Remove outdated info. Keep it concise. Output ONLY the raw file content, no wrapping, no fences, no delimiters.
+Rules:
+- Output the updated file content and NOTHING else
+- The first line MUST be a markdown heading (starting with the hash symbol and a space)
+- Do NOT output any commentary, explanations, or meta-text
+- If nothing changed, output the current file content exactly as-is
+- Maintain a clear summary of the task goal, what has been done, and what is known
+- Include anything useful for other agents picking up this task
+- Remove outdated info, keep it concise
 PROMPT_END
 
 unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
 cd /tmp
-claude -p < "$TMPFILE" > "$CONTEXT_FILE.tmp" 2>/dev/null && mv "$CONTEXT_FILE.tmp" "$CONTEXT_FILE"
-rm -f "$TMPFILE" "$CONTEXT_FILE.tmp"
+OUTFILE="$CONTEXT_FILE.tmp"
+claude -p --model sonnet < "$TMPFILE" > "$OUTFILE" 2>/dev/null
+
+# Validate output: must be non-empty and start with a markdown heading
+if [ -s "$OUTFILE" ] && head -1 "$OUTFILE" | grep -q '^#'; then
+    mv "$OUTFILE" "$CONTEXT_FILE"
+else
+    rm -f "$OUTFILE"
+fi
+
+rm -f "$TMPFILE"
 exit 0"#,
         context = context_path_str
     );
