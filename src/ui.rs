@@ -475,13 +475,11 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     if is_context {
         match &app.task_context_content {
             Some(content) => {
-                let text = match content.as_bytes().into_text() {
-                    Ok(text) => text,
-                    Err(_) => return,
-                };
+                let text = tui_markdown::from_str(content);
                 let visible_lines: Vec<Line> = text
                     .lines
                     .into_iter()
+                    .skip(app.preview_scroll)
                     .take(visible_height)
                     .collect();
                 let paragraph = Paragraph::new(visible_lines);
@@ -737,8 +735,15 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_spans = match app.input_mode {
         InputMode::Normal => {
+            let enter_label = if app.preview_mode == PreviewMode::Context
+                && matches!(app.selected_item(), Some(app::ListItem::Task { .. }))
+            {
+                "edit"
+            } else {
+                "attach"
+            };
             help_bar(&[
-                ("⏎", "attach"), ("␣", "collapse"), ("a", "actions"),
+                ("⏎", enter_label), ("␣", "collapse"), ("a", "actions"),
                 ("⇥", "switch"), ("J/K", "scroll"),
                 ("p", "project"), ("q", "quit"),
             ])

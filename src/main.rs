@@ -40,6 +40,11 @@ fn main() -> Result<()> {
             tmux::attach_session(&session_name)?;
         } else if let Some((session_name, window_idx)) = app.should_attach_window.take() {
             tmux::attach_session_window(&session_name, window_idx)?;
+        } else if let Some(path) = app.should_open_editor.take() {
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
+            std::process::Command::new(&editor)
+                .arg(&path)
+                .status()?;
         }
     }
 
@@ -79,6 +84,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.enter_selected();
                             if app.should_attach.is_some()
                                 || app.should_attach_window.is_some()
+                                || app.should_open_editor.is_some()
                             {
                                 return Ok(());
                             }

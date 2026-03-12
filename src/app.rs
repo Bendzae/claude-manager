@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
@@ -80,6 +81,7 @@ pub struct App {
     pub should_quit: bool,
     pub should_attach: Option<String>,
     pub should_attach_window: Option<(String, usize)>,
+    pub should_open_editor: Option<PathBuf>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
     pub pending_session_name: Option<String>,
@@ -136,6 +138,7 @@ impl App {
             should_quit: false,
             should_attach: None,
             should_attach_window: None,
+            should_open_editor: None,
             pending_project_path: None,
             pending_task_name: None,
             pending_session_name: None,
@@ -427,9 +430,8 @@ impl App {
         }) = self.selected_item()
         {
             if self.preview_mode == PreviewMode::Context {
-                let ctx_session =
-                    crate::tmux::context_session_name(&project_name, &task.branch);
-                self.should_attach = Some(ctx_session);
+                let ctx_path = crate::config::task_context_path(&project_name, &task.branch);
+                self.should_open_editor = Some(ctx_path);
                 return;
             }
         }
@@ -1426,33 +1428,10 @@ impl App {
     }
 
     pub fn scroll_preview_down(&mut self) {
-        if self.is_task_context_selected() {
-            if let Some(ListItem::Task { project_name, task, .. }) = self.selected_item() {
-                let session = crate::tmux::context_session_name(&project_name, &task.branch);
-                crate::tmux::send_keys(&session, "C-e");
-                crate::tmux::send_keys(&session, "C-e");
-                crate::tmux::send_keys(&session, "C-e");
-            }
-        } else {
-            self.preview_scroll = self.preview_scroll.saturating_add(3);
-        }
+        self.preview_scroll = self.preview_scroll.saturating_add(3);
     }
 
     pub fn scroll_preview_up(&mut self) {
-        if self.is_task_context_selected() {
-            if let Some(ListItem::Task { project_name, task, .. }) = self.selected_item() {
-                let session = crate::tmux::context_session_name(&project_name, &task.branch);
-                crate::tmux::send_keys(&session, "C-y");
-                crate::tmux::send_keys(&session, "C-y");
-                crate::tmux::send_keys(&session, "C-y");
-            }
-        } else {
-            self.preview_scroll = self.preview_scroll.saturating_sub(3);
-        }
-    }
-
-    fn is_task_context_selected(&self) -> bool {
-        self.preview_mode == PreviewMode::Context
-            && matches!(self.selected_item(), Some(ListItem::Task { .. }))
+        self.preview_scroll = self.preview_scroll.saturating_sub(3);
     }
 }

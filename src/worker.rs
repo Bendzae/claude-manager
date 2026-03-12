@@ -200,8 +200,8 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
                     None
                 };
                 let context = {
-                    let ctx_session = tmux::ensure_context_session(project_name, branch);
-                    tmux::capture_pane(&ctx_session)
+                    let ctx_path = crate::config::task_context_path(project_name, branch);
+                    std::fs::read_to_string(&ctx_path).ok()
                 };
                 (None, diff, context)
             }

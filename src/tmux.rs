@@ -1236,71 +1236,6 @@ pub fn sessions_for_task(
         .collect()
 }
 
-/// Name for the tmux session that hosts the vim context editor.
-pub fn context_session_name(project_name: &str, task_branch: &str) -> String {
-    format!(
-        "cm-ctx__{}_{}",
-        sanitize(project_name),
-        sanitize(task_branch)
-    )
-}
-
-/// Ensure a tmux session running vim on the context file exists.
-/// Returns the session name. Creates it if it doesn't already exist.
-pub fn ensure_context_session(project_name: &str, task_branch: &str) -> String {
-    let name = context_session_name(project_name, task_branch);
-    let context_path = crate::config::task_context_path(project_name, task_branch);
-    let context_str = context_path.to_string_lossy().to_string();
-
-    // Check if session already exists
-    let exists = Command::new("tmux")
-        .args(["has-session", "-t", &name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !exists {
-        // Ensure context file exists
-        if !context_path.exists() {
-            if let Some(parent) = context_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&context_path, format!("# {task_branch}\n"));
-        }
-
-        let _ = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &name,
-                "-x",
-                "200",
-                "-y",
-                "50",
-                "nvim",
-                &context_str,
-            ])
-            .output();
-    }
-
-    name
-}
-
-/// Send keys to a tmux session.
-pub fn send_keys(session_name: &str, keys: &str) {
-    let _ = Command::new("tmux")
-        .args(["send-keys", "-t", session_name, keys])
-        .output();
-}
-
-/// Kill the context vim session for a task.
-pub fn kill_context_session(project_name: &str, task_branch: &str) {
-    let name = context_session_name(project_name, task_branch);
-    let _ = Command::new("tmux")
-        .args(["kill-session", "-t", &name])
-        .output();
-}
 
 /// Delete a task and all its sessions, worktrees, branches, and config files.
 /// Returns a description of what was cleaned up.
@@ -1318,9 +1253,6 @@ pub fn delete_task(
     for session in &task_sessions {
         let _ = kill_session(&session.name);
     }
-
-    // Kill the context vim session
-    kill_context_session(project_name, task_branch);
 
     // Delete task context files
     let context_path = crate::config::task_context_path(project_name, task_branch);
