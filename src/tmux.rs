@@ -186,6 +186,7 @@ pub fn create_session(
     session_name: &str,
     use_worktree: bool,
     copy_patterns: &[String],
+    setup_commands: &[String],
     initial_prompt: Option<&str>,
     auto_context: bool,
 ) -> Result<String> {
@@ -227,6 +228,19 @@ pub fn create_session(
         let mut all_patterns = vec![".claude/***".to_string()];
         all_patterns.extend_from_slice(copy_patterns);
         copy_patterns_to_worktree(project_path, &worktree_path_str, &all_patterns);
+
+        // Run setup commands in the new worktree if configured
+        for cmd in setup_commands {
+            let output = Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&worktree_path_str)
+                .output()?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Setup command failed: {stderr}\nCommand: {cmd}");
+            }
+        }
 
         work_dir = worktree_path_str.clone();
     } else {

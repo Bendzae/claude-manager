@@ -779,12 +779,12 @@ impl App {
         let task_name = task.name.clone();
         let task_branch = task.branch.clone();
         let auto_context = task.auto_context;
-        let copy_patterns = self
-            .config
-            .projects
-            .iter()
-            .find(|p| p.name == project_name)
+        let project = self.config.projects.iter().find(|p| p.name == project_name);
+        let copy_patterns = project
             .map(|p| p.copy_patterns.clone())
+            .unwrap_or_default();
+        let setup_commands = project
+            .map(|p| p.setup_commands.clone())
             .unwrap_or_default();
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
@@ -798,6 +798,7 @@ impl App {
                 &session_name,
                 use_worktree,
                 &copy_patterns,
+                &setup_commands,
                 prompt.as_deref(),
                 auto_context,
             ) {

@@ -3,7 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::de::Deserializer;
+use serde::{Deserialize, Serialize, Serializer};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -17,6 +18,44 @@ fn default_true() -> bool {
     true
 }
 
+/// Deserialize `setup_commands` from either a single string or an array of strings.
+fn deserialize_setup_commands<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => vec![],
+        Some(OneOrMany::One(s)) => vec![s],
+        Some(OneOrMany::Many(v)) => v,
+    })
+}
+
+/// Serialize `setup_commands`: skip if empty, single string if one element, array otherwise.
+fn serialize_setup_commands<S>(commands: &[String], serializer: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match commands.len() {
+        0 => serializer.serialize_none(),
+        1 => serializer.serialize_str(&commands[0]),
+        _ => {
+            use serde::ser::SerializeSeq;
+            let mut seq = serializer.serialize_seq(Some(commands.len()))?;
+            for cmd in commands {
+                seq.serialize_element(cmd)?;
+            }
+            seq.end()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
@@ -26,6 +65,14 @@ pub struct Project {
     /// File patterns to copy into new worktrees (e.g. [".env", "build/"])
     #[serde(default)]
     pub copy_patterns: Vec<String>,
+    /// Commands to run in the worktree after creation (e.g. "./gradlew configureGitHooks")
+    /// Accepts a single string or an array of strings in the config.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_setup_commands",
+        serialize_with = "serialize_setup_commands"
+    )]
+    pub setup_commands: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -170,6 +217,7 @@ impl Config {
                 path,
                 tasks: vec![],
                 copy_patterns: vec![],
+                setup_commands: vec![],
             });
         }
     }
