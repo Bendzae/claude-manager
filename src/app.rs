@@ -67,6 +67,7 @@ pub enum ContextAction {
     Checkout,
     CreateTerminal,
     KillTerminal,
+    ToggleAutoContext,
 }
 
 pub struct App {
@@ -132,7 +133,10 @@ impl App {
             let live_names: HashSet<_> = sessions.iter().map(|s| s.name.as_str()).collect();
             for (tmux_name, record) in &saved {
                 if !live_names.contains(tmux_name.as_str()) {
-                    match tmux::recreate_session(tmux_name, record) {
+                    let auto_context = config
+                        .find_task(&record.project_name, &record.task_name)
+                        .map_or(true, |t| t.auto_context);
+                    match tmux::recreate_session(tmux_name, record, auto_context) {
                         Ok(_) => {}
                         Err(_) => {
                             // Could not recreate (e.g. worktree gone) — remove stale record
@@ -478,16 +482,20 @@ impl App {
                 ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
                 ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
             ],
-            Some(ListItem::Task { .. }) => vec![
-                ContextMenuItem { key: 'n', label: "New session", action: ContextAction::NewSession },
-                ContextMenuItem { key: 'N', label: "New session (no worktree)", action: ContextAction::NewSessionNoWorktree },
-                ContextMenuItem { key: 'u', label: "Update branch", action: ContextAction::Update },
-                ContextMenuItem { key: 'P', label: "Push", action: ContextAction::Push },
-                ContextMenuItem { key: 'b', label: "Checkout", action: ContextAction::Checkout },
-                ContextMenuItem { key: 'o', label: "Open PR", action: ContextAction::OpenPr },
-                ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
-                ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
-            ],
+            Some(ListItem::Task { task, .. }) => {
+                let ctx_label = if task.auto_context { "Disable auto-context" } else { "Enable auto-context" };
+                vec![
+                    ContextMenuItem { key: 'n', label: "New session", action: ContextAction::NewSession },
+                    ContextMenuItem { key: 'N', label: "New session (no worktree)", action: ContextAction::NewSessionNoWorktree },
+                    ContextMenuItem { key: 'x', label: ctx_label, action: ContextAction::ToggleAutoContext },
+                    ContextMenuItem { key: 'u', label: "Update branch", action: ContextAction::Update },
+                    ContextMenuItem { key: 'P', label: "Push", action: ContextAction::Push },
+                    ContextMenuItem { key: 'b', label: "Checkout", action: ContextAction::Checkout },
+                    ContextMenuItem { key: 'o', label: "Open PR", action: ContextAction::OpenPr },
+                    ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
+                    ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
+                ]
+            },
             Some(ListItem::Session { .. }) => {
                 let mut items = vec![
                     ContextMenuItem { key: 'm', label: "Merge", action: ContextAction::Merge },
@@ -523,6 +531,35 @@ impl App {
             ContextAction::Checkout => self.checkout_task_branch(),
             ContextAction::CreateTerminal => self.create_terminal(),
             ContextAction::KillTerminal => self.kill_terminal(),
+            ContextAction::ToggleAutoContext => self.toggle_auto_context(),
+        }
+    }
+
+    pub fn toggle_auto_context(&mut self) {
+        let (project_name, task_name, task_branch) = match self.selected_task_info() {
+            Some((pn, _, t)) => (pn.to_string(), t.name.clone(), t.branch.clone()),
+            None => return,
+        };
+
+        if let Some(new_state) = self.config.toggle_auto_context(&project_name, &task_name) {
+            let _ = self.config.save();
+
+            // Update hooks for all existing sessions of this task
+            let task_sessions = tmux::sessions_for_task(&project_name, &task_name, &self.sessions);
+            for session in &task_sessions {
+                if let Some(work_dir) = tmux::get_session_work_dir(&session.name) {
+                    if new_state {
+                        let context_path = config::task_context_path(&project_name, &task_branch);
+                        tmux::setup_task_context(&work_dir, &task_name, &task_branch, &context_path);
+                    } else {
+                        tmux::remove_task_context_hooks(&work_dir);
+                    }
+                }
+            }
+
+            let label = if new_state { "enabled" } else { "disabled" };
+            self.status_message = Some(format!("Auto-context {label} for '{task_name}'"));
+            self.rebuild_items();
         }
     }
 
@@ -741,6 +778,7 @@ impl App {
         let use_worktree = self.use_worktree;
         let task_name = task.name.clone();
         let task_branch = task.branch.clone();
+        let auto_context = task.auto_context;
         let copy_patterns = self
             .config
             .projects
@@ -761,6 +799,7 @@ impl App {
                 use_worktree,
                 &copy_patterns,
                 prompt.as_deref(),
+                auto_context,
             ) {
                 Ok(tmux_name) => {
                     config::add_session_record(

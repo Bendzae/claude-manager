@@ -229,6 +229,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(&task.name, style),
                 ];
 
+                // Show auto-context indicator (nerd font: nf-md-file_document_edit \uf0dc8)
+                if task.auto_context {
+                    spans.push(Span::styled("  \u{f0dc8}", Style::default().fg(Color::Cyan)));
+                }
+
                 // Show diff stats for the task branch vs main
                 let (added, removed) = app
                     .task_diff_stats

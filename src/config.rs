@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 pub struct Task {
     pub name: String,
     pub branch: String,
+    #[serde(default = "default_true")]
+    pub auto_context: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +193,7 @@ impl Config {
                 project.tasks.push(Task {
                     name: task_name,
                     branch,
+                    auto_context: true,
                 });
                 return true;
             }
@@ -216,6 +223,16 @@ impl Config {
             }
         }
         false
+    }
+
+    pub fn toggle_auto_context(&mut self, project_name: &str, task_name: &str) -> Option<bool> {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
+                task.auto_context = !task.auto_context;
+                return Some(task.auto_context);
+            }
+        }
+        None
     }
 
     #[allow(dead_code)]

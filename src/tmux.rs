@@ -187,6 +187,7 @@ pub fn create_session(
     use_worktree: bool,
     copy_patterns: &[String],
     initial_prompt: Option<&str>,
+    auto_context: bool,
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
 
@@ -232,21 +233,25 @@ pub fn create_session(
         work_dir = project_path.to_string();
     }
 
-    let context_path = crate::config::task_context_path(project_name, task_branch);
-    let context_path_str = context_path.to_string_lossy().to_string();
+    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
 
-    // Set up shared task context with hooks BEFORE starting Claude so it picks up settings
-    setup_task_context(&work_dir, task_name, task_branch, &context_path);
+    if auto_context {
+        let context_path = crate::config::task_context_path(project_name, task_branch);
+        let context_path_str = context_path.to_string_lossy().to_string();
 
-    let system_prompt = format!(
-        "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
-         A shared context file at {context_path_str} is automatically injected into every prompt."
-    );
+        // Set up shared task context with hooks BEFORE starting Claude so it picks up settings
+        setup_task_context(&work_dir, task_name, task_branch, &context_path);
 
-    let mut claude_cmd = format!(
-        "claude --dangerously-skip-permissions --append-system-prompt {}",
-        shell_escape(&system_prompt)
-    );
+        let system_prompt = format!(
+            "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
+             A shared context file at {context_path_str} is automatically injected into every prompt."
+        );
+
+        claude_cmd.push_str(&format!(
+            " --append-system-prompt {}",
+            shell_escape(&system_prompt)
+        ));
+    }
     if let Some(prompt) = initial_prompt {
         claude_cmd.push(' ');
         claude_cmd.push_str(&shell_escape(prompt));
@@ -309,7 +314,7 @@ pub fn create_session(
 /// Reuses the existing worktree if present; does NOT send an initial prompt.
 /// `tmux_name` is the expected session name (which may differ from what
 /// build_tmux_name would produce if the session was renamed).
-pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) -> Result<String> {
+pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord, auto_context: bool) -> Result<String> {
 
     let work_dir = if record.use_worktree {
         let wt_path = worktree_dir(
@@ -330,27 +335,31 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
         record.project_path.clone()
     };
 
-    let context_path =
-        crate::config::task_context_path(&record.project_name, &record.task_branch);
-    let context_path_str = context_path.to_string_lossy().to_string();
+    let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
 
-    // Re-apply hooks (they may have been lost if worktree was recreated externally)
-    setup_task_context(
-        &work_dir,
-        &record.task_name,
-        &record.task_branch,
-        &context_path,
-    );
+    if auto_context {
+        let context_path =
+            crate::config::task_context_path(&record.project_name, &record.task_branch);
+        let context_path_str = context_path.to_string_lossy().to_string();
 
-    let system_prompt = format!(
-        "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
-         A shared context file at {context_path_str} is automatically injected into every prompt."
-    );
+        // Re-apply hooks (they may have been lost if worktree was recreated externally)
+        setup_task_context(
+            &work_dir,
+            &record.task_name,
+            &record.task_branch,
+            &context_path,
+        );
 
-    let claude_cmd = format!(
-        "claude --dangerously-skip-permissions --continue --append-system-prompt {}",
-        shell_escape(&system_prompt)
-    );
+        let system_prompt = format!(
+            "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
+             A shared context file at {context_path_str} is automatically injected into every prompt."
+        );
+
+        claude_cmd.push_str(&format!(
+            " --append-system-prompt {}",
+            shell_escape(&system_prompt)
+        ));
+    }
 
     let output = Command::new("tmux")
         .args([
@@ -534,9 +543,30 @@ fn copy_patterns_to_worktree(project_path: &str, worktree_path: &str, patterns: 
         .output();
 }
 
+/// Get the working directory for a tmux session (worktree or project path).
+pub fn get_session_work_dir(session_name: &str) -> Option<String> {
+    get_session_env(session_name, "CM_WORKTREE_PATH")
+        .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))
+}
+
+/// Remove auto-context hooks from a work directory's .claude/settings.local.json.
+pub fn remove_task_context_hooks(work_dir: &str) {
+    let settings_path = Path::new(work_dir).join(".claude/settings.local.json");
+    let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if let Some(obj) = existing.as_object_mut() {
+        obj.remove("hooks");
+    }
+
+    let _ = fs::write(&settings_path, serde_json::to_string_pretty(&existing).unwrap_or_default());
+}
+
 /// Set up shared task context for a session.
 /// Creates the context file if it doesn't exist and writes hooks into the work directory.
-fn setup_task_context(
+pub fn setup_task_context(
     work_dir: &str,
     task_name: &str,
     task_branch: &str,
