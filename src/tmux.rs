@@ -778,32 +778,37 @@ pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
 }
 
 pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
-    // Pull latest main into local main and update origin/main tracking ref
+    // Fetch latest main
     let fetch = Command::new("git")
         .args(["-C", project_path, "fetch", "origin", "main:main"])
         .output()?;
     if !fetch.status.success() {
-        // Fetch may fail if main is currently checked out; fall back to fetch-only
         let _ = Command::new("git")
             .args(["-C", project_path, "fetch", "origin", "main"])
             .output();
     }
 
-    // Find worktree with this branch, or use project path
-    let rebase_dir = find_worktree_for_branch(project_path, branch)
-        .unwrap_or_else(|| project_path.to_string());
+    // Remember current branch to restore after rebase
+    let head = Command::new("git")
+        .args(["-C", project_path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()?;
+    let original_branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
 
+    // Rebase the task branch onto origin/main (checks out branch, rebases, leaves it checked out)
     let output = Command::new("git")
-        .args(["-C", &rebase_dir, "rebase", "origin/main"])
+        .args(["-C", project_path, "rebase", "origin/main", branch])
         .output()?;
 
     if !output.status.success() {
-        let _ = Command::new("git")
-            .args(["-C", &rebase_dir, "rebase", "--abort"])
-            .output();
+        // Leave the branch checked out so the user can resolve conflicts
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Rebase failed, aborted. Resolve manually.\n{stderr}");
+        bail!("Rebase has conflicts. Resolve them in {project_path} then run `git rebase --continue`.\n{stderr}");
     }
+
+    // Restore original branch only on success
+    let _ = Command::new("git")
+        .args(["-C", project_path, "checkout", &original_branch])
+        .output();
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.contains("is up to date") {
