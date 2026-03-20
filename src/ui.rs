@@ -342,6 +342,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     ));
                 }
                 spans.push(Span::styled(&session.session_name, style));
+                if app.merged_sessions.get(&session.name).copied().unwrap_or(false) {
+                    spans.push(Span::styled("  ✓", Style::default().fg(ACCENT)));
+                }
                 if let Some(stats) = app.diff_stats.get(&session.name) {
                     if !stats.is_empty() {
                         spans.push(Span::raw("  "));

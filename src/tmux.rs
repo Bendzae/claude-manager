@@ -1192,6 +1192,44 @@ impl DiffStats {
     }
 }
 
+/// Check if a session's branch is fully merged into its task branch.
+/// Returns `Some(true)` if the session branch HEAD is an ancestor of (or equal to) the task branch.
+pub fn is_session_merged(session_name: &str) -> Option<bool> {
+    let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
+    let task_branch = get_session_env(session_name, "CM_TASK_BRANCH")?;
+
+    if !Path::new(&worktree_path).exists() {
+        return None;
+    }
+
+    // Get the session branch name
+    let output = Command::new("git")
+        .args(["-C", &worktree_path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let session_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if session_branch.is_empty() {
+        return None;
+    }
+
+    // Check if the session branch is an ancestor of the task branch
+    let is_ancestor = Command::new("git")
+        .args([
+            "-C", &worktree_path,
+            "merge-base", "--is-ancestor",
+            &session_branch, &task_branch,
+        ])
+        .output()
+        .ok()?
+        .status
+        .success();
+
+    Some(is_ancestor)
+}
+
 /// Compute diff stats for a session's worktree against its base commit.
 pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
     let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")
