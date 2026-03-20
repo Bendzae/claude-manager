@@ -65,21 +65,24 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
                 if app.loading {
                     // Only allow quit while loading
-                    if key.code == KeyCode::Char('q') {
+                    if key.code == KeyCode::Char(app.keybindings.quit) {
                         app.should_quit = true;
                         return Ok(());
                     }
                     continue;
                 }
 
+                let kb = app.keybindings.clone();
                 match app.input_mode {
                     InputMode::Normal => match key.code {
-                        KeyCode::Char('q') => {
+                        KeyCode::Char(c) if c == kb.quit => {
                             app.should_quit = true;
                             return Ok(());
                         }
-                        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                        KeyCode::Up => app.move_up(),
+                        KeyCode::Down => app.move_down(),
+                        KeyCode::Char(c) if c == kb.move_up => app.move_up(),
+                        KeyCode::Char(c) if c == kb.move_down => app.move_down(),
                         KeyCode::Enter => {
                             app.enter_selected();
                             if app.should_attach.is_some()
@@ -89,24 +92,37 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 return Ok(());
                             }
                         }
-                        KeyCode::Char(' ') => app.toggle_collapse(),
-                        KeyCode::Char('a') => app.open_context_menu(),
-                        KeyCode::Char('p') => app.start_add_project(),
-                        KeyCode::Char('J') => app.scroll_preview_down(),
-                        KeyCode::Char('K') => app.scroll_preview_up(),
+                        KeyCode::Char(c) if c == kb.toggle_collapse => app.toggle_collapse(),
+                        KeyCode::Char(c) if c == kb.context_menu => app.open_context_menu(),
+                        KeyCode::Char(c) if c == kb.add_project => app.start_add_project(),
+                        KeyCode::Char(c) if c == kb.scroll_preview_down => app.scroll_preview_down(),
+                        KeyCode::Char(c) if c == kb.scroll_preview_up => app.scroll_preview_up(),
                         KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },
                     InputMode::ContextMenu => match key.code {
-                        KeyCode::Esc | KeyCode::Char('a') => {
+                        KeyCode::Esc => {
                             app.input_mode = InputMode::Normal;
                         }
-                        KeyCode::Up | KeyCode::Char('k') => {
+                        KeyCode::Char(c) if c == kb.context_menu => {
+                            app.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Up => {
                             if app.context_menu_selected > 0 {
                                 app.context_menu_selected -= 1;
                             }
                         }
-                        KeyCode::Down | KeyCode::Char('j') => {
+                        KeyCode::Char(c) if c == kb.move_up => {
+                            if app.context_menu_selected > 0 {
+                                app.context_menu_selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.context_menu_selected + 1 < app.context_menu_items.len() {
+                                app.context_menu_selected += 1;
+                            }
+                        }
+                        KeyCode::Char(c) if c == kb.move_down => {
                             if app.context_menu_selected + 1 < app.context_menu_items.len() {
                                 app.context_menu_selected += 1;
                             }

@@ -5,7 +5,7 @@ use std::thread;
 
 use anyhow::Result;
 
-use crate::config::{self, Config, Project, Task};
+use crate::config::{self, Config, KeyBindings, Project, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
 use crate::worker::{self, Selection, TaskInfo, Worker};
 
@@ -72,6 +72,7 @@ pub enum ContextAction {
 
 pub struct App {
     pub config: Config,
+    pub keybindings: KeyBindings,
     pub sessions: Vec<TmuxSession>,
     pub items: Vec<ListItem>,
     pub selected: usize,
@@ -126,6 +127,7 @@ fn task_key(project: &str, task: &str) -> String {
 impl App {
     pub fn new() -> Result<Self> {
         let config = Config::load()?;
+        let keybindings = KeyBindings::load();
         let mut sessions = tmux::list_sessions().unwrap_or_default();
 
         // Recreate any saved sessions that are no longer in tmux (e.g. tmux died)
@@ -152,6 +154,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let mut app = App {
             config,
+            keybindings,
             sessions,
             items: vec![],
             selected: 0,
