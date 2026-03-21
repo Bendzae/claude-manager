@@ -484,37 +484,38 @@ impl App {
     }
 
     pub fn open_context_menu(&mut self) {
+        let cm = self.keybindings.context_menu_keys.clone();
         let items = match self.selected_item() {
             Some(ListItem::Project { .. }) => vec![
-                ContextMenuItem { key: 't', label: "Add task", action: ContextAction::AddTask },
-                ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
-                ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
+                ContextMenuItem { key: cm.add_task, label: "Add task", action: ContextAction::AddTask },
+                ContextMenuItem { key: cm.rename, label: "Rename", action: ContextAction::Rename },
+                ContextMenuItem { key: cm.delete, label: "Delete", action: ContextAction::Delete },
             ],
             Some(ListItem::Task { task, .. }) => {
                 let ctx_label = if task.auto_context { "Disable auto-context" } else { "Enable auto-context" };
                 vec![
-                    ContextMenuItem { key: 'n', label: "New session", action: ContextAction::NewSession },
-                    ContextMenuItem { key: 'N', label: "New session (no worktree)", action: ContextAction::NewSessionNoWorktree },
-                    ContextMenuItem { key: 'x', label: ctx_label, action: ContextAction::ToggleAutoContext },
-                    ContextMenuItem { key: 'u', label: "Update branch", action: ContextAction::Update },
-                    ContextMenuItem { key: 'P', label: "Push", action: ContextAction::Push },
-                    ContextMenuItem { key: 'b', label: "Checkout", action: ContextAction::Checkout },
-                    ContextMenuItem { key: 'o', label: "Open PR", action: ContextAction::OpenPr },
-                    ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename },
-                    ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete },
+                    ContextMenuItem { key: cm.new_session, label: "New session", action: ContextAction::NewSession },
+                    ContextMenuItem { key: cm.new_session_no_worktree, label: "New session (no worktree)", action: ContextAction::NewSessionNoWorktree },
+                    ContextMenuItem { key: cm.toggle_auto_context, label: ctx_label, action: ContextAction::ToggleAutoContext },
+                    ContextMenuItem { key: cm.update, label: "Update branch", action: ContextAction::Update },
+                    ContextMenuItem { key: cm.push, label: "Push", action: ContextAction::Push },
+                    ContextMenuItem { key: cm.checkout, label: "Checkout", action: ContextAction::Checkout },
+                    ContextMenuItem { key: cm.open_pr, label: "Open PR", action: ContextAction::OpenPr },
+                    ContextMenuItem { key: cm.rename, label: "Rename", action: ContextAction::Rename },
+                    ContextMenuItem { key: cm.delete, label: "Delete", action: ContextAction::Delete },
                 ]
             },
             Some(ListItem::Session { .. }) => {
                 let mut items = vec![
-                    ContextMenuItem { key: 'm', label: "Merge", action: ContextAction::Merge },
-                    ContextMenuItem { key: 'u', label: "Update", action: ContextAction::Update },
-                    ContextMenuItem { key: 'c', label: "Create terminal", action: ContextAction::CreateTerminal },
+                    ContextMenuItem { key: cm.merge, label: "Merge", action: ContextAction::Merge },
+                    ContextMenuItem { key: cm.update, label: "Update", action: ContextAction::Update },
+                    ContextMenuItem { key: cm.create_terminal, label: "Create terminal", action: ContextAction::CreateTerminal },
                 ];
                 if let PreviewMode::Terminal(_) = self.preview_mode {
-                    items.push(ContextMenuItem { key: 'k', label: "Kill terminal", action: ContextAction::KillTerminal });
+                    items.push(ContextMenuItem { key: cm.kill_terminal, label: "Kill terminal", action: ContextAction::KillTerminal });
                 }
-                items.push(ContextMenuItem { key: 'R', label: "Rename", action: ContextAction::Rename });
-                items.push(ContextMenuItem { key: 'd', label: "Delete", action: ContextAction::Delete });
+                items.push(ContextMenuItem { key: cm.rename, label: "Rename", action: ContextAction::Rename });
+                items.push(ContextMenuItem { key: cm.delete, label: "Delete", action: ContextAction::Delete });
                 items
             }
             None => return,
