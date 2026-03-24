@@ -470,18 +470,34 @@ pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Fallback paths for cleaning up a session when the tmux session is already dead
+/// and environment variables are unavailable.
+pub struct SessionCleanupInfo {
+    pub project_path: String,
+    pub worktree_path: String,
+    /// The branch checked out in the worktree (e.g. "task-branch-session-name").
+    /// If not provided, it will be derived from the worktree before removal.
+    pub branch_name: Option<String>,
+}
+
 pub fn kill_session(name: &str) -> Result<()> {
-    let project_path = get_session_env(name, "CM_PROJECT_PATH");
-    let worktree_path = get_session_env(name, "CM_WORKTREE_PATH");
+    kill_session_with_fallback(name, None)
+}
 
-    // Kill the tmux session
-    let output = Command::new("tmux")
+pub fn kill_session_with_fallback(
+    name: &str,
+    fallback: Option<SessionCleanupInfo>,
+) -> Result<()> {
+    // Try to get paths from tmux env vars first, fall back to provided info
+    let project_path = get_session_env(name, "CM_PROJECT_PATH")
+        .or_else(|| fallback.as_ref().map(|f| f.project_path.clone()));
+    let worktree_path = get_session_env(name, "CM_WORKTREE_PATH")
+        .or_else(|| fallback.as_ref().map(|f| f.worktree_path.clone()));
+
+    // Kill the tmux session (ignore errors — it may already be dead)
+    let _ = Command::new("tmux")
         .args(["kill-session", "-t", name])
-        .output()?;
-
-    if !output.status.success() {
-        bail!("Failed to kill tmux session");
-    }
+        .output();
 
     // Clean up worktree and its branch if applicable
     if let (Some(proj_path), Some(wt_path)) = (project_path, worktree_path) {
@@ -491,7 +507,8 @@ pub fn kill_session(name: &str) -> Result<()> {
             .output()
             .ok()
             .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .or_else(|| fallback.and_then(|f| f.branch_name));
 
         if Path::new(&wt_path).exists() {
             let _ = Command::new("git")
@@ -1461,10 +1478,79 @@ pub fn delete_task(
     let task_sessions = sessions_for_task(project_name, task_name, sessions);
     let session_count = task_sessions.len();
 
-    // Kill all sessions for this task (this also removes worktrees + session branches)
+    // Collect tmux names of live sessions so we can identify orphaned records
+    let live_names: std::collections::HashSet<&str> =
+        task_sessions.iter().map(|s| s.name.as_str()).collect();
+
+    // Kill all live tmux sessions (this also removes worktrees + session branches)
     for session in &task_sessions {
         let _ = kill_session(&session.name);
     }
+
+    // Also clean up any orphaned session records (tmux session already dead)
+    let records = crate::config::load_sessions();
+    for (tmux_name, record) in &records {
+        if record.project_name == sanitize(project_name)
+            && record.task_name == sanitize(task_name)
+            && !live_names.contains(tmux_name.as_str())
+        {
+            // This record's tmux session is dead — clean up its worktree and branch
+            let wt_path = worktree_dir(&record.project_name, &record.task_name, &record.session_name);
+            if record.use_worktree {
+                let session_branch = format!("{}-{}", sanitize(task_branch), sanitize(&record.session_name));
+                let _ = kill_session_with_fallback(
+                    tmux_name,
+                    Some(SessionCleanupInfo {
+                        project_path: record.project_path.clone(),
+                        worktree_path: wt_path.to_string_lossy().to_string(),
+                        branch_name: Some(session_branch),
+                    }),
+                );
+            }
+        }
+    }
+
+    // Clean up any remaining worktree directories for this task that weren't covered above
+    // (e.g. if session records were also lost)
+    let task_wt_prefix = format!("{}-", sanitize(task_name));
+    let project_wt_dir = crate::config::base_dir()
+        .join("worktrees")
+        .join(sanitize(project_name));
+    if project_wt_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&project_wt_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with(&task_wt_prefix) && entry.path().is_dir() {
+                    // Derive branch name from worktree before removing
+                    let wt_path_str = entry.path().to_string_lossy().to_string();
+                    let branch = Command::new("git")
+                        .args(["-C", &wt_path_str, "rev-parse", "--abbrev-ref", "HEAD"])
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+                    let _ = Command::new("git")
+                        .args(["-C", project_path, "worktree", "remove", "--force", &wt_path_str])
+                        .output();
+
+                    if let Some(branch_name) = branch {
+                        if !branch_name.is_empty() && branch_name != "main" && branch_name != "master" {
+                            let _ = Command::new("git")
+                                .args(["-C", project_path, "branch", "-D", &branch_name])
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Prune any stale worktree references
+    let _ = Command::new("git")
+        .args(["-C", project_path, "worktree", "prune"])
+        .output();
 
     // Delete task context files
     let context_path = crate::config::task_context_path(project_name, task_branch);
@@ -1472,7 +1558,7 @@ pub fn delete_task(
         let _ = std::fs::remove_dir_all(parent);
     }
 
-    // Delete the task branch itself (session branches are already cleaned up by kill_session)
+    // Delete the task branch itself (session branches are already cleaned up above)
     if !task_branch.is_empty() && task_branch != "main" && task_branch != "master" {
         let _ = Command::new("git")
             .args(["-C", project_path, "branch", "-D", task_branch])

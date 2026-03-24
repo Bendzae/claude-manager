@@ -922,7 +922,28 @@ impl App {
                 let display_name = session.session_name.clone();
                 self.input_mode = InputMode::Normal;
                 self.start_op("Deleting session...", move || {
-                    match tmux::kill_session(&name) {
+                    // Load session record for fallback cleanup info
+                    let fallback = config::load_sessions()
+                        .remove(&name)
+                        .filter(|r| r.use_worktree)
+                        .map(|r| {
+                            let wt = tmux::worktree_dir(
+                                &r.project_name,
+                                &r.task_name,
+                                &r.session_name,
+                            );
+                            let branch = format!(
+                                "{}-{}",
+                                tmux::sanitize(&r.task_branch),
+                                tmux::sanitize(&r.session_name),
+                            );
+                            tmux::SessionCleanupInfo {
+                                project_path: r.project_path,
+                                worktree_path: wt.to_string_lossy().to_string(),
+                                branch_name: Some(branch),
+                            }
+                        });
+                    match tmux::kill_session_with_fallback(&name, fallback) {
                         Ok(()) => {
                             config::remove_session_record(&name);
                             OpResult {
