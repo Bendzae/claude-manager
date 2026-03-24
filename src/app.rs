@@ -1399,6 +1399,7 @@ impl App {
             let output = std::process::Command::new("gh")
                 .args([
                     "pr", "create",
+                    "--draft",
                     "--title", &task_name,
                     "--body", "",
                     "--head", &branch,
