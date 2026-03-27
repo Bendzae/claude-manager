@@ -42,54 +42,56 @@ Launch from any directory. Configuration is stored in `~/.claude-manager/config.
 
 ### Keybindings
 
+All keybindings are customizable via `~/.claude-manager/keybindings.toml`. The tables below show the defaults. See [`keybindings.example.toml`](keybindings.example.toml) for a full template.
+
 #### Global
 
-| Key | Action |
-|-----|--------|
-| `j/k` or `Up/Down` | Navigate |
-| `Enter` | Attach to session / expand item |
-| `Space` | Collapse/expand project or task |
-| `a` | Open context menu (actions for selected item) |
-| `p` | Add project |
-| `Tab` | Toggle preview mode (diff/context) |
-| `J/K` | Scroll preview pane |
-| `q` | Quit |
+| Key | Action | Config key |
+|-----|--------|------------|
+| `j/k` or `Up/Down` | Navigate | `move_down` / `move_up` |
+| `Enter` | Attach to session / expand item | — |
+| `Space` | Collapse/expand project or task | `toggle_collapse` |
+| `a` | Open context menu | `context_menu` |
+| `p` | Add project | `add_project` |
+| `Tab` | Toggle preview mode (diff/context) | — |
+| `J/K` | Scroll preview pane | `scroll_preview_down` / `scroll_preview_up` |
+| `q` | Quit | `quit` |
 
 #### Context Menu (press `a` to open)
 
-The context menu shows actions relevant to the selected item. Press the hotkey character to execute directly, or navigate with `j/k` and confirm with `Enter`.
+The context menu shows actions relevant to the selected item. Press the hotkey character to execute directly, or navigate with `j/k` and confirm with `Enter`. Context menu keys are configured under the `[context_menu_keys]` section.
 
 **Project actions:**
 
-| Key | Action |
-|-----|--------|
-| `t` | Add task |
-| `R` | Rename |
-| `d` | Delete |
+| Key | Action | Config key |
+|-----|--------|------------|
+| `t` | Add task | `add_task` |
+| `R` | Rename | `rename` |
+| `d` | Delete | `delete` |
 
 **Task actions:**
 
-| Key | Action |
-|-----|--------|
-| `n` | New session (with worktree) |
-| `N` | New session (without worktree) |
-| `u` | Update/rebase branch onto main |
-| `P` | Push branch |
-| `b` | Checkout branch in project dir |
-| `o` | Open/create PR |
-| `R` | Rename |
-| `d` | Delete |
+| Key | Action | Config key |
+|-----|--------|------------|
+| `n` | New session (with worktree) | `new_session` |
+| `N` | New session (without worktree) | `new_session_no_worktree` |
+| `u` | Update/rebase branch onto main | `update` |
+| `P` | Push branch | `push` |
+| `b` | Checkout branch in project dir | `checkout` |
+| `o` | Open/create PR | `open_pr` |
+| `R` | Rename | `rename` |
+| `d` | Delete | `delete` |
 
 **Session actions:**
 
-| Key | Action |
-|-----|--------|
-| `m` | Merge into task branch |
-| `u` | Update/rebase onto task branch |
-| `c` | Create terminal window |
-| `k` | Kill terminal window |
-| `R` | Rename |
-| `d` | Delete |
+| Key | Action | Config key |
+|-----|--------|------------|
+| `m` | Merge into task branch | `merge` |
+| `u` | Update/rebase onto task branch | `update` |
+| `c` | Create terminal window | `create_terminal` |
+| `k` | Kill terminal window | `kill_terminal` |
+| `R` | Rename | `rename` |
+| `d` | Delete | `delete` |
 
 ### Session Status Indicators
 
@@ -129,4 +131,16 @@ branch = "fix/auth-bug"
 [[projects.tasks]]
 name = "add-dark-mode"
 branch = "feature/dark-mode"
+```
+
+#### Custom Keybindings
+
+Create `~/.claude-manager/keybindings.toml` to override any default keybinding. Only the keys you specify are overridden; everything else keeps its default. Example:
+
+```toml
+quit = "Q"
+context_menu = "o"
+
+[context_menu_keys]
+delete = "x"
 ```

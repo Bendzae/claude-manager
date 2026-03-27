@@ -1,0 +1,29 @@
+# Example keybindings configuration for claude-manager
+# Copy this file to ~/.claude-manager/keybindings.toml and customize as needed.
+# All fields are optional — omitted fields fall back to the defaults shown here.
+
+# Normal-mode keybindings
+quit            = "q"
+move_up         = "k"
+move_down       = "j"
+toggle_collapse = " "
+context_menu    = "a"
+add_project     = "p"
+scroll_preview_down = "J"
+scroll_preview_up   = "K"
+
+# Context menu action keybindings
+[context_menu_keys]
+add_task                = "t"
+new_session             = "n"
+new_session_no_worktree = "N"
+toggle_auto_context     = "x"
+update                  = "u"
+push                    = "P"
+checkout                = "b"
+open_pr                 = "o"
+rename                  = "R"
+delete                  = "d"
+merge                   = "m"
+create_terminal         = "c"
+kill_terminal           = "k"

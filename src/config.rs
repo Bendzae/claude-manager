@@ -6,6 +6,205 @@ use anyhow::{Context, Result};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize, Serializer};
 
+fn kb_quit() -> char {
+    'q'
+}
+fn kb_move_up() -> char {
+    'k'
+}
+fn kb_move_down() -> char {
+    'j'
+}
+fn kb_toggle_collapse() -> char {
+    ' '
+}
+fn kb_context_menu() -> char {
+    'a'
+}
+fn kb_add_project() -> char {
+    'p'
+}
+fn kb_scroll_preview_down() -> char {
+    'J'
+}
+fn kb_scroll_preview_up() -> char {
+    'K'
+}
+
+// Context menu action key defaults
+fn cm_add_task() -> char {
+    't'
+}
+fn cm_new_session() -> char {
+    'n'
+}
+fn cm_new_session_no_worktree() -> char {
+    'N'
+}
+fn cm_toggle_auto_context() -> char {
+    'x'
+}
+fn cm_update() -> char {
+    'u'
+}
+fn cm_push() -> char {
+    'P'
+}
+fn cm_checkout() -> char {
+    'b'
+}
+fn cm_open_pr() -> char {
+    'o'
+}
+fn cm_rename() -> char {
+    'R'
+}
+fn cm_delete() -> char {
+    'd'
+}
+fn cm_merge() -> char {
+    'm'
+}
+fn cm_create_terminal() -> char {
+    'c'
+}
+fn cm_kill_terminal() -> char {
+    'k'
+}
+
+/// Keybindings for context menu actions. All fields are single characters.
+/// Configured under `[context_menu]` in `~/.claude-manager/keybindings.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextMenuKeyBindings {
+    /// Add task to project (default: t)
+    #[serde(default = "cm_add_task")]
+    pub add_task: char,
+    /// New session with worktree (default: n)
+    #[serde(default = "cm_new_session")]
+    pub new_session: char,
+    /// New session without worktree (default: N)
+    #[serde(default = "cm_new_session_no_worktree")]
+    pub new_session_no_worktree: char,
+    /// Toggle auto-context (default: x)
+    #[serde(default = "cm_toggle_auto_context")]
+    pub toggle_auto_context: char,
+    /// Update branch (default: u)
+    #[serde(default = "cm_update")]
+    pub update: char,
+    /// Push branch (default: P)
+    #[serde(default = "cm_push")]
+    pub push: char,
+    /// Checkout branch (default: b)
+    #[serde(default = "cm_checkout")]
+    pub checkout: char,
+    /// Open PR (default: o)
+    #[serde(default = "cm_open_pr")]
+    pub open_pr: char,
+    /// Rename item (default: R)
+    #[serde(default = "cm_rename")]
+    pub rename: char,
+    /// Delete item (default: d)
+    #[serde(default = "cm_delete")]
+    pub delete: char,
+    /// Merge session (default: m)
+    #[serde(default = "cm_merge")]
+    pub merge: char,
+    /// Create terminal window (default: c)
+    #[serde(default = "cm_create_terminal")]
+    pub create_terminal: char,
+    /// Kill terminal window (default: k)
+    #[serde(default = "cm_kill_terminal")]
+    pub kill_terminal: char,
+}
+
+impl Default for ContextMenuKeyBindings {
+    fn default() -> Self {
+        ContextMenuKeyBindings {
+            add_task: cm_add_task(),
+            new_session: cm_new_session(),
+            new_session_no_worktree: cm_new_session_no_worktree(),
+            toggle_auto_context: cm_toggle_auto_context(),
+            update: cm_update(),
+            push: cm_push(),
+            checkout: cm_checkout(),
+            open_pr: cm_open_pr(),
+            rename: cm_rename(),
+            delete: cm_delete(),
+            merge: cm_merge(),
+            create_terminal: cm_create_terminal(),
+            kill_terminal: cm_kill_terminal(),
+        }
+    }
+}
+
+/// Keybindings for Normal mode. All fields are single characters.
+/// Arrow keys, Enter, Esc, and Tab are not configurable.
+/// Loaded from `~/.claude-manager/keybindings.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyBindings {
+    /// Quit the application (default: q)
+    #[serde(default = "kb_quit")]
+    pub quit: char,
+    /// Move selection up (default: k)
+    #[serde(default = "kb_move_up")]
+    pub move_up: char,
+    /// Move selection down (default: j)
+    #[serde(default = "kb_move_down")]
+    pub move_down: char,
+    /// Toggle collapse of selected item (default: space)
+    #[serde(default = "kb_toggle_collapse")]
+    pub toggle_collapse: char,
+    /// Open context menu (default: a)
+    #[serde(default = "kb_context_menu")]
+    pub context_menu: char,
+    /// Add project from current directory (default: p)
+    #[serde(default = "kb_add_project")]
+    pub add_project: char,
+    /// Scroll preview pane down (default: J)
+    #[serde(default = "kb_scroll_preview_down")]
+    pub scroll_preview_down: char,
+    /// Scroll preview pane up (default: K)
+    #[serde(default = "kb_scroll_preview_up")]
+    pub scroll_preview_up: char,
+    /// Context menu action keybindings
+    #[serde(default)]
+    pub context_menu_keys: ContextMenuKeyBindings,
+}
+
+impl Default for KeyBindings {
+    fn default() -> Self {
+        KeyBindings {
+            quit: kb_quit(),
+            move_up: kb_move_up(),
+            move_down: kb_move_down(),
+            toggle_collapse: kb_toggle_collapse(),
+            context_menu: kb_context_menu(),
+            add_project: kb_add_project(),
+            scroll_preview_down: kb_scroll_preview_down(),
+            scroll_preview_up: kb_scroll_preview_up(),
+            context_menu_keys: ContextMenuKeyBindings::default(),
+        }
+    }
+}
+
+/// Path to the keybindings config file.
+pub fn keybindings_path() -> PathBuf {
+    base_dir().join("keybindings.toml")
+}
+
+impl KeyBindings {
+    pub fn load() -> Self {
+        let path = keybindings_path();
+        if !path.exists() {
+            return KeyBindings::default();
+        }
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub name: String,
@@ -38,7 +237,10 @@ where
 }
 
 /// Serialize `setup_commands`: skip if empty, single string if one element, array otherwise.
-fn serialize_setup_commands<S>(commands: &[String], serializer: S) -> std::result::Result<S::Ok, S::Error>
+fn serialize_setup_commands<S>(
+    commands: &[String],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
 where
     S: Serializer,
 {

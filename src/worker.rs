@@ -148,8 +148,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
 
         // Refresh diff stats and terminal counts less frequently (~every 2 seconds)
         if tick % 4 == 0 {
-            let session_names: Vec<String> =
-                sessions.iter().map(|s| s.name.clone()).collect();
+            let session_names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
             diff_stats.retain(|k, _| session_names.contains(k));
             merged_sessions.retain(|k, _| session_names.contains(k));
             terminal_counts.retain(|k, _| session_names.contains(k));
@@ -169,7 +168,11 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
         // Handle selection-based content
         let (selection, tasks, project_paths) = {
             let h = hints.lock().unwrap();
-            (h.selection.clone(), h.tasks.clone(), h.project_paths.clone())
+            (
+                h.selection.clone(),
+                h.tasks.clone(),
+                h.project_paths.clone(),
+            )
         };
 
         // Compute task branch diffs (less frequently)
