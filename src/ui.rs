@@ -338,6 +338,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 ];
                 if wt.is_some() {
                     spans.push(Span::styled("\u{e0a0} ", Style::default().fg(TREE)));
+                } else {
+                    spans.push(Span::styled("⌂ ", Style::default().fg(ACCENT)));
                 }
                 spans.push(Span::styled(&session.session_name, style));
                 if app
