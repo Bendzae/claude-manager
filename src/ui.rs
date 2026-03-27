@@ -776,9 +776,19 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Format a keybinding char for display in hints (e.g. ' ' → "␣", uppercase → "S-x").
+fn key_display(c: char) -> String {
+    match c {
+        ' ' => "␣".to_string(),
+        c if c.is_uppercase() => format!("S-{}", c.to_lowercase()),
+        c => c.to_string(),
+    }
+}
+
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_spans = match app.input_mode {
         InputMode::Normal => {
+            let kb = &app.keybindings;
             let enter_label = if app.preview_mode == PreviewMode::Context
                 && matches!(app.selected_item(), Some(app::ListItem::Task { .. }))
             {
@@ -786,14 +796,29 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "attach"
             };
+            let scroll_keys = format!(
+                "{}/{}",
+                key_display(kb.scroll_preview_down),
+                key_display(kb.scroll_preview_up)
+            );
             help_bar(&[
-                ("⏎", enter_label), ("␣", "collapse"), ("a", "actions"),
-                ("⇥", "switch"), ("J/K", "scroll"),
-                ("p", "project"), ("q", "quit"),
+                ("⏎", enter_label),
+                (&key_display(kb.toggle_collapse), "collapse"),
+                (&key_display(kb.context_menu), "actions"),
+                ("⇥", "switch"),
+                (&scroll_keys, "scroll"),
+                (&key_display(kb.add_project), "project"),
+                (&key_display(kb.quit), "quit"),
             ])
         }
         InputMode::ContextMenu => {
-            help_bar(&[("⏎", "select"), ("j/k", "navigate"), ("Esc", "close")])
+            let kb = &app.keybindings;
+            let nav_keys = format!(
+                "{}/{}",
+                key_display(kb.move_down),
+                key_display(kb.move_up)
+            );
+            help_bar(&[("⏎", "select"), (&nav_keys, "navigate"), ("Esc", "close")])
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
