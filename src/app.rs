@@ -248,10 +248,12 @@ impl App {
                 // stale worker data reverting a freshly created terminal.
                 for (name, count) in &update.terminal_counts {
                     let local = self.terminal_counts.get(name).copied().unwrap_or(0);
-                    self.terminal_counts.insert(name.clone(), (*count).max(local));
+                    self.terminal_counts
+                        .insert(name.clone(), (*count).max(local));
                 }
                 // Remove sessions that the worker no longer knows about
-                self.terminal_counts.retain(|k, _| update.terminal_counts.contains_key(k));
+                self.terminal_counts
+                    .retain(|k, _| update.terminal_counts.contains_key(k));
                 // If viewing a terminal that no longer exists, fall back
                 if let PreviewMode::Terminal(idx) = self.preview_mode {
                     let count = self.selected_terminal_count();
@@ -363,13 +365,14 @@ impl App {
                     task: task.clone(),
                 });
 
-                if self.collapsed.contains(&task_key(&project.name, &task.name)) {
+                if self
+                    .collapsed
+                    .contains(&task_key(&project.name, &task.name))
+                {
                     continue;
                 }
 
-                for session in
-                    tmux::sessions_for_task(&project.name, &task.name, &self.sessions)
-                {
+                for session in tmux::sessions_for_task(&project.name, &task.name, &self.sessions) {
                     self.items.push(ListItem::Session {
                         project_name: project.name.clone(),
                         project_path: project.path.clone(),
@@ -460,9 +463,7 @@ impl App {
                 self.rebuild_items();
             }
             Some(ListItem::Task {
-                project_name,
-                task,
-                ..
+                project_name, task, ..
             }) => {
                 let key = task_key(project_name, &task.name);
                 if !self.collapsed.remove(&key) {
@@ -476,9 +477,7 @@ impl App {
 
     pub fn enter_selected(&mut self) {
         if let Some(ListItem::Task {
-            project_name,
-            task,
-            ..
+            project_name, task, ..
         }) = self.selected_item()
         {
             if self.preview_mode == PreviewMode::Context {
@@ -501,35 +500,111 @@ impl App {
         let cm = self.keybindings.context_menu_keys.clone();
         let items = match self.selected_item() {
             Some(ListItem::Project { .. }) => vec![
-                ContextMenuItem { key: cm.add_task, label: "Add task", action: ContextAction::AddTask },
-                ContextMenuItem { key: cm.rename, label: "Rename", action: ContextAction::Rename },
-                ContextMenuItem { key: cm.delete, label: "Delete", action: ContextAction::Delete },
+                ContextMenuItem {
+                    key: cm.add_task,
+                    label: "Add task",
+                    action: ContextAction::AddTask,
+                },
+                ContextMenuItem {
+                    key: cm.rename,
+                    label: "Rename",
+                    action: ContextAction::Rename,
+                },
+                ContextMenuItem {
+                    key: cm.delete,
+                    label: "Delete",
+                    action: ContextAction::Delete,
+                },
             ],
             Some(ListItem::Task { task, .. }) => {
-                let ctx_label = if task.auto_context { "Disable auto-context" } else { "Enable auto-context" };
+                let ctx_label = if task.auto_context {
+                    "Disable auto-context"
+                } else {
+                    "Enable auto-context"
+                };
                 vec![
-                    ContextMenuItem { key: cm.new_session, label: "New session", action: ContextAction::NewSession },
-                    ContextMenuItem { key: cm.new_session_no_worktree, label: "New session (no worktree)", action: ContextAction::NewSessionNoWorktree },
-                    ContextMenuItem { key: cm.toggle_auto_context, label: ctx_label, action: ContextAction::ToggleAutoContext },
-                    ContextMenuItem { key: cm.update, label: "Update branch", action: ContextAction::Update },
-                    ContextMenuItem { key: cm.push, label: "Push", action: ContextAction::Push },
-                    ContextMenuItem { key: cm.checkout, label: "Checkout", action: ContextAction::Checkout },
-                    ContextMenuItem { key: cm.open_pr, label: "Open PR", action: ContextAction::OpenPr },
-                    ContextMenuItem { key: cm.rename, label: "Rename", action: ContextAction::Rename },
-                    ContextMenuItem { key: cm.delete, label: "Delete", action: ContextAction::Delete },
+                    ContextMenuItem {
+                        key: cm.new_session,
+                        label: "New session",
+                        action: ContextAction::NewSession,
+                    },
+                    ContextMenuItem {
+                        key: cm.new_session_no_worktree,
+                        label: "New session (no worktree)",
+                        action: ContextAction::NewSessionNoWorktree,
+                    },
+                    ContextMenuItem {
+                        key: cm.toggle_auto_context,
+                        label: ctx_label,
+                        action: ContextAction::ToggleAutoContext,
+                    },
+                    ContextMenuItem {
+                        key: cm.update,
+                        label: "Update branch",
+                        action: ContextAction::Update,
+                    },
+                    ContextMenuItem {
+                        key: cm.push,
+                        label: "Push",
+                        action: ContextAction::Push,
+                    },
+                    ContextMenuItem {
+                        key: cm.checkout,
+                        label: "Checkout",
+                        action: ContextAction::Checkout,
+                    },
+                    ContextMenuItem {
+                        key: cm.open_pr,
+                        label: "Open PR",
+                        action: ContextAction::OpenPr,
+                    },
+                    ContextMenuItem {
+                        key: cm.rename,
+                        label: "Rename",
+                        action: ContextAction::Rename,
+                    },
+                    ContextMenuItem {
+                        key: cm.delete,
+                        label: "Delete",
+                        action: ContextAction::Delete,
+                    },
                 ]
-            },
+            }
             Some(ListItem::Session { .. }) => {
                 let mut items = vec![
-                    ContextMenuItem { key: cm.merge, label: "Merge", action: ContextAction::Merge },
-                    ContextMenuItem { key: cm.update, label: "Update", action: ContextAction::Update },
-                    ContextMenuItem { key: cm.create_terminal, label: "Create terminal", action: ContextAction::CreateTerminal },
+                    ContextMenuItem {
+                        key: cm.merge,
+                        label: "Merge",
+                        action: ContextAction::Merge,
+                    },
+                    ContextMenuItem {
+                        key: cm.update,
+                        label: "Update",
+                        action: ContextAction::Update,
+                    },
+                    ContextMenuItem {
+                        key: cm.create_terminal,
+                        label: "Create terminal",
+                        action: ContextAction::CreateTerminal,
+                    },
                 ];
                 if let PreviewMode::Terminal(_) = self.preview_mode {
-                    items.push(ContextMenuItem { key: cm.kill_terminal, label: "Kill terminal", action: ContextAction::KillTerminal });
+                    items.push(ContextMenuItem {
+                        key: cm.kill_terminal,
+                        label: "Kill terminal",
+                        action: ContextAction::KillTerminal,
+                    });
                 }
-                items.push(ContextMenuItem { key: cm.rename, label: "Rename", action: ContextAction::Rename });
-                items.push(ContextMenuItem { key: cm.delete, label: "Delete", action: ContextAction::Delete });
+                items.push(ContextMenuItem {
+                    key: cm.rename,
+                    label: "Rename",
+                    action: ContextAction::Rename,
+                });
+                items.push(ContextMenuItem {
+                    key: cm.delete,
+                    label: "Delete",
+                    action: ContextAction::Delete,
+                });
                 items
             }
             None => return,
@@ -573,7 +648,12 @@ impl App {
                 if let Some(work_dir) = tmux::get_session_work_dir(&session.name) {
                     if new_state {
                         let context_path = config::task_context_path(&project_name, &task_branch);
-                        tmux::setup_task_context(&work_dir, &task_name, &task_branch, &context_path);
+                        tmux::setup_task_context(
+                            &work_dir,
+                            &task_name,
+                            &task_branch,
+                            &context_path,
+                        );
                     } else {
                         tmux::remove_task_context_hooks(&work_dir);
                     }
@@ -597,8 +677,7 @@ impl App {
         let cwd_str = cwd.to_string_lossy().to_string();
 
         if !cwd.join(".git").is_dir() {
-            self.status_message =
-                Some("Error: current directory is not a git repository".into());
+            self.status_message = Some("Error: current directory is not a git repository".into());
             return;
         }
         if self.config.has_project_at(&cwd_str) {
@@ -743,8 +822,7 @@ impl App {
             self.use_worktree = use_worktree;
             self.input_mode = InputMode::AddSessionName;
             self.input_buffer.clear();
-            let next =
-                tmux::next_session_number(&project_name, &task_name, &self.sessions);
+            let next = tmux::next_session_number(&project_name, &task_name, &self.sessions);
             self.status_message = Some(format!(
                 "Session name (default: {next}){}:",
                 if use_worktree { " [worktree]" } else { "" }
@@ -803,9 +881,7 @@ impl App {
         let task_branch = task.branch.clone();
         let auto_context = task.auto_context;
         let project = self.config.projects.iter().find(|p| p.name == project_name);
-        let copy_patterns = project
-            .map(|p| p.copy_patterns.clone())
-            .unwrap_or_default();
+        let copy_patterns = project.map(|p| p.copy_patterns.clone()).unwrap_or_default();
         let setup_commands = project
             .map(|p| p.setup_commands.clone())
             .unwrap_or_default();
@@ -855,9 +931,11 @@ impl App {
     pub fn start_delete(&mut self) {
         match self.selected_item() {
             Some(ListItem::Project { project }) => {
-                let session_count = self.sessions.iter().filter(|s| {
-                    s.project_name == tmux::sanitize(&project.name)
-                }).count();
+                let session_count = self
+                    .sessions
+                    .iter()
+                    .filter(|s| s.project_name == tmux::sanitize(&project.name))
+                    .count();
                 let task_count = project.tasks.len();
                 self.input_mode = InputMode::ConfirmDelete;
                 if session_count > 0 || task_count > 0 {
@@ -874,9 +952,7 @@ impl App {
                 self.status_message = Some("Delete this session? (y/n)".into());
             }
             Some(ListItem::Task {
-                project_name,
-                task,
-                ..
+                project_name, task, ..
             }) => {
                 let active = tmux::sessions_for_task(project_name, &task.name, &self.sessions);
                 self.input_mode = InputMode::ConfirmDelete;
@@ -913,11 +989,8 @@ impl App {
                         );
                         // Count sessions from message
                         if msg.contains("session(s)") {
-                            total_sessions += tmux::sessions_for_task(
-                                &project_name,
-                                &task.name,
-                                &sessions,
-                            ).len();
+                            total_sessions +=
+                                tmux::sessions_for_task(&project_name, &task.name, &sessions).len();
                         }
                     }
                     let _ = total_sessions;
@@ -945,11 +1018,8 @@ impl App {
                         .remove(&name)
                         .filter(|r| r.use_worktree)
                         .map(|r| {
-                            let wt = tmux::worktree_dir(
-                                &r.project_name,
-                                &r.task_name,
-                                &r.session_name,
-                            );
+                            let wt =
+                                tmux::worktree_dir(&r.project_name, &r.task_name, &r.session_name);
                             let branch = format!(
                                 "{}-{}",
                                 tmux::sanitize(&r.task_branch),
@@ -991,13 +1061,8 @@ impl App {
                 let sessions = self.sessions.clone();
                 self.input_mode = InputMode::Normal;
                 self.start_op("Deleting task...", move || {
-                    let msg = tmux::delete_task(
-                        &pname,
-                        &ppath,
-                        &task_name,
-                        &task_branch,
-                        &sessions,
-                    );
+                    let msg =
+                        tmux::delete_task(&pname, &ppath, &task_name, &task_branch, &sessions);
                     config::remove_task_session_records(&pname, &task_name);
                     OpResult {
                         message: msg,
@@ -1017,9 +1082,7 @@ impl App {
 
     pub fn start_rename(&mut self) {
         let (mode, name) = match self.selected_item() {
-            Some(ListItem::Project { project }) => {
-                (InputMode::RenameProject, project.name.clone())
-            }
+            Some(ListItem::Project { project }) => (InputMode::RenameProject, project.name.clone()),
             Some(ListItem::Task { task, .. }) => (InputMode::RenameTask, task.name.clone()),
             Some(ListItem::Session { session, .. }) => {
                 (InputMode::RenameSession, session.session_name.clone())
@@ -1071,9 +1134,7 @@ impl App {
             }
             InputMode::RenameTask => {
                 if let Some(ListItem::Task {
-                    project_name,
-                    task,
-                    ..
+                    project_name, task, ..
                 }) = self.selected_item().cloned()
                 {
                     if task.name == new_name {
@@ -1120,8 +1181,7 @@ impl App {
                     match tmux::rename_session(&session.name, &new_tmux) {
                         Ok(()) => {
                             config::rename_session_record(&session.name, &new_tmux);
-                            self.status_message =
-                                Some(format!("Renamed session to {new_name}"));
+                            self.status_message = Some(format!("Renamed session to {new_name}"));
                         }
                         Err(e) => {
                             self.status_message = Some(format!("Error: {e}"));
@@ -1153,8 +1213,7 @@ impl App {
         let wt_path = match session.worktree_path() {
             Some(p) => p.to_string_lossy().to_string(),
             None => {
-                self.status_message =
-                    Some("Cannot merge: session has no worktree".into());
+                self.status_message = Some("Cannot merge: session has no worktree".into());
                 return;
             }
         };
@@ -1211,7 +1270,12 @@ impl App {
                     reload_config: false,
                 };
             }
-            match tmux::merge_session_to_task(&project_path, &task_branch, &session_display, &wt_path) {
+            match tmux::merge_session_to_task(
+                &project_path,
+                &task_branch,
+                &session_display,
+                &wt_path,
+            ) {
                 Ok(msg) => OpResult {
                     message: msg,
                     rebuild: false,
@@ -1226,9 +1290,16 @@ impl App {
         });
     }
 
-    fn do_merge(&mut self, project_path: String, task_branch: String, session_name: String, wt_path: String) {
+    fn do_merge(
+        &mut self,
+        project_path: String,
+        task_branch: String,
+        session_name: String,
+        wt_path: String,
+    ) {
         self.start_op("Merging...", move || {
-            match tmux::merge_session_to_task(&project_path, &task_branch, &session_name, &wt_path) {
+            match tmux::merge_session_to_task(&project_path, &task_branch, &session_name, &wt_path)
+            {
                 Ok(msg) => OpResult {
                     message: msg,
                     rebuild: false,
@@ -1246,13 +1317,12 @@ impl App {
     pub fn update_session(&mut self) {
         match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path,
-                task,
-                ..
+                project_path, task, ..
             }) => {
                 let branch = task.branch.clone();
-                self.start_op("Updating task branch...", move || {
-                    match tmux::update_task_branch(&project_path, &branch) {
+                self.start_op(
+                    "Updating task branch...",
+                    move || match tmux::update_task_branch(&project_path, &branch) {
                         Ok(msg) => OpResult {
                             message: msg,
                             rebuild: false,
@@ -1263,8 +1333,8 @@ impl App {
                             rebuild: false,
                             reload_config: false,
                         },
-                    }
-                });
+                    },
+                );
             }
             Some(ListItem::Session {
                 project_path,
@@ -1275,14 +1345,18 @@ impl App {
                 let wt_path = match session.worktree_path() {
                     Some(p) => p.to_string_lossy().to_string(),
                     None => {
-                        self.status_message =
-                            Some("Cannot update: session has no worktree".into());
+                        self.status_message = Some("Cannot update: session has no worktree".into());
                         return;
                     }
                 };
                 let task_branch = task.branch.clone();
-                self.start_op("Updating session...", move || {
-                    match tmux::rebase_session_on_task(&project_path, &task_branch, &wt_path) {
+                self.start_op(
+                    "Updating session...",
+                    move || match tmux::rebase_session_on_task(
+                        &project_path,
+                        &task_branch,
+                        &wt_path,
+                    ) {
                         Ok(msg) => OpResult {
                             message: msg,
                             rebuild: false,
@@ -1293,8 +1367,8 @@ impl App {
                             rebuild: false,
                             reload_config: false,
                         },
-                    }
-                });
+                    },
+                );
             }
             _ => {
                 self.status_message = Some("Select a session or task to update".into());
@@ -1305,9 +1379,7 @@ impl App {
     pub fn push_task_branch(&mut self) {
         let (project_path, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path,
-                task,
-                ..
+                project_path, task, ..
             }) => (project_path, task),
             _ => {
                 self.status_message = Some("Select a task to push".into());
@@ -1335,9 +1407,7 @@ impl App {
     pub fn checkout_task_branch(&mut self) {
         let (project_path, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path,
-                task,
-                ..
+                project_path, task, ..
             }) => (project_path, task),
             _ => {
                 self.status_message = Some("Select a task to checkout".into());
@@ -1377,9 +1447,7 @@ impl App {
     pub fn open_pr(&mut self) {
         if let Some(ListItem::Task { task, .. }) = self.selected_item() {
             if let Some(url) = self.pr_urls.get(&task.branch) {
-                let _ = std::process::Command::new("open")
-                    .arg(url)
-                    .output();
+                let _ = std::process::Command::new("open").arg(url).output();
             } else {
                 self.input_mode = InputMode::ConfirmCreatePr;
                 self.status_message = Some("No PR found. Create one? (y/n)".into());
@@ -1390,9 +1458,7 @@ impl App {
     pub fn confirm_create_pr(&mut self) {
         let (project_path, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path,
-                task,
-                ..
+                project_path, task, ..
             }) => (project_path, task),
             _ => {
                 self.cancel_input();
@@ -1416,11 +1482,8 @@ impl App {
 
             let output = std::process::Command::new("gh")
                 .args([
-                    "pr", "create",
-                    "--draft",
-                    "--title", &task_name,
-                    "--body", "",
-                    "--head", &branch,
+                    "pr", "create", "--draft", "--title", &task_name, "--body", "", "--head",
+                    &branch,
                 ])
                 .current_dir(&project_path)
                 .output();
@@ -1428,9 +1491,7 @@ impl App {
             match output {
                 Ok(o) if o.status.success() => {
                     let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    let _ = std::process::Command::new("open")
-                        .arg(&url)
-                        .output();
+                    let _ = std::process::Command::new("open").arg(&url).output();
                     OpResult {
                         message: format!("Created PR: {url}"),
                         rebuild: false,

@@ -6,29 +6,71 @@ use anyhow::{Context, Result};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize, Serializer};
 
-fn kb_quit() -> char { 'q' }
-fn kb_move_up() -> char { 'k' }
-fn kb_move_down() -> char { 'j' }
-fn kb_toggle_collapse() -> char { ' ' }
-fn kb_context_menu() -> char { 'a' }
-fn kb_add_project() -> char { 'p' }
-fn kb_scroll_preview_down() -> char { 'J' }
-fn kb_scroll_preview_up() -> char { 'K' }
+fn kb_quit() -> char {
+    'q'
+}
+fn kb_move_up() -> char {
+    'k'
+}
+fn kb_move_down() -> char {
+    'j'
+}
+fn kb_toggle_collapse() -> char {
+    ' '
+}
+fn kb_context_menu() -> char {
+    'a'
+}
+fn kb_add_project() -> char {
+    'p'
+}
+fn kb_scroll_preview_down() -> char {
+    'J'
+}
+fn kb_scroll_preview_up() -> char {
+    'K'
+}
 
 // Context menu action key defaults
-fn cm_add_task() -> char { 't' }
-fn cm_new_session() -> char { 'n' }
-fn cm_new_session_no_worktree() -> char { 'N' }
-fn cm_toggle_auto_context() -> char { 'x' }
-fn cm_update() -> char { 'u' }
-fn cm_push() -> char { 'P' }
-fn cm_checkout() -> char { 'b' }
-fn cm_open_pr() -> char { 'o' }
-fn cm_rename() -> char { 'R' }
-fn cm_delete() -> char { 'd' }
-fn cm_merge() -> char { 'm' }
-fn cm_create_terminal() -> char { 'c' }
-fn cm_kill_terminal() -> char { 'k' }
+fn cm_add_task() -> char {
+    't'
+}
+fn cm_new_session() -> char {
+    'n'
+}
+fn cm_new_session_no_worktree() -> char {
+    'N'
+}
+fn cm_toggle_auto_context() -> char {
+    'x'
+}
+fn cm_update() -> char {
+    'u'
+}
+fn cm_push() -> char {
+    'P'
+}
+fn cm_checkout() -> char {
+    'b'
+}
+fn cm_open_pr() -> char {
+    'o'
+}
+fn cm_rename() -> char {
+    'R'
+}
+fn cm_delete() -> char {
+    'd'
+}
+fn cm_merge() -> char {
+    'm'
+}
+fn cm_create_terminal() -> char {
+    'c'
+}
+fn cm_kill_terminal() -> char {
+    'k'
+}
 
 /// Keybindings for context menu actions. All fields are single characters.
 /// Configured under `[context_menu]` in `~/.claude-manager/keybindings.toml`.
@@ -195,7 +237,10 @@ where
 }
 
 /// Serialize `setup_commands`: skip if empty, single string if one element, array otherwise.
-fn serialize_setup_commands<S>(commands: &[String], serializer: S) -> std::result::Result<S::Ok, S::Error>
+fn serialize_setup_commands<S>(
+    commands: &[String],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
 where
     S: Serializer,
 {

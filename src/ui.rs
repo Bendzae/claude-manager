@@ -1,12 +1,12 @@
 use ansi_to_tui::IntoText;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
-use ratatui::Frame;
 
-use termimad::minimad::Alignment;
 use termimad::MadSkin;
+use termimad::minimad::Alignment;
 
 use crate::app::{self, App, InputMode, PreviewMode};
 use crate::tmux::{self, SessionStatus};
@@ -38,8 +38,10 @@ fn md_skin() -> MadSkin {
 
     skin.bold.set_fg(CtColor::White);
     skin.italic.set_fg(CtColor::AnsiValue(183)); // light purple
-    skin.inline_code.set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
-    skin.code_block.set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
+    skin.inline_code
+        .set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
+    skin.code_block
+        .set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
     skin.bullet = termimad::StyledChar::from_fg_char(CtColor::Cyan, '•');
     skin.quote_mark = termimad::StyledChar::from_fg_char(CtColor::Cyan, '▐');
 
@@ -65,11 +67,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Some(app::ListItem::Session { .. } | app::ListItem::Task { .. })
     );
     if show_panel {
-        let columns = Layout::horizontal([
-            Constraint::Percentage(30),
-            Constraint::Percentage(70),
-        ])
-        .split(chunks[1]);
+        let columns = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(chunks[1]);
 
         draw_list(f, app, columns[0]);
         match app.selected_item() {
@@ -119,7 +118,12 @@ fn is_last_session(items: &[app::ListItem], i: usize, project_name: &str, task_n
 }
 
 /// Find whether the parent task of a session is the last task in the project.
-fn parent_task_is_last(items: &[app::ListItem], session_idx: usize, project_name: &str, task_name: &str) -> bool {
+fn parent_task_is_last(
+    items: &[app::ListItem],
+    session_idx: usize,
+    project_name: &str,
+    task_name: &str,
+) -> bool {
     for j in (0..session_idx).rev() {
         if let app::ListItem::Task {
             project_name: pn,
@@ -153,9 +157,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let collapsed = is_project_collapsed(app, &project.name);
                 let chevron = if collapsed { "▶ " } else { "▼ " };
                 let name_style = if is_selected {
-                    Style::default()
-                        .fg(ACCENT)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                         .fg(Color::White)
@@ -165,10 +167,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(indicator, indicator_style),
                     Span::styled(chevron, Style::default().fg(MUTED)),
                     Span::styled(&project.name, name_style),
-                    Span::styled(
-                        format!("  {}", project.path),
-                        Style::default().fg(MUTED),
-                    ),
+                    Span::styled(format!("  {}", project.path), Style::default().fg(MUTED)),
                 ];
                 if let Some(branch) = app.project_branches.get(&project.name) {
                     spans.push(Span::styled(
@@ -201,9 +200,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                             ));
                         }
                         if active_sessions > 0 {
-                            parts.push(format!(
-                                "{active_sessions} active"
-                            ));
+                            parts.push(format!("{active_sessions} active"));
                         }
                         spans.push(Span::styled(
                             format!("  [{}]", parts.join(", ")),
@@ -215,17 +212,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(ListItem::new(Line::from(spans)));
             }
             app::ListItem::Task {
-                project_name,
-                task,
-                ..
+                project_name, task, ..
             } => {
                 let indicator = if is_selected { " ▸ " } else { "   " };
                 let last = is_last_task(&app.items, i, project_name);
                 let branch_char = if last { "└─ " } else { "├─ " };
                 let style = if is_selected {
-                    Style::default()
-                        .fg(TASK_COLOR)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(TASK_COLOR).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(TASK_COLOR)
                 };
@@ -237,7 +230,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
                 // Show auto-context indicator (nerd font: nf-md-file_document_edit \uf0dc8)
                 if task.auto_context {
-                    spans.push(Span::styled("  \u{f0dc8}", Style::default().fg(Color::Cyan)));
+                    spans.push(Span::styled(
+                        "  \u{f0dc8}",
+                        Style::default().fg(Color::Cyan),
+                    ));
                 }
 
                 // Show diff stats for the task branch vs main
@@ -274,9 +270,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 ));
 
                 // Show active session count when task is collapsed
-                if app.collapsed.contains(&format!("t:{project_name}:{}", task.name)) {
-                    let sessions =
-                        tmux::sessions_for_task(project_name, &task.name, &app.sessions);
+                if app
+                    .collapsed
+                    .contains(&format!("t:{project_name}:{}", task.name))
+                {
+                    let sessions = tmux::sessions_for_task(project_name, &task.name, &app.sessions);
                     let active = sessions
                         .iter()
                         .filter(|s| {
@@ -336,19 +334,18 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(indicator, indicator_style),
                     Span::styled(continuation, tree_style),
                     Span::styled(branch_char, tree_style),
-                    Span::styled(
-                        format!("{status_icon} "),
-                        Style::default().fg(status_color),
-                    ),
+                    Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
                 ];
                 if wt.is_some() {
-                    spans.push(Span::styled(
-                        "\u{e0a0} ",
-                        Style::default().fg(TREE),
-                    ));
+                    spans.push(Span::styled("\u{e0a0} ", Style::default().fg(TREE)));
                 }
                 spans.push(Span::styled(&session.session_name, style));
-                if app.merged_sessions.get(&session.name).copied().unwrap_or(false) {
+                if app
+                    .merged_sessions
+                    .get(&session.name)
+                    .copied()
+                    .unwrap_or(false)
+                {
                     spans.push(Span::styled("  ✓", Style::default().fg(ACCENT)));
                 }
                 if let Some(stats) = app.diff_stats.get(&session.name) {
@@ -410,11 +407,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
 
     // Add terminal tabs
     if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
-        let term_count = app
-            .terminal_counts
-            .get(&session.name)
-            .copied()
-            .unwrap_or(0);
+        let term_count = app.terminal_counts.get(&session.name).copied().unwrap_or(0);
         for i in 0..term_count {
             tab_spans.push(sep_span.clone());
             let label = format!("term{}", i + 1);
@@ -454,16 +447,35 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
                 Ok(text) => text,
                 Err(_) => return,
             };
-            let visible_lines: Vec<Line> = text.lines.into_iter().skip(app.preview_scroll).take(visible_height).collect();
+            let visible_lines: Vec<Line> = text
+                .lines
+                .into_iter()
+                .skip(app.preview_scroll)
+                .take(visible_height)
+                .collect();
             let paragraph = Paragraph::new(visible_lines);
             f.render_widget(paragraph, content_area);
         }
         PreviewMode::Diff => {
             if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
                 if let Some(stats) = app.diff_stats.get(&session.name) {
-                    render_diff_with_stats(f, content, stats.added, stats.removed, content_area, visible_height, app.preview_scroll);
+                    render_diff_with_stats(
+                        f,
+                        content,
+                        stats.added,
+                        stats.removed,
+                        content_area,
+                        visible_height,
+                        app.preview_scroll,
+                    );
                 } else {
-                    render_diff_content(f, content, content_area, visible_height, app.preview_scroll);
+                    render_diff_content(
+                        f,
+                        content,
+                        content_area,
+                        visible_height,
+                        app.preview_scroll,
+                    );
                 }
             } else {
                 render_diff_content(f, content, content_area, visible_height, app.preview_scroll);
@@ -536,7 +548,8 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
                 f.render_widget(paragraph, content_area);
             }
             None => {
-                let msg = Paragraph::new(Span::styled("No task context", Style::default().fg(MUTED)));
+                let msg =
+                    Paragraph::new(Span::styled("No task context", Style::default().fg(MUTED)));
                 f.render_widget(msg, content_area);
             }
         }
@@ -548,7 +561,15 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
                 return;
             }
         };
-        render_diff_with_stats(f, &stats.diff_output, stats.added, stats.removed, content_area, visible_height, app.preview_scroll);
+        render_diff_with_stats(
+            f,
+            &stats.diff_output,
+            stats.added,
+            stats.removed,
+            content_area,
+            visible_height,
+            app.preview_scroll,
+        );
     }
 }
 
@@ -574,10 +595,7 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
     for line in content.lines() {
         if line.starts_with("diff ") {
             // Extract filename from "diff --git a/path b/path"
-            let filename = line
-                .split(" b/")
-                .nth(1)
-                .unwrap_or(line);
+            let filename = line.split(" b/").nth(1).unwrap_or(line);
             if !first_file {
                 lines.push(Line::raw(""));
             }
@@ -593,8 +611,7 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
                 ),
                 Span::styled(sep, Style::default().fg(TREE)),
             ]));
-        } else if line.starts_with("index ") || line.starts_with("---") || line.starts_with("+++")
-        {
+        } else if line.starts_with("index ") || line.starts_with("---") || line.starts_with("+++") {
             // Skip verbose git diff metadata
             continue;
         } else if line.starts_with("@@") {
@@ -603,12 +620,18 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
                 let parts: Vec<&str> = header.splitn(3, ' ').collect();
                 if parts.len() >= 2 {
                     if let Some(old_start) = parts[0].strip_prefix('-') {
-                        old_line = old_start.split(',').next()
-                            .and_then(|s| s.parse().ok()).unwrap_or(0);
+                        old_line = old_start
+                            .split(',')
+                            .next()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
                     }
                     if let Some(new_start) = parts[1].strip_prefix('+') {
-                        new_line = new_start.split(',').next()
-                            .and_then(|s| s.parse().ok()).unwrap_or(0);
+                        new_line = new_start
+                            .split(',')
+                            .next()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
                     }
                 }
             }
@@ -649,14 +672,32 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
     lines
 }
 
-fn render_diff_content(f: &mut Frame, content: &str, area: Rect, visible_height: usize, scroll: usize) {
+fn render_diff_content(
+    f: &mut Frame,
+    content: &str,
+    area: Rect,
+    visible_height: usize,
+    scroll: usize,
+) {
     let diff_lines = style_diff_lines(content, area.width as usize);
-    let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(visible_height).collect();
+    let visible_lines: Vec<Line> = diff_lines
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
     let paragraph = Paragraph::new(visible_lines);
     f.render_widget(paragraph, area);
 }
 
-fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: usize, area: Rect, visible_height: usize, scroll: usize) {
+fn render_diff_with_stats(
+    f: &mut Frame,
+    content: &str,
+    added: usize,
+    removed: usize,
+    area: Rect,
+    visible_height: usize,
+    scroll: usize,
+) {
     // Extract changed file names from diff headers
     let files: Vec<&str> = content
         .lines()
@@ -669,15 +710,9 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
     // Build sticky header
     let mut header_lines: Vec<Line> = Vec::new();
     header_lines.push(Line::from(vec![
-        Span::styled(
-            format!("+{added}"),
-            Style::default().fg(Color::Green),
-        ),
+        Span::styled(format!("+{added}"), Style::default().fg(Color::Green)),
         Span::styled(",", Style::default().fg(MUTED)),
-        Span::styled(
-            format!("-{removed}"),
-            Style::default().fg(Color::Red),
-        ),
+        Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
         Span::styled(
             format!("  {} file(s)", files.len()),
             Style::default().fg(MUTED),
@@ -704,7 +739,11 @@ fn render_diff_with_stats(f: &mut Frame, content: &str, added: usize, removed: u
             ..area
         };
         let diff_lines = style_diff_lines(content, diff_area.width as usize);
-        let visible_lines: Vec<Line> = diff_lines.into_iter().skip(scroll).take(remaining_height).collect();
+        let visible_lines: Vec<Line> = diff_lines
+            .into_iter()
+            .skip(scroll)
+            .take(remaining_height)
+            .collect();
         let paragraph = Paragraph::new(visible_lines);
         f.render_widget(paragraph, diff_area);
     }
@@ -819,11 +858,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         }
         InputMode::ContextMenu => {
             let kb = &app.keybindings;
-            let nav_keys = format!(
-                "{}/{}",
-                key_display(kb.move_down),
-                key_display(kb.move_up)
-            );
+            let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
             help_bar(&[("⏎", "select"), (&nav_keys, "navigate"), ("Esc", "close")])
         }
         InputMode::AddProjectName
@@ -834,9 +869,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::RenameProject
         | InputMode::RenameTask
         | InputMode::RenameSession
-        | InputMode::MergeCommitMessage => {
-            help_bar(&[("⏎", "confirm"), ("Esc", "cancel")])
-        }
+        | InputMode::MergeCommitMessage => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
         }

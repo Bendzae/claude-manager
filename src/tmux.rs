@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 const SESSION_SEP: &str = "__";
 const PERMISSION_PROMPTS: &[&str] = &[
@@ -76,10 +76,7 @@ pub fn sanitize(s: &str) -> String {
             prev_hyphen = false;
         }
     }
-    result
-        .trim_matches('-')
-        .replace("__", "_")
-        .to_string()
+    result.trim_matches('-').replace("__", "_").to_string()
 }
 
 /// Generate a branch name from a task name.
@@ -149,7 +146,13 @@ pub fn list_sessions() -> Result<Vec<TmuxSession>> {
 
 pub fn branch_exists(project_path: &str, branch: &str) -> bool {
     Command::new("git")
-        .args(["-C", project_path, "rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .args([
+            "-C",
+            project_path,
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{branch}"),
+        ])
         .output()
         .is_ok_and(|o| o.status.success())
 }
@@ -328,8 +331,11 @@ pub fn create_session(
 /// Reuses the existing worktree if present; does NOT send an initial prompt.
 /// `tmux_name` is the expected session name (which may differ from what
 /// build_tmux_name would produce if the session was renamed).
-pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord, auto_context: bool) -> Result<String> {
-
+pub fn recreate_session(
+    tmux_name: &str,
+    record: &crate::config::SessionRecord,
+    auto_context: bool,
+) -> Result<String> {
     let work_dir = if record.use_worktree {
         let wt_path = worktree_dir(
             &record.project_name,
@@ -484,10 +490,7 @@ pub fn kill_session(name: &str) -> Result<()> {
     kill_session_with_fallback(name, None)
 }
 
-pub fn kill_session_with_fallback(
-    name: &str,
-    fallback: Option<SessionCleanupInfo>,
-) -> Result<()> {
+pub fn kill_session_with_fallback(name: &str, fallback: Option<SessionCleanupInfo>) -> Result<()> {
     // Try to get paths from tmux env vars first, fall back to provided info
     let project_path = get_session_env(name, "CM_PROJECT_PATH")
         .or_else(|| fallback.as_ref().map(|f| f.project_path.clone()));
@@ -512,14 +515,7 @@ pub fn kill_session_with_fallback(
 
         if Path::new(&wt_path).exists() {
             let _ = Command::new("git")
-                .args([
-                    "-C",
-                    &proj_path,
-                    "worktree",
-                    "remove",
-                    "--force",
-                    &wt_path,
-                ])
+                .args(["-C", &proj_path, "worktree", "remove", "--force", &wt_path])
                 .output();
         }
 
@@ -592,17 +588,15 @@ pub fn remove_task_context_hooks(work_dir: &str) {
         obj.remove("hooks");
     }
 
-    let _ = fs::write(&settings_path, serde_json::to_string_pretty(&existing).unwrap_or_default());
+    let _ = fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&existing).unwrap_or_default(),
+    );
 }
 
 /// Set up shared task context for a session.
 /// Creates the context file if it doesn't exist and writes hooks into the work directory.
-pub fn setup_task_context(
-    work_dir: &str,
-    task_name: &str,
-    task_branch: &str,
-    context_path: &Path,
-) {
+pub fn setup_task_context(work_dir: &str, task_name: &str, task_branch: &str, context_path: &Path) {
     let context_path_str = context_path.to_string_lossy().to_string();
 
     // Create context file with initial content if it doesn't exist
@@ -610,9 +604,7 @@ pub fn setup_task_context(
         if let Some(parent) = context_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let initial = format!(
-            "# {task_name}\nBranch: {task_branch}\n"
-        );
+        let initial = format!("# {task_name}\nBranch: {task_branch}\n");
         let _ = fs::write(&context_path, initial);
     }
 
@@ -728,7 +720,10 @@ exit 0"#,
         obj.insert("hooks".to_string(), settings["hooks"].clone());
     }
 
-    let _ = fs::write(&settings_path, serde_json::to_string_pretty(&existing).unwrap_or_default());
+    let _ = fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&existing).unwrap_or_default(),
+    );
 }
 
 /// Check if a worktree has uncommitted changes.
@@ -736,10 +731,7 @@ pub fn worktree_is_dirty(worktree_path: &str) -> bool {
     Command::new("git")
         .args(["-C", worktree_path, "status", "--porcelain"])
         .output()
-        .map(|o| {
-            o.status.success()
-                && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
-        })
+        .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
         .unwrap_or(false)
 }
 
@@ -750,7 +742,12 @@ pub fn next_commit_message(worktree_path: &str, session_name: &str) -> String {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
         .unwrap_or(0);
 
     format!("{session_name}-{count}")
@@ -783,7 +780,15 @@ pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
     }
 
     let output = Command::new("git")
-        .args(["-C", project_path, "push", "--force-with-lease", "-u", "origin", branch])
+        .args([
+            "-C",
+            project_path,
+            "push",
+            "--force-with-lease",
+            "-u",
+            "origin",
+            branch,
+        ])
         .output()?;
 
     if !output.status.success() {
@@ -819,7 +824,9 @@ pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
     if !output.status.success() {
         // Leave the branch checked out so the user can resolve conflicts
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Rebase has conflicts. Resolve them in {project_path} then run `git rebase --continue`.\n{stderr}");
+        bail!(
+            "Rebase has conflicts. Resolve them in {project_path} then run `git rebase --continue`.\n{stderr}"
+        );
     }
 
     // Restore original branch only on success
@@ -869,7 +876,9 @@ pub fn rebase_session_on_task(
         .success();
 
     if is_ancestor {
-        return Ok(format!("{session_branch} is already up to date with {task_branch}"));
+        return Ok(format!(
+            "{session_branch} is already up to date with {task_branch}"
+        ));
     }
 
     // Rebase onto task branch
@@ -915,18 +924,15 @@ pub fn merge_session_to_task(
         // Merge in the worktree that has the task branch — this naturally updates
         // its index and working tree, and respects uncommitted changes.
         let output = Command::new("git")
-            .args([
-                "-C",
-                &task_wt_path,
-                "merge",
-                "--ff-only",
-                &session_branch,
-            ])
+            .args(["-C", &task_wt_path, "merge", "--ff-only", &session_branch])
             .output()?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            return Ok(format!("Merged {session_branch} into {task_branch} (ff)\n{}", stdout.trim()));
+            return Ok(format!(
+                "Merged {session_branch} into {task_branch} (ff)\n{}",
+                stdout.trim()
+            ));
         }
 
         // ff-only failed — try a real merge
@@ -1084,13 +1090,7 @@ fn find_worktree_for_branch(project_path: &str, branch: &str) -> Option<String> 
 
 pub fn capture_pane(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
-        .args([
-            "capture-pane",
-            "-t",
-            session_name,
-            "-p",
-            "-e",
-        ])
+        .args(["capture-pane", "-t", session_name, "-p", "-e"])
         .output()
         .ok()?;
 
@@ -1132,7 +1132,9 @@ pub fn create_terminal_window(session_name: &str) -> Result<usize> {
             "#{pane_current_path}",
         ])
         .output()?;
-    let work_dir = String::from_utf8_lossy(&dir_output.stdout).trim().to_string();
+    let work_dir = String::from_utf8_lossy(&dir_output.stdout)
+        .trim()
+        .to_string();
 
     let output = Command::new("tmux")
         .args([
@@ -1162,11 +1164,7 @@ pub fn create_terminal_window(session_name: &str) -> Result<usize> {
 pub fn kill_terminal_window(session_name: &str, terminal_idx: usize) -> Result<()> {
     let window_idx = terminal_idx + 1;
     let output = Command::new("tmux")
-        .args([
-            "kill-window",
-            "-t",
-            &format!("{session_name}:{window_idx}"),
-        ])
+        .args(["kill-window", "-t", &format!("{session_name}:{window_idx}")])
         .output()?;
 
     if !output.status.success() {
@@ -1235,9 +1233,12 @@ pub fn is_session_merged(session_name: &str) -> Option<bool> {
     // Check if the session branch is an ancestor of the task branch
     let is_ancestor = Command::new("git")
         .args([
-            "-C", &worktree_path,
-            "merge-base", "--is-ancestor",
-            &session_branch, &task_branch,
+            "-C",
+            &worktree_path,
+            "merge-base",
+            "--is-ancestor",
+            &session_branch,
+            &task_branch,
         ])
         .output()
         .ok()?
@@ -1309,7 +1310,13 @@ pub fn get_branch_diff(project_path: &str, branch: &str) -> Option<DiffStats> {
     };
 
     let output = Command::new("git")
-        .args(["-C", project_path, "--no-pager", "diff", &format!("{base}...{branch}")])
+        .args([
+            "-C",
+            project_path,
+            "--no-pager",
+            "diff",
+            &format!("{base}...{branch}"),
+        ])
         .output()
         .ok()?;
 
@@ -1420,11 +1427,7 @@ fn capture_pane_plain(session_name: &str) -> Option<String> {
 /// Get the PR URL for a branch using the `gh` CLI.
 pub fn get_pr_url(project_path: &str, branch: &str) -> Option<String> {
     let output = Command::new("gh")
-        .args([
-            "pr", "view", branch,
-            "--json", "url",
-            "-q", ".url",
-        ])
+        .args(["pr", "view", branch, "--json", "url", "-q", ".url"])
         .current_dir(project_path)
         .output()
         .ok()?;
@@ -1437,11 +1440,7 @@ pub fn get_pr_url(project_path: &str, branch: &str) -> Option<String> {
     if url.is_empty() { None } else { Some(url) }
 }
 
-pub fn next_session_number(
-    project_name: &str,
-    task_name: &str,
-    sessions: &[TmuxSession],
-) -> u32 {
+pub fn next_session_number(project_name: &str, task_name: &str, sessions: &[TmuxSession]) -> u32 {
     let max = sessions
         .iter()
         .filter(|s| s.project_name == project_name && s.task_name == task_name)
@@ -1458,13 +1457,10 @@ pub fn sessions_for_task(
 ) -> Vec<TmuxSession> {
     sessions
         .iter()
-        .filter(|s| {
-            s.project_name == sanitize(project_name) && s.task_name == sanitize(task_name)
-        })
+        .filter(|s| s.project_name == sanitize(project_name) && s.task_name == sanitize(task_name))
         .cloned()
         .collect()
 }
-
 
 /// Delete a task and all its sessions, worktrees, branches, and config files.
 /// Returns a description of what was cleaned up.
@@ -1495,9 +1491,17 @@ pub fn delete_task(
             && !live_names.contains(tmux_name.as_str())
         {
             // This record's tmux session is dead — clean up its worktree and branch
-            let wt_path = worktree_dir(&record.project_name, &record.task_name, &record.session_name);
+            let wt_path = worktree_dir(
+                &record.project_name,
+                &record.task_name,
+                &record.session_name,
+            );
             if record.use_worktree {
-                let session_branch = format!("{}-{}", sanitize(task_branch), sanitize(&record.session_name));
+                let session_branch = format!(
+                    "{}-{}",
+                    sanitize(task_branch),
+                    sanitize(&record.session_name)
+                );
                 let _ = kill_session_with_fallback(
                     tmux_name,
                     Some(SessionCleanupInfo {
@@ -1532,11 +1536,21 @@ pub fn delete_task(
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
 
                     let _ = Command::new("git")
-                        .args(["-C", project_path, "worktree", "remove", "--force", &wt_path_str])
+                        .args([
+                            "-C",
+                            project_path,
+                            "worktree",
+                            "remove",
+                            "--force",
+                            &wt_path_str,
+                        ])
                         .output();
 
                     if let Some(branch_name) = branch {
-                        if !branch_name.is_empty() && branch_name != "main" && branch_name != "master" {
+                        if !branch_name.is_empty()
+                            && branch_name != "main"
+                            && branch_name != "master"
+                        {
                             let _ = Command::new("git")
                                 .args(["-C", project_path, "branch", "-D", &branch_name])
                                 .output();
@@ -1732,13 +1746,21 @@ mod tests {
 
     #[test]
     fn diff_stats_empty() {
-        let stats = DiffStats { added: 0, removed: 0, diff_output: String::new() };
+        let stats = DiffStats {
+            added: 0,
+            removed: 0,
+            diff_output: String::new(),
+        };
         assert!(stats.is_empty());
     }
 
     #[test]
     fn diff_stats_not_empty() {
-        let stats = DiffStats { added: 5, removed: 3, diff_output: "some diff".into() };
+        let stats = DiffStats {
+            added: 5,
+            removed: 3,
+            diff_output: "some diff".into(),
+        };
         assert!(!stats.is_empty());
     }
 }
