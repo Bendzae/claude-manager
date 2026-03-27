@@ -170,6 +170,12 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(MUTED),
                     ),
                 ];
+                if let Some(branch) = app.project_branches.get(&project.name) {
+                    spans.push(Span::styled(
+                        format!("  ({})", branch),
+                        Style::default().fg(MUTED),
+                    ));
+                }
 
                 // Show task/session counts when project is collapsed
                 if collapsed {
