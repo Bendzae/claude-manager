@@ -100,6 +100,8 @@ pub struct App {
     pub terminal_counts: HashMap<String, usize>,
     /// PR URLs keyed by branch name
     pub pr_urls: HashMap<String, String>,
+    /// Current git branch for each project, keyed by project name
+    pub project_branches: HashMap<String, String>,
     pub loading: bool,
     pub op_receiver: mpsc::Receiver<OpResult>,
     pub op_sender: mpsc::Sender<OpResult>,
@@ -178,6 +180,7 @@ impl App {
             preview_scroll: 0,
             terminal_counts: HashMap::new(),
             pr_urls: HashMap::new(),
+            project_branches: HashMap::new(),
             loading: false,
             op_receiver: rx,
             op_sender: tx,
@@ -233,6 +236,9 @@ impl App {
             }
             if !update.pr_urls.is_empty() {
                 self.pr_urls.extend(update.pr_urls);
+            }
+            if !update.project_branches.is_empty() {
+                self.project_branches = update.project_branches;
             }
             if !update.terminal_counts.is_empty() {
                 // Merge by taking the max of local and worker counts to avoid
@@ -322,9 +328,17 @@ impl App {
             })
             .collect();
 
+        let project_paths: Vec<(String, String)> = self
+            .config
+            .projects
+            .iter()
+            .map(|p| (p.name.clone(), p.path.clone()))
+            .collect();
+
         if let Ok(mut hints) = self.worker.hints.lock() {
             hints.selection = selection;
             hints.tasks = tasks;
+            hints.project_paths = project_paths;
         }
     }
 

@@ -41,6 +41,8 @@ pub struct TaskInfo {
 pub struct WorkerHints {
     pub selection: Selection,
     pub tasks: Vec<TaskInfo>,
+    /// Project name → project path, so the worker can query the current branch.
+    pub project_paths: Vec<(String, String)>,
 }
 
 /// Data produced by the background worker for the UI to consume.
@@ -59,6 +61,8 @@ pub struct WorkerUpdate {
     pub terminal_counts: HashMap<String, usize>,
     /// PR URLs keyed by branch name.
     pub pr_urls: HashMap<String, String>,
+    /// Current git branch for each project, keyed by project name.
+    pub project_branches: HashMap<String, String>,
 }
 
 pub struct Worker {
@@ -71,6 +75,7 @@ impl Worker {
         let hints = Arc::new(Mutex::new(WorkerHints {
             selection: Selection::None,
             tasks: Vec::new(),
+            project_paths: Vec::new(),
         }));
         let (tx, rx) = mpsc::channel();
 
@@ -162,9 +167,9 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
         }
 
         // Handle selection-based content
-        let (selection, tasks) = {
+        let (selection, tasks, project_paths) = {
             let h = hints.lock().unwrap();
-            (h.selection.clone(), h.tasks.clone())
+            (h.selection.clone(), h.tasks.clone(), h.project_paths.clone())
         };
 
         // Compute task branch diffs (less frequently)
@@ -190,6 +195,16 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
                         let _ = std::fs::write(&pr_path, &url);
                         pr_urls.insert(task.branch.clone(), url);
                     }
+                }
+            }
+        }
+
+        // Compute current branch for each project (less frequently, ~every 2 seconds)
+        let mut project_branches: HashMap<String, String> = HashMap::new();
+        if tick % 4 == 0 {
+            for (name, path) in &project_paths {
+                if let Some(branch) = get_current_branch(path) {
+                    project_branches.insert(name.clone(), branch);
                 }
             }
         }
@@ -238,6 +253,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             task_diff_stats,
             terminal_counts: terminal_counts.clone(),
             pr_urls: pr_urls.clone(),
+            project_branches,
         };
 
         if tx.send(update).is_err() {
@@ -246,5 +262,17 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
 
         tick += 1;
         thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn get_current_branch(project_path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", project_path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
     }
 }
