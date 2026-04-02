@@ -650,8 +650,11 @@ fn build_base_system_prompt(
 
 /// Install the /update-task-context skill into the work directory's .claude/skills/.
 fn install_update_task_context_skill(work_dir: &str, context_path: &str) {
-    let skills_dir = Path::new(work_dir).join(".claude").join("skills");
-    let _ = fs::create_dir_all(&skills_dir);
+    let skill_dir = Path::new(work_dir)
+        .join(".claude")
+        .join("skills")
+        .join("update-task-context");
+    let _ = fs::create_dir_all(&skill_dir);
 
     let skill_content = format!(
         r#"---
@@ -671,10 +674,10 @@ Rules:
         context_path = context_path
     );
 
-    let _ = fs::write(skills_dir.join("update-task-context.md"), skill_content);
+    let _ = fs::write(skill_dir.join("SKILL.md"), skill_content);
 
     // Ensure the skill file is git-ignored locally via .git/info/exclude
-    let exclude_entry = ".claude/skills/update-task-context.md";
+    let exclude_entry = ".claude/skills/update-task-context/";
     let git_dir = Path::new(work_dir).join(".git");
     // Worktrees have a .git file pointing to the real git dir
     let real_git_dir = if git_dir.is_file() {
