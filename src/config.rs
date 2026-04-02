@@ -209,12 +209,8 @@ impl KeyBindings {
 pub struct Task {
     pub name: String,
     pub branch: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_context: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Deserialize `setup_commands` from either a single string or an array of strings.
@@ -443,7 +439,7 @@ impl Config {
                 project.tasks.push(Task {
                     name: task_name,
                     branch,
-                    auto_context: true,
+                    auto_context: false,
                 });
                 return true;
             }
