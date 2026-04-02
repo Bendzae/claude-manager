@@ -367,8 +367,7 @@ pub fn recreate_session(
         record.project_path.clone()
     };
 
-    let context_path =
-        crate::config::task_context_path(&record.project_name, &record.task_branch);
+    let context_path = crate::config::task_context_path(&record.project_name, &record.task_branch);
     let context_path_str = context_path.to_string_lossy().to_string();
 
     // Always install skill
