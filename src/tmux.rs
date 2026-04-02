@@ -250,25 +250,40 @@ pub fn create_session(
         work_dir = project_path.to_string();
     }
 
-    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
+    let context_path = crate::config::task_context_path(project_name, task_branch);
+    let context_path_str = context_path.to_string_lossy().to_string();
 
+    // Clean any stale hooks that may have been copied from the main project's .claude/
+    remove_task_context_hooks(&work_dir);
+
+    // Always install the /update-task-context skill
+    install_update_task_context_skill(&work_dir, &context_path_str);
+
+    // Set up stop hook if auto_context is enabled
     if auto_context {
-        let context_path = crate::config::task_context_path(project_name, task_branch);
-        let context_path_str = context_path.to_string_lossy().to_string();
-
-        // Set up shared task context with hooks BEFORE starting Claude so it picks up settings
         setup_task_context(&work_dir, task_name, task_branch, &context_path);
-
-        let system_prompt = format!(
-            "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
-             A shared context file at {context_path_str} is automatically injected into every prompt."
-        );
-
-        claude_cmd.push_str(&format!(
-            " --append-system-prompt {}",
-            shell_escape(&system_prompt)
-        ));
     }
+
+    let session_branch = if use_worktree {
+        let branch = format!("{task_branch}-{}", sanitize(session_name));
+        Some(branch)
+    } else {
+        None
+    };
+
+    let system_prompt = build_base_system_prompt(
+        project_name,
+        task_branch,
+        session_branch.as_deref(),
+        &context_path_str,
+    );
+
+    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
+    claude_cmd.push_str(&format!(
+        " --append-system-prompt {}",
+        shell_escape(&system_prompt)
+    ));
+
     if let Some(prompt) = initial_prompt {
         claude_cmd.push(' ');
         claude_cmd.push_str(&shell_escape(prompt));
@@ -355,31 +370,44 @@ pub fn recreate_session(
         record.project_path.clone()
     };
 
-    let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
+    let context_path = crate::config::task_context_path(&record.project_name, &record.task_branch);
+    let context_path_str = context_path.to_string_lossy().to_string();
 
+    // Always install skill
+    install_update_task_context_skill(&work_dir, &context_path_str);
+
+    // Re-apply stop hook if auto_context is on
     if auto_context {
-        let context_path =
-            crate::config::task_context_path(&record.project_name, &record.task_branch);
-        let context_path_str = context_path.to_string_lossy().to_string();
-
-        // Re-apply hooks (they may have been lost if worktree was recreated externally)
         setup_task_context(
             &work_dir,
             &record.task_name,
             &record.task_branch,
             &context_path,
         );
-
-        let system_prompt = format!(
-            "SHARED TASK CONTEXT: You are one of potentially multiple agents working on the same task. \
-             A shared context file at {context_path_str} is automatically injected into every prompt."
-        );
-
-        claude_cmd.push_str(&format!(
-            " --append-system-prompt {}",
-            shell_escape(&system_prompt)
-        ));
     }
+
+    let session_branch = if record.use_worktree {
+        Some(format!(
+            "{}-{}",
+            record.task_branch,
+            sanitize(&record.session_name)
+        ))
+    } else {
+        None
+    };
+
+    let system_prompt = build_base_system_prompt(
+        &record.project_name,
+        &record.task_branch,
+        session_branch.as_deref(),
+        &context_path_str,
+    );
+
+    let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
+    claude_cmd.push_str(&format!(
+        " --append-system-prompt {}",
+        shell_escape(&system_prompt)
+    ));
 
     let output = Command::new("tmux")
         .args([
@@ -594,8 +622,94 @@ pub fn remove_task_context_hooks(work_dir: &str) {
     );
 }
 
-/// Set up shared task context for a session.
-/// Creates the context file if it doesn't exist and writes hooks into the work directory.
+/// Build the base system prompt that all sessions receive.
+fn build_base_system_prompt(
+    project_name: &str,
+    task_branch: &str,
+    worktree_branch: Option<&str>,
+    context_path: &str,
+) -> String {
+    let mut prompt = format!(
+        "You have been spawned as a session agent by Claude Manager, a multi-agent task management tool.\n\
+         \n\
+         - Project: {project_name}\n\
+         - Task branch: {task_branch}\n"
+    );
+    if let Some(wt_branch) = worktree_branch {
+        prompt.push_str(&format!("- Worktree branch: {wt_branch}\n"));
+    }
+    prompt.push_str(&format!(
+        "- PRs should always be opened from the task branch: {task_branch}\n\
+         - Other agents may be working on the same task in parallel\n\
+         - A shared task context file exists at {context_path}\n\
+         - Periodically read the shared task context file to stay in sync with other agents\n\
+         - NEVER push the worktree branch unless explicitly told to do so"
+    ));
+    prompt
+}
+
+/// Install the /update-task-context skill into the work directory's .claude/skills/.
+fn install_update_task_context_skill(work_dir: &str, context_path: &str) {
+    let skill_dir = Path::new(work_dir)
+        .join(".claude")
+        .join("skills")
+        .join("update-task-context");
+    let _ = fs::create_dir_all(&skill_dir);
+
+    let skill_content = format!(
+        r#"---
+description: Update the shared task context file with current progress
+user-invocable: true
+---
+
+Read the shared task context file at `{context_path}` and rewrite it as a clean, consolidated version that incorporates your current progress and knowledge.
+
+Rules:
+- The first line MUST be a markdown heading
+- Maintain a clear summary of the task goal, what has been done, and what is known
+- Include anything useful for other agents picking up this task
+- Remove outdated info, keep it concise
+- Do NOT include commentary or meta-text about the update itself
+"#,
+        context_path = context_path
+    );
+
+    let _ = fs::write(skill_dir.join("SKILL.md"), skill_content);
+
+    // Ensure the skill file is git-ignored locally via .git/info/exclude
+    let exclude_entry = ".claude/skills/update-task-context/";
+    let git_dir = Path::new(work_dir).join(".git");
+    // Worktrees have a .git file pointing to the real git dir
+    let real_git_dir = if git_dir.is_file() {
+        fs::read_to_string(&git_dir).ok().and_then(|content| {
+            content
+                .strip_prefix("gitdir: ")
+                .map(|p| PathBuf::from(p.trim()))
+        })
+    } else if git_dir.is_dir() {
+        Some(git_dir)
+    } else {
+        None
+    };
+    if let Some(gd) = real_git_dir {
+        let info_dir = gd.join("info");
+        let _ = fs::create_dir_all(&info_dir);
+        let exclude_path = info_dir.join("exclude");
+        let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
+        if !existing.lines().any(|l| l.trim() == exclude_entry) {
+            let mut content = existing;
+            if !content.ends_with('\n') && !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(exclude_entry);
+            content.push('\n');
+            let _ = fs::write(&exclude_path, content);
+        }
+    }
+}
+
+/// Set up shared task context for a session (stop hook only, when auto_context is enabled).
+/// Creates the context file if it doesn't exist and writes the stop hook into settings.
 pub fn setup_task_context(work_dir: &str, task_name: &str, task_branch: &str, context_path: &Path) {
     let context_path_str = context_path.to_string_lossy().to_string();
 
@@ -605,17 +719,14 @@ pub fn setup_task_context(work_dir: &str, task_name: &str, task_branch: &str, co
             let _ = fs::create_dir_all(parent);
         }
         let initial = format!("# {task_name}\nBranch: {task_branch}\n");
-        let _ = fs::write(&context_path, initial);
+        let _ = fs::write(context_path, initial);
     }
 
-    // Write .claude/settings.local.json with hooks
+    // Write .claude/settings.local.json with stop hook only
     let claude_dir = Path::new(work_dir).join(".claude");
     let _ = fs::create_dir_all(&claude_dir);
 
-    // Stop hook: reads JSON input from stdin to check stop_hook_active.
-    // If already re-running from a stop hook, allow stopping.
-    // Otherwise, output JSON with decision:block to force context update.
-    // Write stop hook as a script that runs claude -p in the background to update context.
+    // Stop hook: runs claude -p in the background to update context file asynchronously
     let hook_dir = context_path.parent().unwrap_or(context_path);
     let hook_script_path = hook_dir.join("stop-hook.sh");
     let stop_script = format!(
@@ -626,6 +737,8 @@ MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
 SUMMARY=$(echo "$INPUT" | jq -r '.transcript_summary // empty')
 [ -z "$MSG" ] && exit 0
 
+# Run context update in the background so the user isn't blocked
+(
 TMPFILE=$(mktemp)
 CURRENT=$(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
 cat > "$TMPFILE" <<PROMPT_END
@@ -669,6 +782,8 @@ else
 fi
 
 rm -f "$TMPFILE"
+) &
+disown
 exit 0"#,
         context = context_path_str
     );
@@ -680,25 +795,8 @@ exit 0"#,
     }
     let hook_script_str = hook_script_path.to_string_lossy().to_string();
 
-    let pr_url_path = context_path
-        .parent()
-        .unwrap_or(context_path)
-        .join("pr_url.txt");
-    let pr_url_path_str = pr_url_path.to_string_lossy().to_string();
-
     let settings = serde_json::json!({
         "hooks": {
-            "UserPromptSubmit": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": format!(
-                        "echo '--- SHARED TASK CONTEXT (other agents working on this task update this file) ---' && \
-                         (PR_URL=$(cat '{}' 2>/dev/null) && [ -n \"$PR_URL\" ] && echo \"PR: $PR_URL\"; true) && \
-                         cat '{}' 2>/dev/null || true",
-                        pr_url_path_str, context_path_str
-                    )
-                }]
-            }],
             "Stop": [{
                 "hooks": [{
                     "type": "command",
