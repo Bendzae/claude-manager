@@ -253,6 +253,9 @@ pub fn create_session(
     let context_path = crate::config::task_context_path(project_name, task_branch);
     let context_path_str = context_path.to_string_lossy().to_string();
 
+    // Clean any stale hooks that may have been copied from the main project's .claude/
+    remove_task_context_hooks(&work_dir);
+
     // Always install the /update-task-context skill
     install_update_task_context_skill(&work_dir, &context_path_str);
 
