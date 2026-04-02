@@ -669,6 +669,37 @@ Rules:
     );
 
     let _ = fs::write(skills_dir.join("update-task-context.md"), skill_content);
+
+    // Ensure the skill file is git-ignored locally via .git/info/exclude
+    let exclude_entry = ".claude/skills/update-task-context.md";
+    let git_dir = Path::new(work_dir).join(".git");
+    // Worktrees have a .git file pointing to the real git dir
+    let real_git_dir = if git_dir.is_file() {
+        fs::read_to_string(&git_dir).ok().and_then(|content| {
+            content
+                .strip_prefix("gitdir: ")
+                .map(|p| PathBuf::from(p.trim()))
+        })
+    } else if git_dir.is_dir() {
+        Some(git_dir)
+    } else {
+        None
+    };
+    if let Some(gd) = real_git_dir {
+        let info_dir = gd.join("info");
+        let _ = fs::create_dir_all(&info_dir);
+        let exclude_path = info_dir.join("exclude");
+        let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
+        if !existing.lines().any(|l| l.trim() == exclude_entry) {
+            let mut content = existing;
+            if !content.ends_with('\n') && !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(exclude_entry);
+            content.push('\n');
+            let _ = fs::write(&exclude_path, content);
+        }
+    }
 }
 
 /// Set up shared task context for a session (stop hook only, when auto_context is enabled).
