@@ -1328,7 +1328,13 @@ pub fn is_session_merged(session_name: &str) -> Option<bool> {
     // Also check for untracked files
     if no_diff {
         let output = Command::new("git")
-            .args(["-C", &worktree_path, "ls-files", "--others", "--exclude-standard"])
+            .args([
+                "-C",
+                &worktree_path,
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+            ])
             .output()
             .ok()?;
         let has_untracked = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
