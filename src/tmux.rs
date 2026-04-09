@@ -1305,8 +1305,9 @@ impl DiffStats {
     }
 }
 
-/// Check if a session's branch is fully merged into its task branch.
-/// Returns `Some(true)` if the session branch HEAD is an ancestor of (or equal to) the task branch.
+/// Check if a session's worktree has no differences from its task branch.
+/// Returns `Some(true)` if the working tree (including uncommitted changes)
+/// is identical to the task branch.
 pub fn is_session_merged(session_name: &str) -> Option<bool> {
     let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
     let task_branch = get_session_env(session_name, "CM_TASK_BRANCH")?;
@@ -1315,35 +1316,26 @@ pub fn is_session_merged(session_name: &str) -> Option<bool> {
         return None;
     }
 
-    // Get the session branch name
-    let output = Command::new("git")
-        .args(["-C", &worktree_path, "rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let session_branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if session_branch.is_empty() {
-        return None;
-    }
-
-    // Check if the session branch is an ancestor of the task branch
-    let is_ancestor = Command::new("git")
-        .args([
-            "-C",
-            &worktree_path,
-            "merge-base",
-            "--is-ancestor",
-            &session_branch,
-            &task_branch,
-        ])
+    // Check if working tree has any differences from the task branch
+    // (covers both committed and uncommitted changes)
+    let no_diff = Command::new("git")
+        .args(["-C", &worktree_path, "diff", "--quiet", &task_branch])
         .output()
         .ok()?
         .status
         .success();
 
-    Some(is_ancestor)
+    // Also check for untracked files
+    if no_diff {
+        let output = Command::new("git")
+            .args(["-C", &worktree_path, "ls-files", "--others", "--exclude-standard"])
+            .output()
+            .ok()?;
+        let has_untracked = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
+        return Some(!has_untracked);
+    }
+
+    Some(false)
 }
 
 /// Compute diff stats for a session's worktree against its base commit.
