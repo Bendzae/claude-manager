@@ -885,6 +885,7 @@ impl App {
         let setup_commands = project
             .map(|p| p.setup_commands.clone())
             .unwrap_or_default();
+        let startup_skills = self.config.startup_skills.clone();
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
 
@@ -900,6 +901,7 @@ impl App {
                 &setup_commands,
                 prompt.as_deref(),
                 auto_context,
+                &startup_skills,
             ) {
                 Ok(tmux_name) => {
                     config::add_session_record(
