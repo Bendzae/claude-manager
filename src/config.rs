@@ -277,6 +277,13 @@ pub struct Project {
 pub struct Config {
     #[serde(default)]
     pub projects: Vec<Project>,
+    /// Startup skills/commands to run before the initial prompt (e.g. ["/prime", "/caveman ultra"])
+    #[serde(
+        default,
+        deserialize_with = "deserialize_setup_commands",
+        serialize_with = "serialize_setup_commands"
+    )]
+    pub startup_skills: Vec<String>,
 }
 
 /// Root directory for all claude-manager data: ~/.claude-manager

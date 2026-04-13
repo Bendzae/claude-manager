@@ -192,6 +192,7 @@ pub fn create_session(
     setup_commands: &[String],
     initial_prompt: Option<&str>,
     auto_context: bool,
+    startup_skills: &[String],
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
 
@@ -284,7 +285,8 @@ pub fn create_session(
         shell_escape(&system_prompt)
     ));
 
-    if let Some(prompt) = initial_prompt {
+    let combined_prompt = build_initial_prompt(startup_skills, initial_prompt);
+    if let Some(prompt) = &combined_prompt {
         claude_cmd.push(' ');
         claude_cmd.push_str(&shell_escape(prompt));
     }
@@ -646,6 +648,41 @@ fn build_base_system_prompt(
          - NEVER push the worktree branch unless explicitly told to do so"
     ));
     prompt
+}
+
+/// Build the combined initial prompt from startup skills and optional user prompt.
+/// Returns `None` if both are empty.
+fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) -> Option<String> {
+    let has_skills = !startup_skills.is_empty();
+    let has_prompt = user_prompt.is_some_and(|p| !p.is_empty());
+
+    if !has_skills && !has_prompt {
+        return None;
+    }
+
+    if !has_skills {
+        return user_prompt.map(String::from);
+    }
+
+    let skills_list: String = startup_skills
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("{}. {s}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if !has_prompt {
+        return Some(format!(
+            "Run these startup skills first (one at a time, using the Skill tool):\n{skills_list}"
+        ));
+    }
+
+    Some(format!(
+        "Run these startup skills first (one at a time, using the Skill tool), then proceed with the task below:\n\
+         {skills_list}\n\n\
+         Task: {}",
+        user_prompt.unwrap()
+    ))
 }
 
 /// Install the /update-task-context skill into the work directory's .claude/skills/.
@@ -1836,6 +1873,41 @@ mod tests {
     #[test]
     fn shell_escape_with_spaces() {
         assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    // --- DiffStats ---
+
+    // --- build_initial_prompt ---
+
+    #[test]
+    fn initial_prompt_none_when_empty() {
+        assert!(build_initial_prompt(&[], None).is_none());
+        assert!(build_initial_prompt(&[], Some("")).is_none());
+    }
+
+    #[test]
+    fn initial_prompt_passthrough_no_skills() {
+        assert_eq!(
+            build_initial_prompt(&[], Some("do stuff")),
+            Some("do stuff".into())
+        );
+    }
+
+    #[test]
+    fn initial_prompt_skills_only() {
+        let result = build_initial_prompt(&["/prime".into()], None).unwrap();
+        assert!(result.contains("/prime"));
+        assert!(!result.contains("Task:"));
+    }
+
+    #[test]
+    fn initial_prompt_skills_and_prompt() {
+        let result =
+            build_initial_prompt(&["/prime".into(), "/caveman ultra".into()], Some("fix bug"))
+                .unwrap();
+        assert!(result.contains("1. /prime"));
+        assert!(result.contains("2. /caveman ultra"));
+        assert!(result.contains("Task: fix bug"));
     }
 
     // --- DiffStats ---
