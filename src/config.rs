@@ -406,6 +406,15 @@ impl Config {
         toml::from_str(&content).context("Failed to parse config file")
     }
 
+    /// Reload config from disk, preserving fields not managed by the UI.
+    /// This prevents overwriting externally-added config (e.g. startup_skills)
+    /// when the UI saves after mutating only project/task data.
+    pub fn reload(&mut self) {
+        if let Ok(disk) = Self::load() {
+            self.startup_skills = disk.startup_skills;
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {

@@ -640,6 +640,7 @@ impl App {
         };
 
         if let Some(new_state) = self.config.toggle_auto_context(&project_name, &task_name) {
+            self.config.reload();
             let _ = self.config.save();
 
             // Update hooks for all existing sessions of this task
@@ -705,6 +706,7 @@ impl App {
             } else {
                 self.input_buffer.trim().to_string()
             };
+            self.config.reload();
             self.config.add_project(name, path);
             let _ = self.config.save();
             self.input_buffer.clear();
@@ -1006,6 +1008,7 @@ impl App {
                     }
                 });
                 // Remove project from config (done here so it's saved even if op thread is slow)
+                self.config.reload();
                 self.config.remove_project(&project.path);
                 let _ = self.config.save();
                 return;
@@ -1073,6 +1076,7 @@ impl App {
                     }
                 });
                 // Remove task from config immediately
+                self.config.reload();
                 self.config.remove_task(&project_name, &task.name);
                 let _ = self.config.save();
                 return;
@@ -1129,6 +1133,7 @@ impl App {
                         }
                     }
 
+                    self.config.reload();
                     self.config.rename_project(&old_name, new_name.clone());
                     let _ = self.config.save();
                     self.status_message = Some(format!("Renamed project to {new_name}"));
@@ -1156,6 +1161,7 @@ impl App {
                         }
                     }
 
+                    self.config.reload();
                     self.config
                         .rename_task(&project_name, &task.name, new_name.clone());
                     let _ = self.config.save();
