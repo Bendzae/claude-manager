@@ -164,14 +164,30 @@ pub fn create_task_branch(project_path: &str, branch_name: &str) -> Result<()> {
         .args(["-C", project_path, "fetch", "origin", "main"])
         .output();
 
-    // Try creating from origin/main first, fall back to local main
+    // Try creating from origin/main first, fall back to local main.
+    // `--no-track` prevents inheriting origin/main as the upstream — once the
+    // branch is pushed, `push -u` will set it to track origin/<branch_name>.
     let status = Command::new("git")
-        .args(["-C", project_path, "branch", branch_name, "origin/main"])
+        .args([
+            "-C",
+            project_path,
+            "branch",
+            "--no-track",
+            branch_name,
+            "origin/main",
+        ])
         .output()?;
 
     if !status.status.success() {
         let output = Command::new("git")
-            .args(["-C", project_path, "branch", branch_name, "main"])
+            .args([
+                "-C",
+                project_path,
+                "branch",
+                "--no-track",
+                branch_name,
+                "main",
+            ])
             .output()?;
         if !output.status.success() {
             bail!("Failed to create branch {branch_name}");
