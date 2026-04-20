@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -67,7 +66,10 @@ pub struct WorkerUpdate {
 
 pub struct Worker {
     pub hints: Arc<Mutex<WorkerHints>>,
-    pub receiver: mpsc::Receiver<WorkerUpdate>,
+    /// Single-slot handoff: the worker overwrites this each tick; the UI takes
+    /// it. Using a mutex instead of an unbounded channel prevents updates from
+    /// piling up while the main thread is blocked (e.g. during `tmux attach`).
+    pub latest: Arc<Mutex<Option<WorkerUpdate>>>,
 }
 
 impl Worker {
@@ -77,19 +79,17 @@ impl Worker {
             tasks: Vec::new(),
             project_paths: Vec::new(),
         }));
-        let (tx, rx) = mpsc::channel();
+        let latest = Arc::new(Mutex::new(None));
 
         let hints_clone = hints.clone();
-        thread::spawn(move || worker_loop(hints_clone, tx));
+        let latest_clone = latest.clone();
+        thread::spawn(move || worker_loop(hints_clone, latest_clone));
 
-        Worker {
-            hints,
-            receiver: rx,
-        }
+        Worker { hints, latest }
     }
 }
 
-fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
+fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUpdate>>>) {
     let mut content_hashes: HashMap<String, u64> = HashMap::new();
     let mut stable_ticks: HashMap<String, u32> = HashMap::new();
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
@@ -259,9 +259,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, tx: mpsc::Sender<WorkerUpdate>) {
             project_branches,
         };
 
-        if tx.send(update).is_err() {
-            break;
-        }
+        *latest.lock().unwrap() = Some(update);
 
         tick += 1;
         thread::sleep(Duration::from_millis(500));

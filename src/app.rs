@@ -217,11 +217,7 @@ impl App {
 
     /// Apply any pending updates from the background worker.
     pub fn apply_worker_updates(&mut self) {
-        // Drain all pending updates, keep only the latest
-        let mut latest = None;
-        while let Ok(update) = self.worker.receiver.try_recv() {
-            latest = Some(update);
-        }
+        let latest = self.worker.latest.lock().unwrap().take();
         if let Some(update) = latest {
             self.sessions = update.sessions;
             self.session_statuses = update.statuses;
