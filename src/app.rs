@@ -36,6 +36,7 @@ pub enum InputMode {
     AddProjectName,
     AddTaskName,
     AddTaskBranch,
+    AddTaskPrompt,
     AddSessionName,
     AddSessionPrompt,
     ConfirmDelete,
@@ -86,6 +87,7 @@ pub struct App {
     pub should_open_editor: Option<PathBuf>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
+    pub pending_task_branch: Option<String>,
     pub pending_session_name: Option<String>,
     pub preview_content: Option<String>,
     pub preview_mode: PreviewMode,
@@ -170,6 +172,7 @@ impl App {
             should_open_editor: None,
             pending_project_path: None,
             pending_task_name: None,
+            pending_task_branch: None,
             pending_session_name: None,
             preview_content: None,
             preview_mode: PreviewMode::Output,
@@ -744,8 +747,27 @@ impl App {
             return;
         }
 
+        if self.pending_task_name.is_none() {
+            self.cancel_input();
+            return;
+        }
+
+        self.pending_task_branch = Some(branch);
+        self.input_buffer.clear();
+        self.input_mode = InputMode::AddTaskPrompt;
+        self.status_message = Some("Initial session prompt (empty to skip): ".into());
+    }
+
+    pub fn confirm_add_task_with_prompt(&mut self) {
         let task_name = match self.pending_task_name.take() {
             Some(n) => n,
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+        let branch = match self.pending_task_branch.take() {
+            Some(b) => b,
             None => {
                 self.cancel_input();
                 return;
@@ -760,9 +782,24 @@ impl App {
             }
         };
 
+        let prompt = if self.input_buffer.trim().is_empty() {
+            None
+        } else {
+            Some(self.input_buffer.trim().to_string())
+        };
+
         self.collapsed.remove(&project_key(&project_name));
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
+
+        let use_worktree = self.use_worktree;
+        let sessions = self.sessions.clone();
+        let startup_skills = self.config.startup_skills.clone();
+        let project = self.config.projects.iter().find(|p| p.name == project_name);
+        let copy_patterns = project.map(|p| p.copy_patterns.clone()).unwrap_or_default();
+        let setup_commands = project
+            .map(|p| p.setup_commands.clone())
+            .unwrap_or_default();
 
         self.start_op("Creating task...", move || {
             let branch_exists = tmux::branch_exists(&project_path, &branch);
@@ -777,7 +814,6 @@ impl App {
                 }
             }
 
-            // Save config from background thread
             let mut config = match Config::load() {
                 Ok(c) => c,
                 Err(e) => {
@@ -797,16 +833,54 @@ impl App {
                 };
             }
 
-            let msg = if branch_exists {
-                format!("Added task '{task_name}' using existing branch {branch}")
-            } else {
-                format!("Created task '{task_name}' on branch {branch}")
-            };
+            let auto_context = config
+                .find_task(&project_name, &task_name)
+                .map_or(true, |t| t.auto_context);
 
-            OpResult {
-                message: msg,
-                rebuild: true,
-                reload_config: true,
+            let session_name =
+                tmux::next_session_number(&project_name, &task_name, &sessions).to_string();
+
+            match tmux::create_session(
+                &project_name,
+                &project_path,
+                &task_name,
+                &branch,
+                &session_name,
+                use_worktree,
+                &copy_patterns,
+                &setup_commands,
+                prompt.as_deref(),
+                auto_context,
+                &startup_skills,
+            ) {
+                Ok(tmux_name) => {
+                    config::add_session_record(
+                        &tmux_name,
+                        config::SessionRecord {
+                            project_name: project_name.clone(),
+                            project_path: project_path.clone(),
+                            task_name: task_name.clone(),
+                            task_branch: branch.clone(),
+                            session_name: session_name.clone(),
+                            use_worktree,
+                        },
+                    );
+                    let task_msg = if branch_exists {
+                        format!("task '{task_name}' on existing branch {branch}")
+                    } else {
+                        format!("task '{task_name}' on branch {branch}")
+                    };
+                    OpResult {
+                        message: format!("Created {task_msg} and session {tmux_name}"),
+                        rebuild: true,
+                        reload_config: true,
+                    }
+                }
+                Err(e) => OpResult {
+                    message: format!("Task created but session failed: {e}"),
+                    rebuild: true,
+                    reload_config: true,
+                },
             }
         });
     }
@@ -1524,6 +1598,7 @@ impl App {
         self.input_buffer.clear();
         self.status_message = None;
         self.pending_task_name = None;
+        self.pending_task_branch = None;
         self.pending_session_name = None;
     }
 
