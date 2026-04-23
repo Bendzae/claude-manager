@@ -717,6 +717,7 @@ impl App {
 
     pub fn start_add_task(&mut self) {
         if self.selected_project_info().is_some() {
+            self.use_worktree = true;
             self.input_mode = InputMode::AddTaskName;
             self.input_buffer.clear();
             self.status_message = Some("Task name: ".into());
