@@ -108,9 +108,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
 }
 
 fn draw_floating_input(f: &mut Frame, app: &App, area: Rect) {
-    let width = (area.width.saturating_mul(2) / 3)
-        .max(40)
-        .min(area.width);
+    let width = (area.width.saturating_mul(2) / 3).max(40).min(area.width);
     // Inner text width: minus borders (2) and horizontal padding (2)
     let text_width = width.saturating_sub(4).max(1) as usize;
 
@@ -963,13 +961,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
             help_bar(&[("⏎", "select"), (&nav_keys, "navigate"), ("Esc", "close")])
         }
-        InputMode::AddTaskPrompt
-        | InputMode::AddSessionPrompt
-        | InputMode::MergeCommitMessage => help_bar(&[
-            ("⏎", "confirm"),
-            ("⌥⏎", "newline"),
-            ("Esc", "cancel"),
-        ]),
+        InputMode::AddTaskPrompt | InputMode::AddSessionPrompt | InputMode::MergeCommitMessage => {
+            help_bar(&[("⏎", "confirm"), ("⌥⏎", "newline"), ("Esc", "cancel")])
+        }
         InputMode::AddProjectName
         | InputMode::AddSessionName
         | InputMode::AddTaskName
