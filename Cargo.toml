@@ -1,6 +1,6 @@
 [package]
 name = "claude-manager"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 description = "A terminal UI for managing multiple Claude Code sessions organized by projects and tasks"
 license = "MIT"
@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.30"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["bracketed-paste"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 dirs = "6"

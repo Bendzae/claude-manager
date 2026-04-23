@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -18,17 +20,35 @@ use ratatui::backend::CrosstermBackend;
 
 use app::{App, InputMode};
 
+fn is_text_input_mode(mode: InputMode) -> bool {
+    matches!(
+        mode,
+        InputMode::AddProjectName
+            | InputMode::AddSessionName
+            | InputMode::AddSessionPrompt
+            | InputMode::AddTaskName
+            | InputMode::AddTaskBranch
+            | InputMode::AddTaskPrompt
+            | InputMode::RenameProject
+            | InputMode::RenameTask
+            | InputMode::RenameSession
+            | InputMode::MergeCommitMessage
+    )
+}
+
 fn main() -> Result<()> {
     let mut app = App::new()?;
 
     loop {
         enable_raw_mode()?;
         io::stdout().execute(EnterAlternateScreen)?;
+        io::stdout().execute(EnableBracketedPaste)?;
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
         run_tui(&mut terminal, &mut app)?;
 
+        io::stdout().execute(DisableBracketedPaste)?;
         disable_raw_mode()?;
         io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -56,7 +76,29 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         terminal.draw(|f| ui::draw(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+            let evt = event::read()?;
+
+            if let Event::Paste(data) = evt {
+                if !app.loading && is_text_input_mode(app.input_mode) {
+                    let allow_newlines = matches!(
+                        app.input_mode,
+                        InputMode::AddTaskPrompt
+                            | InputMode::AddSessionPrompt
+                            | InputMode::MergeCommitMessage
+                    );
+                    for c in data.chars() {
+                        match c {
+                            '\r' => {}
+                            '\n' if !allow_newlines => app.input_buffer.push(' '),
+                            c if c.is_control() && c != '\n' => {}
+                            c => app.input_buffer.push(c),
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if let Event::Key(key) = evt {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
