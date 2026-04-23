@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -171,6 +171,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         _ => {}
                     },
                     InputMode::AddTaskPrompt => match key.code {
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                            app.input_buffer.push('\n');
+                        }
                         KeyCode::Enter => app.confirm_add_task_with_prompt(),
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {
@@ -191,6 +194,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         _ => {}
                     },
                     InputMode::AddSessionPrompt => match key.code {
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                            app.input_buffer.push('\n');
+                        }
                         KeyCode::Enter => {
                             app.confirm_new_session_with_prompt();
                         }
@@ -223,6 +229,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         _ => {}
                     },
                     InputMode::MergeCommitMessage => match key.code {
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                            app.input_buffer.push('\n');
+                        }
                         KeyCode::Enter => app.confirm_merge_commit(),
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {

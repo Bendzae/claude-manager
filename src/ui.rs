@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use termimad::MadSkin;
 use termimad::minimad::Alignment;
@@ -85,6 +85,106 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.input_mode == InputMode::ContextMenu {
         draw_context_menu(f, app, chunks[1]);
     }
+
+    if is_text_input_mode(app.input_mode) {
+        draw_floating_input(f, app, chunks[1]);
+    }
+}
+
+fn is_text_input_mode(mode: InputMode) -> bool {
+    matches!(
+        mode,
+        InputMode::AddProjectName
+            | InputMode::AddSessionName
+            | InputMode::AddSessionPrompt
+            | InputMode::AddTaskName
+            | InputMode::AddTaskBranch
+            | InputMode::AddTaskPrompt
+            | InputMode::RenameProject
+            | InputMode::RenameTask
+            | InputMode::RenameSession
+            | InputMode::MergeCommitMessage
+    )
+}
+
+fn draw_floating_input(f: &mut Frame, app: &App, area: Rect) {
+    let width = (area.width.saturating_mul(2) / 3)
+        .max(40)
+        .min(area.width);
+    // Inner text width: minus borders (2) and horizontal padding (2)
+    let text_width = width.saturating_sub(4).max(1) as usize;
+
+    // Count wrapped visual lines. Append cursor char for accurate wrap counting.
+    let mut visual_lines = 0usize;
+    for line in app.input_buffer.split('\n') {
+        let chars = line.chars().count();
+        visual_lines += chars.div_ceil(text_width).max(1);
+    }
+    // Cursor wraps to a new row if last line exactly fills width
+    let last_line_len = app
+        .input_buffer
+        .split('\n')
+        .next_back()
+        .map(|s| s.chars().count())
+        .unwrap_or(0);
+    if last_line_len > 0 && last_line_len % text_width == 0 {
+        visual_lines += 1;
+    }
+
+    let max_height = (area.height.saturating_mul(2) / 3).max(3);
+    let height = (visual_lines as u16 + 2).clamp(3, max_height);
+
+    // Center within the content area (excludes top padding, help, status bars)
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    let title = app
+        .status_message
+        .as_deref()
+        .map(|s| s.trim_end().trim_end_matches(':').trim_end().to_string())
+        .unwrap_or_else(|| "Input".to_string());
+
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let segments: Vec<&str> = app.input_buffer.split('\n').collect();
+    let last_idx = segments.len().saturating_sub(1);
+    let lines: Vec<Line> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let mut spans = vec![Span::styled(
+                (*seg).to_string(),
+                Style::default().fg(Color::White),
+            )];
+            if i == last_idx {
+                spans.push(Span::styled("▌", Style::default().fg(ACCENT)));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+
+    let inner_padded = inner.inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    f.render_widget(paragraph, inner_padded);
 }
 
 fn is_project_collapsed(app: &App, name: &str) -> bool {
@@ -863,16 +963,20 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
             help_bar(&[("⏎", "select"), (&nav_keys, "navigate"), ("Esc", "close")])
         }
+        InputMode::AddTaskPrompt
+        | InputMode::AddSessionPrompt
+        | InputMode::MergeCommitMessage => help_bar(&[
+            ("⏎", "confirm"),
+            ("⌥⏎", "newline"),
+            ("Esc", "cancel"),
+        ]),
         InputMode::AddProjectName
         | InputMode::AddSessionName
-        | InputMode::AddSessionPrompt
         | InputMode::AddTaskName
         | InputMode::AddTaskBranch
-        | InputMode::AddTaskPrompt
         | InputMode::RenameProject
         | InputMode::RenameTask
-        | InputMode::RenameSession
-        | InputMode::MergeCommitMessage => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
+        | InputMode::RenameSession => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
         }
@@ -899,6 +1003,10 @@ fn help_bar(items: &[(&str, &str)]) -> Vec<Span<'static>> {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Text input modes render in the floating overlay instead of the status bar
+    if is_text_input_mode(app.input_mode) {
+        return;
+    }
     // Show PR URL when a task with a PR is selected and no other status message
     if app.status_message.is_none() && app.input_mode == InputMode::Normal {
         if let Some(app::ListItem::Task { task, .. }) = app.selected_item() {
