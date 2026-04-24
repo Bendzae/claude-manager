@@ -29,7 +29,7 @@ pub enum ListItem {
 
 pub use worker::PreviewMode;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum InputMode {
     Normal,
     ContextMenu,
