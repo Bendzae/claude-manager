@@ -500,15 +500,7 @@ pub fn send_text(session_name: &str, text: &str, submit: bool) -> Result<()> {
 
     // -p: bracketed paste, -d: delete buffer after pasting.
     let out = Command::new("tmux")
-        .args([
-            "paste-buffer",
-            "-d",
-            "-p",
-            "-b",
-            buf_name,
-            "-t",
-            &target,
-        ])
+        .args(["paste-buffer", "-d", "-p", "-b", buf_name, "-t", &target])
         .output()?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

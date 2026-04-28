@@ -1888,10 +1888,7 @@ impl App {
             self.cancel_input();
             return;
         }
-        let entry = self
-            .diff_comments
-            .entry(pending.session_name)
-            .or_default();
+        let entry = self.diff_comments.entry(pending.session_name).or_default();
         entry.push(DiffComment {
             file: pending.file,
             line: pending.line,

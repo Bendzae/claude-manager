@@ -122,12 +122,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) if c == kb.move_down => app.move_down(),
                         KeyCode::Char('c') if app.diff_focused() => app.start_add_diff_comment(),
                         KeyCode::Char('x') if app.diff_focused() => app.delete_diff_comment(),
-                        KeyCode::Char('s') if app.diff_focused() => {
-                            app.submit_diff_comments(false)
-                        }
-                        KeyCode::Char('S') if app.diff_focused() => {
-                            app.submit_diff_comments(true)
-                        }
+                        KeyCode::Char('s') if app.diff_focused() => app.submit_diff_comments(false),
+                        KeyCode::Char('S') if app.diff_focused() => app.submit_diff_comments(true),
                         KeyCode::Enter => {
                             app.enter_selected();
                             if app.should_attach.is_some()

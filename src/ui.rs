@@ -566,19 +566,18 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
         }
         PreviewMode::Diff => {
             let empty_comments: Vec<DiffComment> = Vec::new();
-            let (comments, cursor) = if let Some(app::ListItem::Session { session, .. }) =
-                app.selected_item()
-            {
-                (
-                    app.diff_comments
-                        .get(&session.name)
-                        .cloned()
-                        .unwrap_or_default(),
-                    Some(app.diff_cursor),
-                )
-            } else {
-                (empty_comments, None)
-            };
+            let (comments, cursor) =
+                if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
+                    (
+                        app.diff_comments
+                            .get(&session.name)
+                            .cloned()
+                            .unwrap_or_default(),
+                        Some(app.diff_cursor),
+                    )
+                } else {
+                    (empty_comments, None)
+                };
             if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
                 if let Some(stats) = app.diff_stats.get(&session.name) {
                     render_diff_with_stats(
@@ -917,10 +916,7 @@ fn style_diff_lines<'a>(
                     DiffSide::Context => {
                         let l = Line::from(vec![
                             Span::styled(
-                                format!(
-                                    "{}{:>4}│{:>5} │ ",
-                                    marker, old_line_for_context, loc.line
-                                ),
+                                format!("{}{:>4}│{:>5} │ ", marker, old_line_for_context, loc.line),
                                 Style::default().fg(MUTED),
                             ),
                             Span::raw(*raw),
@@ -1122,11 +1118,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
                 "attach"
             };
             if app.diff_focused() {
-                let nav_keys = format!(
-                    "{}/{}",
-                    key_display(kb.move_down),
-                    key_display(kb.move_up)
-                );
+                let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
                 help_bar(&[
                     (&nav_keys, "line"),
                     ("c", "comment"),
