@@ -79,7 +79,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             let evt = event::read()?;
 
             if let Event::Paste(data) = evt {
-                if !app.loading && is_text_input_mode(app.input_mode) {
+                if is_text_input_mode(app.input_mode) {
                     let allow_newlines = matches!(
                         app.input_mode,
                         InputMode::AddTaskPrompt
@@ -100,15 +100,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
             if let Event::Key(key) = evt {
                 if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-
-                if app.loading {
-                    // Only allow quit while loading
-                    if key.code == KeyCode::Char(app.keybindings.quit) {
-                        app.should_quit = true;
-                        return Ok(());
-                    }
                     continue;
                 }
 
