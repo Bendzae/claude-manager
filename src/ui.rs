@@ -8,8 +8,15 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragr
 use termimad::MadSkin;
 use termimad::minimad::Alignment;
 
-use crate::app::{self, App, InputMode, PreviewMode};
+use crate::app::{self, App, DiffComment, DiffSide, InputMode, PreviewMode};
 use crate::tmux::{self, SessionStatus};
+
+#[derive(Clone)]
+pub struct DiffLineLoc {
+    pub file: String,
+    pub line: usize,
+    pub side: DiffSide,
+}
 
 const ACCENT: Color = Color::Cyan;
 const MUTED: Color = Color::Rgb(90, 90, 100);
@@ -104,6 +111,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::RenameTask
             | InputMode::RenameSession
             | InputMode::MergeCommitMessage
+            | InputMode::AddDiffComment
     )
 }
 
@@ -557,6 +565,20 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
             f.render_widget(paragraph, content_area);
         }
         PreviewMode::Diff => {
+            let empty_comments: Vec<DiffComment> = Vec::new();
+            let (comments, cursor) = if let Some(app::ListItem::Session { session, .. }) =
+                app.selected_item()
+            {
+                (
+                    app.diff_comments
+                        .get(&session.name)
+                        .cloned()
+                        .unwrap_or_default(),
+                    Some(app.diff_cursor),
+                )
+            } else {
+                (empty_comments, None)
+            };
             if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
                 if let Some(stats) = app.diff_stats.get(&session.name) {
                     render_diff_with_stats(
@@ -567,6 +589,8 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
                         content_area,
                         visible_height,
                         app.preview_scroll,
+                        &comments,
+                        cursor,
                     );
                 } else {
                     render_diff_content(
@@ -575,10 +599,20 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
                         content_area,
                         visible_height,
                         app.preview_scroll,
+                        &comments,
+                        cursor,
                     );
                 }
             } else {
-                render_diff_content(f, content, content_area, visible_height, app.preview_scroll);
+                render_diff_content(
+                    f,
+                    content,
+                    content_area,
+                    visible_height,
+                    app.preview_scroll,
+                    &comments,
+                    cursor,
+                );
             }
         }
         PreviewMode::Context => {}
@@ -669,6 +703,8 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
             content_area,
             visible_height,
             app.preview_scroll,
+            &[],
+            None,
         );
     }
 }
@@ -684,39 +720,51 @@ fn render_loading(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(loading, area);
 }
 
-fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
-    let mut lines = Vec::new();
+/// One visual row of the rendered diff.
+pub enum DiffRow<'a> {
+    FileHeader { file: String },
+    Hunk { raw: &'a str },
+    Code { loc: DiffLineLoc, raw: &'a str },
+    Comment { text: String },
+    Blank,
+}
+
+pub fn parse_diff_rows<'a>(content: &'a str, comments: &[DiffComment]) -> Vec<DiffRow<'a>> {
+    let mut rows: Vec<DiffRow<'a>> = Vec::new();
     let mut first_file = true;
+    let mut current_file = String::new();
     let mut old_line: usize = 0;
     let mut new_line: usize = 0;
-    // Width of line number gutter: "old | new │ "
-    let gutter_width = 13;
 
-    for line in content.lines() {
-        if line.starts_with("diff ") {
-            // Extract filename from "diff --git a/path b/path"
-            let filename = line.split(" b/").nth(1).unwrap_or(line);
+    let emit_comments_for = |rows: &mut Vec<DiffRow<'a>>, loc: &DiffLineLoc| {
+        for c in comments
+            .iter()
+            .filter(|c| c.file == loc.file && c.line == loc.line && c.side == loc.side)
+        {
+            for (i, text_line) in c.text.lines().enumerate() {
+                let prefix = if i == 0 { "★ " } else { "  " };
+                rows.push(DiffRow::Comment {
+                    text: format!("{prefix}{text_line}"),
+                });
+            }
+        }
+    };
+
+    for raw in content.lines() {
+        if raw.starts_with("diff ") {
+            let filename = raw.split(" b/").nth(1).unwrap_or(raw);
+            current_file = filename.to_string();
             if !first_file {
-                lines.push(Line::raw(""));
+                rows.push(DiffRow::Blank);
             }
             first_file = false;
-            let sep_len = width.saturating_sub(filename.len() + 3);
-            let sep = "─".repeat(sep_len);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("── {filename} "),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(sep, Style::default().fg(TREE)),
-            ]));
-        } else if line.starts_with("index ") || line.starts_with("---") || line.starts_with("+++") {
-            // Skip verbose git diff metadata
+            rows.push(DiffRow::FileHeader {
+                file: filename.to_string(),
+            });
+        } else if raw.starts_with("index ") || raw.starts_with("---") || raw.starts_with("+++") {
             continue;
-        } else if line.starts_with("@@") {
-            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-            if let Some(header) = line.strip_prefix("@@ ") {
+        } else if raw.starts_with("@@") {
+            if let Some(header) = raw.strip_prefix("@@ ") {
                 let parts: Vec<&str> = header.splitn(3, ' ').collect();
                 if parts.len() >= 2 {
                     if let Some(old_start) = parts[0].strip_prefix('-') {
@@ -735,39 +783,167 @@ fn style_diff_lines(content: &str, width: usize) -> Vec<Line<'_>> {
                     }
                 }
             }
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:>gutter_width$}", ""), Style::default().fg(MUTED)),
-                Span::styled(line, Style::default().fg(Color::Cyan)),
-            ]));
-        } else if line.starts_with('+') {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("     │{:>5} │ ", new_line),
-                    Style::default().fg(MUTED),
-                ),
-                Span::styled(line, Style::default().fg(Color::Green)),
-            ]));
+            rows.push(DiffRow::Hunk { raw });
+        } else if raw.starts_with('+') {
+            let loc = DiffLineLoc {
+                file: current_file.clone(),
+                line: new_line,
+                side: DiffSide::Added,
+            };
+            rows.push(DiffRow::Code {
+                loc: loc.clone(),
+                raw,
+            });
+            emit_comments_for(&mut rows, &loc);
             new_line += 1;
-        } else if line.starts_with('-') {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{:>5}│      │ ", old_line),
-                    Style::default().fg(MUTED),
-                ),
-                Span::styled(line, Style::default().fg(Color::Red)),
-            ]));
+        } else if raw.starts_with('-') {
+            let loc = DiffLineLoc {
+                file: current_file.clone(),
+                line: old_line,
+                side: DiffSide::Removed,
+            };
+            rows.push(DiffRow::Code {
+                loc: loc.clone(),
+                raw,
+            });
+            emit_comments_for(&mut rows, &loc);
             old_line += 1;
         } else {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{:>5}│{:>5} │ ", old_line, new_line),
-                    Style::default().fg(MUTED),
-                ),
-                Span::raw(line),
-            ]));
+            let loc = DiffLineLoc {
+                file: current_file.clone(),
+                line: new_line,
+                side: DiffSide::Context,
+            };
+            rows.push(DiffRow::Code {
+                loc: loc.clone(),
+                raw,
+            });
+            emit_comments_for(&mut rows, &loc);
             old_line += 1;
             new_line += 1;
         }
+    }
+    rows
+}
+
+fn has_comment_for(comments: &[DiffComment], loc: &DiffLineLoc) -> bool {
+    comments
+        .iter()
+        .any(|c| c.file == loc.file && c.line == loc.line && c.side == loc.side)
+}
+
+fn style_diff_lines<'a>(
+    content: &'a str,
+    width: usize,
+    comments: &[DiffComment],
+    cursor: Option<usize>,
+) -> Vec<Line<'a>> {
+    let rows = parse_diff_rows(content, comments);
+    let mut lines: Vec<Line<'a>> = Vec::with_capacity(rows.len());
+    let cursor_bg = Style::default().bg(Color::Rgb(40, 40, 60));
+    let mut old_line_for_context: usize = 0;
+    let mut new_line_for_context: usize = 0;
+
+    for (idx, row) in rows.iter().enumerate() {
+        let mut line = match row {
+            DiffRow::FileHeader { file } => {
+                let sep_len = width.saturating_sub(file.len() + 3);
+                let sep = "─".repeat(sep_len);
+                Line::from(vec![
+                    Span::styled(
+                        format!("── {file} "),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(sep, Style::default().fg(TREE)),
+                ])
+            }
+            DiffRow::Hunk { raw } => {
+                // re-parse to set line counters used by following Code rows
+                if let Some(header) = raw.strip_prefix("@@ ") {
+                    let parts: Vec<&str> = header.splitn(3, ' ').collect();
+                    if parts.len() >= 2 {
+                        if let Some(s) = parts[0].strip_prefix('-') {
+                            old_line_for_context = s
+                                .split(',')
+                                .next()
+                                .and_then(|x| x.parse().ok())
+                                .unwrap_or(0);
+                        }
+                        if let Some(s) = parts[1].strip_prefix('+') {
+                            new_line_for_context = s
+                                .split(',')
+                                .next()
+                                .and_then(|x| x.parse().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+                }
+                Line::from(vec![
+                    Span::styled(format!("{:>13}", ""), Style::default().fg(MUTED)),
+                    Span::styled(*raw, Style::default().fg(Color::Cyan)),
+                ])
+            }
+            DiffRow::Code { loc, raw } => {
+                let marker = if has_comment_for(comments, loc) {
+                    "★"
+                } else {
+                    " "
+                };
+                match loc.side {
+                    DiffSide::Added => {
+                        let l = Line::from(vec![
+                            Span::styled(
+                                format!("{}    │{:>5} │ ", marker, loc.line),
+                                Style::default().fg(MUTED),
+                            ),
+                            Span::styled(*raw, Style::default().fg(Color::Green)),
+                        ]);
+                        new_line_for_context = loc.line + 1;
+                        l
+                    }
+                    DiffSide::Removed => {
+                        let l = Line::from(vec![
+                            Span::styled(
+                                format!("{}{:>4}│      │ ", marker, loc.line),
+                                Style::default().fg(MUTED),
+                            ),
+                            Span::styled(*raw, Style::default().fg(Color::Red)),
+                        ]);
+                        old_line_for_context = loc.line + 1;
+                        l
+                    }
+                    DiffSide::Context => {
+                        let l = Line::from(vec![
+                            Span::styled(
+                                format!(
+                                    "{}{:>4}│{:>5} │ ",
+                                    marker, old_line_for_context, loc.line
+                                ),
+                                Style::default().fg(MUTED),
+                            ),
+                            Span::raw(*raw),
+                        ]);
+                        old_line_for_context += 1;
+                        new_line_for_context = loc.line + 1;
+                        l
+                    }
+                }
+            }
+            DiffRow::Comment { text } => Line::from(vec![
+                Span::styled("             ", Style::default().fg(MUTED)),
+                Span::styled(text.clone(), Style::default().fg(Color::Magenta)),
+            ]),
+            DiffRow::Blank => Line::raw(""),
+        };
+        let _ = new_line_for_context;
+        if Some(idx) == cursor {
+            for span in line.spans.iter_mut() {
+                span.style = span.style.patch(cursor_bg);
+            }
+        }
+        lines.push(line);
     }
     lines
 }
@@ -778,8 +954,10 @@ fn render_diff_content(
     area: Rect,
     visible_height: usize,
     scroll: usize,
+    comments: &[DiffComment],
+    cursor: Option<usize>,
 ) {
-    let diff_lines = style_diff_lines(content, area.width as usize);
+    let diff_lines = style_diff_lines(content, area.width as usize, comments, cursor);
     let visible_lines: Vec<Line> = diff_lines
         .into_iter()
         .skip(scroll)
@@ -797,6 +975,8 @@ fn render_diff_with_stats(
     area: Rect,
     visible_height: usize,
     scroll: usize,
+    comments: &[DiffComment],
+    cursor: Option<usize>,
 ) {
     // Extract changed file names from diff headers
     let files: Vec<&str> = content
@@ -838,7 +1018,7 @@ fn render_diff_with_stats(
             height: remaining_height as u16,
             ..area
         };
-        let diff_lines = style_diff_lines(content, diff_area.width as usize);
+        let diff_lines = style_diff_lines(content, diff_area.width as usize, comments, cursor);
         let visible_lines: Vec<Line> = diff_lines
             .into_iter()
             .skip(scroll)
@@ -941,27 +1121,47 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "attach"
             };
-            let scroll_keys = format!(
-                "{}/{}",
-                key_display(kb.scroll_preview_down),
-                key_display(kb.scroll_preview_up)
-            );
-            help_bar(&[
-                ("⏎", enter_label),
-                (&key_display(kb.toggle_collapse), "collapse"),
-                (&key_display(kb.context_menu), "actions"),
-                ("⇥", "switch"),
-                (&scroll_keys, "scroll"),
-                (&key_display(kb.add_project), "project"),
-                (&key_display(kb.quit), "quit"),
-            ])
+            if app.diff_focused() {
+                let nav_keys = format!(
+                    "{}/{}",
+                    key_display(kb.move_down),
+                    key_display(kb.move_up)
+                );
+                help_bar(&[
+                    (&nav_keys, "line"),
+                    ("c", "comment"),
+                    ("x", "delete"),
+                    ("s", "send"),
+                    ("S-s", "send+submit"),
+                    ("⇥", "switch"),
+                    (&key_display(kb.quit), "quit"),
+                ])
+            } else {
+                let scroll_keys = format!(
+                    "{}/{}",
+                    key_display(kb.scroll_preview_down),
+                    key_display(kb.scroll_preview_up)
+                );
+                help_bar(&[
+                    ("⏎", enter_label),
+                    (&key_display(kb.toggle_collapse), "collapse"),
+                    (&key_display(kb.context_menu), "actions"),
+                    ("⇥", "switch"),
+                    (&scroll_keys, "scroll"),
+                    (&key_display(kb.add_project), "project"),
+                    (&key_display(kb.quit), "quit"),
+                ])
+            }
         }
         InputMode::ContextMenu => {
             let kb = &app.keybindings;
             let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
             help_bar(&[("⏎", "select"), (&nav_keys, "navigate"), ("Esc", "close")])
         }
-        InputMode::AddTaskPrompt | InputMode::AddSessionPrompt | InputMode::MergeCommitMessage => {
+        InputMode::AddTaskPrompt
+        | InputMode::AddSessionPrompt
+        | InputMode::MergeCommitMessage
+        | InputMode::AddDiffComment => {
             help_bar(&[("⏎", "confirm"), ("⌥⏎", "newline"), ("Esc", "cancel")])
         }
         InputMode::AddProjectName

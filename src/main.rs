@@ -112,8 +112,22 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         }
                         KeyCode::Up => app.move_up(),
                         KeyCode::Down => app.move_down(),
+                        KeyCode::Char(c) if c == kb.move_up && app.diff_focused() => {
+                            app.move_diff_cursor_up()
+                        }
+                        KeyCode::Char(c) if c == kb.move_down && app.diff_focused() => {
+                            app.move_diff_cursor_down()
+                        }
                         KeyCode::Char(c) if c == kb.move_up => app.move_up(),
                         KeyCode::Char(c) if c == kb.move_down => app.move_down(),
+                        KeyCode::Char('c') if app.diff_focused() => app.start_add_diff_comment(),
+                        KeyCode::Char('x') if app.diff_focused() => app.delete_diff_comment(),
+                        KeyCode::Char('s') if app.diff_focused() => {
+                            app.submit_diff_comments(false)
+                        }
+                        KeyCode::Char('S') if app.diff_focused() => {
+                            app.submit_diff_comments(true)
+                        }
                         KeyCode::Enter => {
                             app.enter_selected();
                             if app.should_attach.is_some()
@@ -266,6 +280,18 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.input_buffer.push('\n');
                         }
                         KeyCode::Enter => app.confirm_merge_commit(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
+                    InputMode::AddDiffComment => match key.code {
+                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                            app.input_buffer.push('\n');
+                        }
+                        KeyCode::Enter => app.confirm_add_diff_comment(),
                         KeyCode::Esc => app.cancel_input(),
                         KeyCode::Backspace => {
                             app.input_buffer.pop();
