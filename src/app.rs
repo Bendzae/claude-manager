@@ -45,6 +45,30 @@ pub enum InputMode {
     RenameSession,
     MergeCommitMessage,
     ConfirmCreatePr,
+    AddDiffComment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DiffSide {
+    Added,
+    Removed,
+    Context,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffComment {
+    pub file: String,
+    pub line: usize,
+    pub side: DiffSide,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingComment {
+    pub session_name: String,
+    pub file: String,
+    pub line: usize,
+    pub side: DiffSide,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +138,12 @@ pub struct App {
     pub worker: Worker,
     pub context_menu_items: Vec<ContextMenuItem>,
     pub context_menu_selected: usize,
+    /// Diff comments per session tmux name.
+    pub diff_comments: HashMap<String, Vec<DiffComment>>,
+    /// Diff cursor row (index into rendered diff content lines, excluding sticky header).
+    pub diff_cursor: usize,
+    /// In-flight comment location during AddDiffComment input mode.
+    pub pending_comment: Option<PendingComment>,
 }
 
 pub struct OpResult {
@@ -196,6 +226,9 @@ impl App {
             worker: Worker::spawn(),
             context_menu_items: vec![],
             context_menu_selected: 0,
+            diff_comments: HashMap::new(),
+            diff_cursor: 0,
+            pending_comment: None,
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -445,6 +478,7 @@ impl App {
         self.preview_content = None;
         self.task_diff = None;
         self.preview_scroll = 0;
+        self.diff_cursor = 0;
         // Default to Context for tasks, Output for sessions
         if matches!(self.selected_item(), Some(ListItem::Task { .. })) {
             self.preview_mode = PreviewMode::Context;
@@ -1604,6 +1638,7 @@ impl App {
         self.pending_task_name = None;
         self.pending_task_branch = None;
         self.pending_session_name = None;
+        self.pending_comment = None;
     }
 
     pub fn toggle_preview_mode(&mut self) {
@@ -1636,6 +1671,7 @@ impl App {
         }
         self.preview_content = None;
         self.preview_scroll = 0;
+        self.diff_cursor = 0;
         self.sync_worker_hints();
     }
 
@@ -1710,4 +1746,234 @@ impl App {
     pub fn scroll_preview_up(&mut self) {
         self.preview_scroll = self.preview_scroll.saturating_sub(3);
     }
+
+    /// True when the diff preview tab is active for the selected session.
+    pub fn diff_focused(&self) -> bool {
+        self.preview_mode == PreviewMode::Diff
+            && matches!(self.selected_item(), Some(ListItem::Session { .. }))
+    }
+
+    fn selected_session_name(&self) -> Option<String> {
+        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
+            Some(session.name.clone())
+        } else {
+            None
+        }
+    }
+
+    fn diff_rows_for_selected(&self) -> Vec<crate::ui::DiffRow<'_>> {
+        let session = match self.selected_session_name() {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        let content = match self.preview_content.as_deref() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        let comments = self
+            .diff_comments
+            .get(&session)
+            .cloned()
+            .unwrap_or_default();
+        crate::ui::parse_diff_rows(content, &comments)
+    }
+
+    fn code_row_indices(&self) -> Vec<usize> {
+        self.diff_rows_for_selected()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                if matches!(r, crate::ui::DiffRow::Code { .. }) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn move_diff_cursor_down(&mut self) {
+        let codes = self.code_row_indices();
+        if codes.is_empty() {
+            return;
+        }
+        // Find next code row strictly after current cursor.
+        let next = codes.iter().find(|&&i| i > self.diff_cursor).copied();
+        if let Some(n) = next {
+            self.diff_cursor = n;
+        } else {
+            self.diff_cursor = *codes.last().unwrap();
+        }
+        self.ensure_cursor_visible();
+    }
+
+    pub fn move_diff_cursor_up(&mut self) {
+        let codes = self.code_row_indices();
+        if codes.is_empty() {
+            return;
+        }
+        let prev = codes.iter().rev().find(|&&i| i < self.diff_cursor).copied();
+        if let Some(p) = prev {
+            self.diff_cursor = p;
+        } else {
+            self.diff_cursor = *codes.first().unwrap();
+        }
+        self.ensure_cursor_visible();
+    }
+
+    fn ensure_cursor_visible(&mut self) {
+        // Approximate: keep cursor within ~3 lines of scroll viewport top.
+        if self.diff_cursor < self.preview_scroll {
+            self.preview_scroll = self.diff_cursor.saturating_sub(2);
+        } else if self.diff_cursor > self.preview_scroll + 20 {
+            self.preview_scroll = self.diff_cursor.saturating_sub(20);
+        }
+    }
+
+    fn current_code_loc(&self) -> Option<crate::ui::DiffLineLoc> {
+        let rows = self.diff_rows_for_selected();
+        match rows.get(self.diff_cursor) {
+            Some(crate::ui::DiffRow::Code { loc, .. }) => Some(loc.clone()),
+            _ => {
+                // Fall back to first code row if cursor isn't on one
+                rows.iter().find_map(|r| match r {
+                    crate::ui::DiffRow::Code { loc, .. } => Some(loc.clone()),
+                    _ => None,
+                })
+            }
+        }
+    }
+
+    pub fn start_add_diff_comment(&mut self) {
+        let session_name = match self.selected_session_name() {
+            Some(s) => s,
+            None => return,
+        };
+        let loc = match self.current_code_loc() {
+            Some(l) => l,
+            None => {
+                self.status_message = Some("No diff line under cursor".into());
+                return;
+            }
+        };
+        self.pending_comment = Some(PendingComment {
+            session_name,
+            file: loc.file.clone(),
+            line: loc.line,
+            side: loc.side,
+        });
+        self.input_buffer.clear();
+        self.input_mode = InputMode::AddDiffComment;
+        let side_label = match loc.side {
+            DiffSide::Added => "+",
+            DiffSide::Removed => "-",
+            DiffSide::Context => " ",
+        };
+        self.status_message = Some(format!(
+            "Comment on {}:{} ({}): ",
+            loc.file, loc.line, side_label
+        ));
+    }
+
+    pub fn confirm_add_diff_comment(&mut self) {
+        let pending = match self.pending_comment.take() {
+            Some(p) => p,
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+        let text = self.input_buffer.trim().to_string();
+        if text.is_empty() {
+            self.cancel_input();
+            return;
+        }
+        let entry = self.diff_comments.entry(pending.session_name).or_default();
+        entry.push(DiffComment {
+            file: pending.file,
+            line: pending.line,
+            side: pending.side,
+            text,
+        });
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+        self.status_message = Some("Comment added".into());
+    }
+
+    pub fn delete_diff_comment(&mut self) {
+        let session = match self.selected_session_name() {
+            Some(s) => s,
+            None => return,
+        };
+        let loc = match self.current_code_loc() {
+            Some(l) => l,
+            None => return,
+        };
+        if let Some(list) = self.diff_comments.get_mut(&session) {
+            let before = list.len();
+            list.retain(|c| !(c.file == loc.file && c.line == loc.line && c.side == loc.side));
+            if list.len() < before {
+                self.status_message = Some("Comment removed".into());
+            }
+            if list.is_empty() {
+                self.diff_comments.remove(&session);
+            }
+        }
+    }
+
+    pub fn submit_diff_comments(&mut self, submit: bool) {
+        let session = match self.selected_session_name() {
+            Some(s) => s,
+            None => return,
+        };
+        let comments = match self.diff_comments.get(&session) {
+            Some(c) if !c.is_empty() => c.clone(),
+            _ => {
+                self.status_message = Some("No comments to submit".into());
+                return;
+            }
+        };
+        let prompt = build_comment_prompt(&comments);
+        match tmux::send_text(&session, &prompt, submit) {
+            Ok(()) => {
+                self.diff_comments.remove(&session);
+                self.status_message = Some(if submit {
+                    format!("Sent {} comment(s) to agent", comments.len())
+                } else {
+                    format!(
+                        "Pasted {} comment(s) — review and submit in agent",
+                        comments.len()
+                    )
+                });
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Error sending comments: {e}"));
+            }
+        }
+    }
+}
+
+fn build_comment_prompt(comments: &[DiffComment]) -> String {
+    let mut s = String::from("Code review feedback on the current diff:\n\n");
+    let mut by_file: std::collections::BTreeMap<&str, Vec<&DiffComment>> =
+        std::collections::BTreeMap::new();
+    for c in comments {
+        by_file.entry(c.file.as_str()).or_default().push(c);
+    }
+    for (file, items) in by_file {
+        s.push_str(&format!("## {file}\n"));
+        let mut sorted = items;
+        sorted.sort_by_key(|c| c.line);
+        for c in sorted {
+            let side = match c.side {
+                DiffSide::Added => "added",
+                DiffSide::Removed => "removed",
+                DiffSide::Context => "context",
+            };
+            s.push_str(&format!("- L{} ({}): {}\n", c.line, side, c.text));
+        }
+        s.push('\n');
+    }
+    s.push_str("Please address each point.");
+    s
 }

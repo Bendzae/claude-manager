@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
 
@@ -477,6 +478,45 @@ pub fn recreate_session(
     }
 
     Ok(tmux_name.to_string())
+}
+
+/// Insert text into the claude pane's input buffer as a bracketed paste.
+/// If `submit` is true, also presses Enter afterwards.
+pub fn send_text(session_name: &str, text: &str, submit: bool) -> Result<()> {
+    let target = format!("{session_name}:0");
+    let buf_name = "cm_comment_paste";
+
+    let mut child = Command::new("tmux")
+        .args(["load-buffer", "-b", buf_name, "-"])
+        .stdin(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        bail!("tmux load-buffer failed");
+    }
+
+    // -p: bracketed paste, -d: delete buffer after pasting.
+    let out = Command::new("tmux")
+        .args(["paste-buffer", "-d", "-p", "-b", buf_name, "-t", &target])
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("tmux paste-buffer failed: {}", stderr.trim());
+    }
+
+    if submit {
+        let out = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .output()?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            bail!("tmux send-keys Enter failed: {}", stderr.trim());
+        }
+    }
+    Ok(())
 }
 
 pub fn attach_session(name: &str) -> Result<()> {
