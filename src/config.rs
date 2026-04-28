@@ -1,10 +1,15 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize, Serializer};
+
+/// Serializes config / sessions.json reads-modify-writes across threads so
+/// concurrent ops (e.g. two async session creations) don't clobber each other.
+static IO_LOCK: Mutex<()> = Mutex::new(());
 
 fn kb_quit() -> char {
     'q'
@@ -348,6 +353,7 @@ fn save_sessions(sessions: &HashMap<String, SessionRecord>) -> Result<()> {
 
 /// Add a session record and persist.
 pub fn add_session_record(tmux_name: &str, record: SessionRecord) {
+    let _g = IO_LOCK.lock().unwrap();
     let mut sessions = load_sessions();
     sessions.insert(tmux_name.to_string(), record);
     let _ = save_sessions(&sessions);
@@ -355,6 +361,7 @@ pub fn add_session_record(tmux_name: &str, record: SessionRecord) {
 
 /// Remove a session record by tmux name and persist.
 pub fn remove_session_record(tmux_name: &str) {
+    let _g = IO_LOCK.lock().unwrap();
     let mut sessions = load_sessions();
     if sessions.remove(tmux_name).is_some() {
         let _ = save_sessions(&sessions);
@@ -363,6 +370,7 @@ pub fn remove_session_record(tmux_name: &str) {
 
 /// Remove all session records matching a project+task and persist.
 pub fn remove_task_session_records(project_name: &str, task_name: &str) {
+    let _g = IO_LOCK.lock().unwrap();
     let mut sessions = load_sessions();
     let before = sessions.len();
     sessions.retain(|_, r| !(r.project_name == project_name && r.task_name == task_name));
@@ -375,6 +383,7 @@ pub fn remove_task_session_records(project_name: &str, task_name: &str) {
 /// The record fields are kept as-is since they reflect the original creation
 /// state (worktree paths, project paths, etc.) which don't change on rename.
 pub fn rename_session_record(old_tmux_name: &str, new_tmux_name: &str) {
+    let _g = IO_LOCK.lock().unwrap();
     let mut sessions = load_sessions();
     if let Some(record) = sessions.remove(old_tmux_name) {
         sessions.insert(new_tmux_name.to_string(), record);
@@ -384,6 +393,7 @@ pub fn rename_session_record(old_tmux_name: &str, new_tmux_name: &str) {
 
 /// Remove all session records matching a project and persist.
 pub fn remove_project_session_records(project_name: &str) {
+    let _g = IO_LOCK.lock().unwrap();
     let mut sessions = load_sessions();
     let before = sessions.len();
     sessions.retain(|_, r| r.project_name != project_name);
@@ -422,6 +432,19 @@ impl Config {
         }
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
         fs::write(&path, content).context("Failed to write config file")
+    }
+
+    /// Atomic load-modify-save under the global IO lock. Use from background
+    /// threads when multiple ops may mutate the config concurrently.
+    pub fn modify<F>(f: F) -> Result<Self>
+    where
+        F: FnOnce(&mut Self),
+    {
+        let _g = IO_LOCK.lock().unwrap();
+        let mut config = Self::load()?;
+        f(&mut config);
+        config.save()?;
+        Ok(config)
     }
 
     pub fn add_project(&mut self, name: String, path: String) {

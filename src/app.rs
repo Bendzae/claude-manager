@@ -105,7 +105,9 @@ pub struct App {
     pub pr_urls: HashMap<String, String>,
     /// Current git branch for each project, keyed by project name
     pub project_branches: HashMap<String, String>,
-    pub loading: bool,
+    /// Number of in-flight async ops. UI stays interactive while ops run; the
+    /// status bar shows a spinner when this is non-zero.
+    pub op_count: usize,
     pub op_receiver: mpsc::Receiver<OpResult>,
     pub op_sender: mpsc::Sender<OpResult>,
     pub tick: usize,
@@ -187,7 +189,7 @@ impl App {
             terminal_counts: HashMap::new(),
             pr_urls: HashMap::new(),
             project_branches: HashMap::new(),
-            loading: false,
+            op_count: 0,
             op_receiver: rx,
             op_sender: tx,
             tick: 0,
@@ -274,7 +276,7 @@ impl App {
     /// Poll for completed background operations.
     pub fn apply_op_results(&mut self) {
         while let Ok(result) = self.op_receiver.try_recv() {
-            self.loading = false;
+            self.op_count = self.op_count.saturating_sub(1);
             self.status_message = Some(result.message);
             if result.reload_config {
                 if let Ok(config) = Config::load() {
@@ -291,7 +293,7 @@ impl App {
     where
         F: FnOnce() -> OpResult + Send + 'static,
     {
-        self.loading = true;
+        self.op_count += 1;
         self.status_message = Some(loading_msg.into());
         let tx = self.op_sender.clone();
         thread::spawn(move || {
@@ -815,24 +817,25 @@ impl App {
                 }
             }
 
-            let mut config = match Config::load() {
+            let task_name_for_modify = task_name.clone();
+            let branch_for_modify = branch.clone();
+            let project_name_for_modify = project_name.clone();
+            let config = match Config::modify(move |c| {
+                c.add_task(
+                    &project_name_for_modify,
+                    task_name_for_modify,
+                    branch_for_modify,
+                );
+            }) {
                 Ok(c) => c,
                 Err(e) => {
                     return OpResult {
-                        message: format!("Error loading config: {e}"),
+                        message: format!("Error saving config: {e}"),
                         rebuild: false,
                         reload_config: false,
                     };
                 }
             };
-            config.add_task(&project_name, task_name.clone(), branch.clone());
-            if let Err(e) = config.save() {
-                return OpResult {
-                    message: format!("Error saving config: {e}"),
-                    rebuild: false,
-                    reload_config: false,
-                };
-            }
 
             let auto_context = config
                 .find_task(&project_name, &task_name)

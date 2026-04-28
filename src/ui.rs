@@ -1021,9 +1021,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow)
         };
 
-        let content = if app.loading {
+        let content = if app.op_count > 0 {
             let spinner = LOADING_SPINNER[app.tick % LOADING_SPINNER.len()];
-            format!("{spinner} {msg}")
+            if app.op_count > 1 {
+                format!("{spinner} {msg} ({} running)", app.op_count)
+            } else {
+                format!("{spinner} {msg}")
+            }
         } else if matches!(
             app.input_mode,
             InputMode::AddProjectName
