@@ -76,6 +76,9 @@ fn cm_create_terminal() -> char {
 fn cm_kill_terminal() -> char {
     'k'
 }
+fn cm_copy_path() -> char {
+    'y'
+}
 
 /// Keybindings for context menu actions. All fields are single characters.
 /// Configured under `[context_menu]` in `~/.claude-manager/keybindings.toml`.
@@ -120,6 +123,9 @@ pub struct ContextMenuKeyBindings {
     /// Kill terminal window (default: k)
     #[serde(default = "cm_kill_terminal")]
     pub kill_terminal: char,
+    /// Copy session worktree path to clipboard (default: y)
+    #[serde(default = "cm_copy_path")]
+    pub copy_path: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -138,6 +144,7 @@ impl Default for ContextMenuKeyBindings {
             merge: cm_merge(),
             create_terminal: cm_create_terminal(),
             kill_terminal: cm_kill_terminal(),
+            copy_path: cm_copy_path(),
         }
     }
 }

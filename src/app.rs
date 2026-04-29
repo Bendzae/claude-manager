@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
@@ -93,6 +95,7 @@ pub enum ContextAction {
     CreateTerminal,
     KillTerminal,
     ToggleAutoContext,
+    CopyWorktreePath,
 }
 
 pub struct App {
@@ -631,6 +634,11 @@ impl App {
                     });
                 }
                 items.push(ContextMenuItem {
+                    key: cm.copy_path,
+                    label: "Copy worktree path",
+                    action: ContextAction::CopyWorktreePath,
+                });
+                items.push(ContextMenuItem {
                     key: cm.rename,
                     label: "Rename",
                     action: ContextAction::Rename,
@@ -665,6 +673,28 @@ impl App {
             ContextAction::CreateTerminal => self.create_terminal(),
             ContextAction::KillTerminal => self.kill_terminal(),
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
+            ContextAction::CopyWorktreePath => self.copy_worktree_path(),
+        }
+    }
+
+    pub fn copy_worktree_path(&mut self) {
+        let session = match self.selected_item() {
+            Some(ListItem::Session { session, .. }) => session,
+            _ => {
+                self.status_message = Some("Select a session to copy its worktree path".into());
+                return;
+            }
+        };
+        let path = match session.worktree_path() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                self.status_message = Some("Session has no worktree".into());
+                return;
+            }
+        };
+        match copy_to_clipboard(&path) {
+            Ok(()) => self.status_message = Some(format!("Copied to clipboard: {path}")),
+            Err(e) => self.status_message = Some(format!("Copy failed: {e}")),
         }
     }
 
@@ -1976,4 +2006,41 @@ fn build_comment_prompt(comments: &[DiffComment]) -> String {
     }
     s.push_str("Please address each point.");
     s
+}
+
+/// Copy `text` to the system clipboard. Tries `pbcopy` (macOS), `wl-copy`
+/// (Wayland), then `xclip -selection clipboard` (X11).
+fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
+    let candidates: &[(&str, &[&str])] = &[
+        ("pbcopy", &[]),
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+    ];
+    let mut last_err = String::from("no clipboard tool found (pbcopy / wl-copy / xclip)");
+    for (cmd, args) in candidates {
+        match Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if let Err(e) = stdin.write_all(text.as_bytes()) {
+                        last_err = format!("{cmd}: write failed: {e}");
+                        let _ = child.wait();
+                        continue;
+                    }
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => return Ok(()),
+                    Ok(status) => last_err = format!("{cmd} exited with {status}"),
+                    Err(e) => last_err = format!("{cmd}: {e}"),
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(last_err)
 }
