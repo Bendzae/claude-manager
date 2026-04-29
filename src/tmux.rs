@@ -750,8 +750,7 @@ fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) ->
 }
 
 // Embedded claude-manager plugin files (see claude-manager-plugin/ at repo root).
-const PLUGIN_MANIFEST: &str =
-    include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
+const PLUGIN_MANIFEST: &str = include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
 const PLUGIN_SKILL_UPDATE_TASK_CONTEXT: &str =
     include_str!("../claude-manager-plugin/skills/update-task-context/SKILL.md");
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
