@@ -1,8 +1,8 @@
 # Claude Manager
 
-A terminal UI (TUI) for managing multiple Claude Code sessions organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
+A terminal UI (TUI) for managing multiple Claude Code sessions, organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
 
-Claude Manager uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, preview diffs, and attach/detach freely.
+Claude Manager uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, preview diffs, and attach or detach freely.
 
 ## Prerequisites
 
