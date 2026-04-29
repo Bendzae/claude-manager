@@ -298,6 +298,10 @@ pub fn create_session(
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
     claude_cmd.push_str(&format!(
+        " --plugin-dir {}",
+        shell_escape(&claude_manager_plugin_path(&work_dir))
+    ));
+    claude_cmd.push_str(&format!(
         " --append-system-prompt {}",
         shell_escape(&system_prompt)
     ));
@@ -423,6 +427,10 @@ pub fn recreate_session(
     );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
+    claude_cmd.push_str(&format!(
+        " --plugin-dir {}",
+        shell_escape(&claude_manager_plugin_path(&work_dir))
+    ));
     claude_cmd.push_str(&format!(
         " --append-system-prompt {}",
         shell_escape(&system_prompt)
@@ -749,11 +757,31 @@ const PLUGIN_SKILL_UPDATE_TASK_CONTEXT: &str =
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
     include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
 
-/// Install the bundled claude-manager plugin into the work directory's .claude/plugins/
-/// and enable it via .claude/settings.local.json.
+/// Filesystem path to the installed claude-manager plugin directory inside `work_dir`.
+/// This is the path passed to `claude --plugin-dir`.
+fn claude_manager_plugin_path(work_dir: &str) -> String {
+    Path::new(work_dir)
+        .join(".claude")
+        .join("plugins")
+        .join("claude-manager")
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Install the bundled claude-manager plugin into the work directory's
+/// `.claude/plugins/claude-manager/`. The plugin is loaded at session start via
+/// `claude --plugin-dir <path>` (see `claude_manager_plugin_path`).
 fn install_claude_manager_plugin(work_dir: &str) {
-    let claude_dir = Path::new(work_dir).join(".claude");
-    let plugin_dir = claude_dir.join("plugins").join("claude-manager");
+    // Remove the legacy standalone skill that older versions installed at
+    // `.claude/skills/update-task-context/` — it would otherwise show up
+    // alongside the plugin-namespaced skill.
+    let legacy_skill_dir = Path::new(work_dir)
+        .join(".claude")
+        .join("skills")
+        .join("update-task-context");
+    let _ = fs::remove_dir_all(&legacy_skill_dir);
+
+    let plugin_dir = PathBuf::from(claude_manager_plugin_path(work_dir));
 
     let _ = fs::create_dir_all(plugin_dir.join(".claude-plugin"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("update-task-context"));
@@ -778,34 +806,8 @@ fn install_claude_manager_plugin(work_dir: &str) {
         PLUGIN_SKILL_COMMIT_PUSH_TASK,
     );
 
-    // Enable the plugin in .claude/settings.local.json (merge with existing settings).
-    let _ = fs::create_dir_all(&claude_dir);
-    let settings_path = claude_dir.join("settings.local.json");
-    let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if let Some(obj) = existing.as_object_mut() {
-        let enabled = obj
-            .entry("enabledPlugins".to_string())
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(map) = enabled.as_object_mut() {
-            map.insert(
-                "claude-manager".to_string(),
-                serde_json::Value::Bool(true),
-            );
-        }
-    }
-    let _ = fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&existing).unwrap_or_default(),
-    );
-
     // Git-ignore the locally installed plugin via .git/info/exclude.
-    let exclude_entries = [
-        ".claude/plugins/claude-manager/",
-        ".claude/settings.local.json",
-    ];
+    let exclude_entries = [".claude/plugins/claude-manager/"];
     let git_dir = Path::new(work_dir).join(".git");
     let real_git_dir = if git_dir.is_file() {
         fs::read_to_string(&git_dir).ok().and_then(|content| {
