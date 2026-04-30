@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragr
 use termimad::MadSkin;
 use termimad::minimad::Alignment;
 
-use crate::app::{self, App, DiffComment, DiffSide, InputMode, PreviewMode};
+use crate::app::{self, App, DiffComment, DiffSide, InputMode, PreviewMode, task_diff_key};
 use crate::tmux::{self, SessionStatus};
 
 #[derive(Clone)]
@@ -91,6 +91,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.input_mode == InputMode::ContextMenu {
         draw_context_menu(f, app, chunks[1]);
+    }
+
+    if app.input_mode == InputMode::SelectSubmitSession {
+        draw_submit_session_select(f, app, chunks[1]);
     }
 
     if is_text_input_mode(app.input_mode) {
@@ -694,6 +698,18 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
                 return;
             }
         };
+        let (comments, cursor) = if let Some(app::ListItem::Task {
+            project_name, task, ..
+        }) = app.selected_item()
+        {
+            let key = task_diff_key(project_name, &task.branch);
+            (
+                app.diff_comments.get(&key).cloned().unwrap_or_default(),
+                Some(app.diff_cursor),
+            )
+        } else {
+            (Vec::new(), None)
+        };
         render_diff_with_stats(
             f,
             &stats.diff_output,
@@ -702,8 +718,8 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
             content_area,
             visible_height,
             app.preview_scroll,
-            &[],
-            None,
+            &comments,
+            cursor,
         );
     }
 }
@@ -1097,6 +1113,79 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn draw_submit_session_select(f: &mut Frame, app: &App, area: Rect) {
+    let pending = match &app.pending_submit {
+        Some(p) => p,
+        None => return,
+    };
+    if pending.sessions.is_empty() {
+        return;
+    }
+
+    let title = if pending.submit {
+        "Send + submit to session"
+    } else {
+        "Paste comments into session"
+    };
+    let max_label = pending
+        .sessions
+        .iter()
+        .map(|s| s.session_name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let menu_width = (max_label + 6).max(title.len() + 4) as u16;
+    let menu_height = pending.sessions.len() as u16 + 2;
+
+    let x = area.x + area.width.saturating_sub(menu_width) / 2;
+    let y = area.y + area.height.saturating_sub(menu_height) / 2;
+    let menu_area = Rect {
+        x,
+        y,
+        width: menu_width.min(area.width),
+        height: menu_height.min(area.height),
+    };
+
+    f.render_widget(Clear, menu_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+
+    let inner = block.inner(menu_area);
+    f.render_widget(block, menu_area);
+
+    for (i, session) in pending.sessions.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let is_selected = i == pending.selected;
+        let row_area = Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let label_style = if is_selected {
+            Style::default()
+                .fg(SESSION_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if is_selected { "▸ " } else { "  " };
+        let line = Line::from(vec![
+            Span::styled(prefix, Style::default().fg(ACCENT)),
+            Span::styled(session.session_name.clone(), label_style),
+        ]);
+        f.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
 /// Format a keybinding char for display in hints (e.g. ' ' → "␣", uppercase → "S-x").
 fn key_display(c: char) -> String {
     match c {
@@ -1165,6 +1254,11 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::RenameSession => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
+        }
+        InputMode::SelectSubmitSession => {
+            let kb = &app.keybindings;
+            let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
+            help_bar(&[("⏎", "send"), (&nav_keys, "navigate"), ("Esc", "cancel")])
         }
     };
 
