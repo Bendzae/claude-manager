@@ -12,6 +12,14 @@ const PERMISSION_PROMPTS: &[&str] = &[
     "No, and tell Claude what to do differently",
 ];
 
+/// Sentinel placed in the task slot of a tmux session name to mark an adhoc session.
+/// Adhoc sessions belong to a project but no task; they run in the project dir.
+pub const ADHOC_MARKER: &str = "adhoc";
+
+pub fn is_adhoc_marker(s: &str) -> bool {
+    sanitize(s).eq_ignore_ascii_case(ADHOC_MARKER)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionStatus {
     Running,
@@ -359,6 +367,88 @@ pub fn create_session(
     }
 
     Ok(tmux_name)
+}
+
+/// Create an adhoc session: tmux session running Claude in the project directory
+/// on whatever branch is currently checked out, with no task or worktree.
+/// Applies `startup_skills` if any, but sends no user prompt.
+pub fn create_adhoc_session(
+    project_name: &str,
+    project_path: &str,
+    session_name: &str,
+    startup_skills: &[String],
+) -> Result<String> {
+    let tmux_name = build_tmux_name(project_name, ADHOC_MARKER, session_name);
+
+    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
+    if let Some(prompt) = build_initial_prompt(startup_skills, None) {
+        claude_cmd.push(' ');
+        claude_cmd.push_str(&shell_escape(&prompt));
+    }
+
+    let output = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &tmux_name,
+            "-c",
+            project_path,
+            &claude_cmd,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to create tmux session");
+    }
+
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            &tmux_name,
+            "CM_PROJECT_PATH",
+            project_path,
+        ])
+        .output();
+
+    Ok(tmux_name)
+}
+
+/// Recreate an adhoc tmux session from a saved record (e.g. after tmux dies).
+pub fn recreate_adhoc_session(
+    tmux_name: &str,
+    record: &crate::config::SessionRecord,
+) -> Result<String> {
+    let claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
+
+    let output = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            tmux_name,
+            "-c",
+            &record.project_path,
+            &claude_cmd,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to recreate adhoc tmux session");
+    }
+
+    let _ = Command::new("tmux")
+        .args([
+            "set-environment",
+            "-t",
+            tmux_name,
+            "CM_PROJECT_PATH",
+            &record.project_path,
+        ])
+        .output();
+
+    Ok(tmux_name.to_string())
 }
 
 /// Recreate a tmux session from a saved record (e.g. after tmux dies).
@@ -1651,6 +1741,18 @@ pub fn sessions_for_task(
         .collect()
 }
 
+/// All adhoc sessions belonging to a project.
+pub fn adhoc_sessions_for_project(
+    project_name: &str,
+    sessions: &[TmuxSession],
+) -> Vec<TmuxSession> {
+    sessions
+        .iter()
+        .filter(|s| s.project_name == sanitize(project_name) && is_adhoc_marker(&s.task_name))
+        .cloned()
+        .collect()
+}
+
 /// Delete a task and all its sessions, worktrees, branches, and config files.
 /// Returns a description of what was cleaned up.
 pub fn delete_task(
@@ -1912,6 +2014,42 @@ mod tests {
         assert_eq!(parsed.project_name, "proj");
         assert_eq!(parsed.task_name, "task");
         assert_eq!(parsed.session_name, "sess");
+    }
+
+    // --- adhoc helpers ---
+
+    #[test]
+    fn adhoc_marker_recognises_canonical() {
+        assert!(is_adhoc_marker("adhoc"));
+        assert!(is_adhoc_marker("Adhoc"));
+        assert!(is_adhoc_marker("ADHOC"));
+    }
+
+    #[test]
+    fn adhoc_marker_rejects_other_names() {
+        assert!(!is_adhoc_marker("ad-hoc"));
+        assert!(!is_adhoc_marker("adhocs"));
+        assert!(!is_adhoc_marker("explore"));
+    }
+
+    #[test]
+    fn adhoc_tmux_name_uses_marker_slot() {
+        let name = build_tmux_name("proj", ADHOC_MARKER, "explore");
+        assert_eq!(name, "cm__proj__adhoc__explore");
+        let parsed = TmuxSession::from_tmux_name(&name).unwrap();
+        assert!(is_adhoc_marker(&parsed.task_name));
+    }
+
+    #[test]
+    fn adhoc_sessions_for_project_filters() {
+        let sessions = vec![
+            TmuxSession::from_tmux_name("cm__proj__adhoc__a").unwrap(),
+            TmuxSession::from_tmux_name("cm__proj__task1__1").unwrap(),
+            TmuxSession::from_tmux_name("cm__other__adhoc__a").unwrap(),
+        ];
+        let adhoc = adhoc_sessions_for_project("proj", &sessions);
+        assert_eq!(adhoc.len(), 1);
+        assert_eq!(adhoc[0].session_name, "a");
     }
 
     // --- shell_escape ---

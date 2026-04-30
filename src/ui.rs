@@ -71,7 +71,11 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let show_panel = matches!(
         app.selected_item(),
-        Some(app::ListItem::Session { .. } | app::ListItem::Task { .. })
+        Some(
+            app::ListItem::Session { .. }
+                | app::ListItem::Task { .. }
+                | app::ListItem::AdhocSession { .. }
+        )
     );
     if show_panel {
         let columns = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
@@ -104,12 +108,14 @@ fn is_text_input_mode(mode: InputMode) -> bool {
         InputMode::AddProjectName
             | InputMode::AddSessionName
             | InputMode::AddSessionPrompt
+            | InputMode::AddAdhocSessionName
             | InputMode::AddTaskName
             | InputMode::AddTaskBranch
             | InputMode::AddTaskPrompt
             | InputMode::RenameProject
             | InputMode::RenameTask
             | InputMode::RenameSession
+            | InputMode::RenameAdhocSession
             | InputMode::MergeCommitMessage
             | InputMode::AddDiffComment
     )
@@ -221,6 +227,50 @@ fn is_last_session(items: &[app::ListItem], i: usize, project_name: &str, task_n
         }) => pn != project_name || t.name != task_name,
         _ => true,
     }
+}
+
+/// True if no Task of the same project follows the AdhocGroup at index `i`.
+/// (Adhoc group is rendered before tasks, so it's "last" only when no tasks come after.)
+fn is_last_adhoc_group(items: &[app::ListItem], i: usize, project_name: &str) -> bool {
+    for item in items.iter().skip(i + 1) {
+        match item {
+            app::ListItem::Task {
+                project_name: pn, ..
+            } if pn == project_name => return false,
+            app::ListItem::Project { .. } => return true,
+            _ => continue,
+        }
+    }
+    true
+}
+
+/// True if the AdhocSession at index `i` is the last in its group.
+fn is_last_adhoc_session(items: &[app::ListItem], i: usize, project_name: &str) -> bool {
+    match items.get(i + 1) {
+        Some(app::ListItem::AdhocSession {
+            project_name: pn, ..
+        }) => pn != project_name,
+        _ => true,
+    }
+}
+
+/// For an AdhocSession at `i`, look back to find its parent AdhocGroup and
+/// return whether that group is the last in the project.
+fn is_last_adhoc_group_lookup(
+    items: &[app::ListItem],
+    session_idx: usize,
+    project_name: &str,
+) -> bool {
+    for j in (0..session_idx).rev() {
+        if let app::ListItem::AdhocGroup {
+            project_name: pn, ..
+        } = &items[j]
+            && pn == project_name
+        {
+            return is_last_adhoc_group(items, j, project_name);
+        }
+    }
+    true
 }
 
 /// Find whether the parent task of a session is the last task in the project.
@@ -399,6 +449,80 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 
                 lines.push(ListItem::new(Line::from(spans)));
             }
+            app::ListItem::AdhocGroup {
+                project_name,
+                session_count,
+                ..
+            } => {
+                let indicator = if is_selected { " ▸ " } else { "   " };
+                let last = is_last_adhoc_group(&app.items, i, project_name);
+                let branch_char = if last { "└─ " } else { "├─ " };
+                let collapsed = app.collapsed.contains(&format!("a:{project_name}"));
+                let chevron = if collapsed { "▶ " } else { "▼ " };
+                let style = if is_selected {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(ACCENT)
+                };
+                let mut spans = vec![
+                    Span::styled(indicator, indicator_style),
+                    Span::styled(branch_char, tree_style),
+                    Span::styled(chevron, Style::default().fg(MUTED)),
+                    Span::styled("⌂ adhoc", style),
+                ];
+                if collapsed && *session_count > 0 {
+                    spans.push(Span::styled(
+                        format!("  [{session_count}]"),
+                        Style::default().fg(Color::Green),
+                    ));
+                }
+                lines.push(ListItem::new(Line::from(spans)));
+            }
+            app::ListItem::AdhocSession {
+                project_name,
+                session,
+                ..
+            } => {
+                let indicator = if is_selected { " ▸ " } else { "   " };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(SESSION_COLOR)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(SESSION_COLOR)
+                };
+
+                let status = app
+                    .session_statuses
+                    .get(&session.name)
+                    .copied()
+                    .unwrap_or(SessionStatus::Finished);
+                const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let (status_icon, status_color) = match status {
+                    SessionStatus::Running => {
+                        let frame = SPINNER[app.tick % SPINNER.len()];
+                        (frame, Color::Yellow)
+                    }
+                    SessionStatus::WaitingForInput => ("●", Color::Green),
+                    SessionStatus::WaitingForPermission => ("!", Color::Magenta),
+                    SessionStatus::Finished => ("●", Color::Red),
+                };
+
+                let group_last = is_last_adhoc_group_lookup(&app.items, i, project_name);
+                let session_last = is_last_adhoc_session(&app.items, i, project_name);
+                let continuation = if group_last { "   " } else { "│  " };
+                let branch_char = if session_last { "└─ " } else { "├─ " };
+
+                let spans = vec![
+                    Span::styled(indicator, indicator_style),
+                    Span::styled(continuation, tree_style),
+                    Span::styled(branch_char, tree_style),
+                    Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
+                    Span::styled("⌂ ", Style::default().fg(ACCENT)),
+                    Span::styled(&session.session_name, style),
+                ];
+                lines.push(ListItem::new(Line::from(spans)));
+            }
             app::ListItem::Session {
                 project_name,
                 task,
@@ -507,22 +631,28 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let tab_style = |active: bool| if active { active_style } else { inactive_style };
     let sep_span = Span::styled(" │ ", Style::default().fg(TREE));
 
-    let mut tab_spans = vec![
-        Span::styled(" agent", tab_style(app.preview_mode == PreviewMode::Output)),
-        sep_span.clone(),
-        Span::styled("diff", tab_style(app.preview_mode == PreviewMode::Diff)),
-    ];
+    let is_adhoc = matches!(app.selected_item(), Some(app::ListItem::AdhocSession { .. }));
+    let mut tab_spans = vec![Span::styled(
+        " agent",
+        tab_style(app.preview_mode == PreviewMode::Output),
+    )];
+    if !is_adhoc {
+        tab_spans.push(sep_span.clone());
+        tab_spans.push(Span::styled(
+            "diff",
+            tab_style(app.preview_mode == PreviewMode::Diff),
+        ));
 
-    // Add terminal tabs
-    if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
-        let term_count = app.terminal_counts.get(&session.name).copied().unwrap_or(0);
-        for i in 0..term_count {
-            tab_spans.push(sep_span.clone());
-            let label = format!("term{}", i + 1);
-            tab_spans.push(Span::styled(
-                label,
-                tab_style(app.preview_mode == PreviewMode::Terminal(i)),
-            ));
+        if let Some(app::ListItem::Session { session, .. }) = app.selected_item() {
+            let term_count = app.terminal_counts.get(&session.name).copied().unwrap_or(0);
+            for i in 0..term_count {
+                tab_spans.push(sep_span.clone());
+                let label = format!("term{}", i + 1);
+                tab_spans.push(Span::styled(
+                    label,
+                    tab_style(app.preview_mode == PreviewMode::Terminal(i)),
+                ));
+            }
         }
     }
 
@@ -1158,11 +1288,13 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         }
         InputMode::AddProjectName
         | InputMode::AddSessionName
+        | InputMode::AddAdhocSessionName
         | InputMode::AddTaskName
         | InputMode::AddTaskBranch
         | InputMode::RenameProject
         | InputMode::RenameTask
-        | InputMode::RenameSession => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
+        | InputMode::RenameSession
+        | InputMode::RenameAdhocSession => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
         }

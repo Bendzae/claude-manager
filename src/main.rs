@@ -26,12 +26,14 @@ fn is_text_input_mode(mode: InputMode) -> bool {
         InputMode::AddProjectName
             | InputMode::AddSessionName
             | InputMode::AddSessionPrompt
+            | InputMode::AddAdhocSessionName
             | InputMode::AddTaskName
             | InputMode::AddTaskBranch
             | InputMode::AddTaskPrompt
             | InputMode::RenameProject
             | InputMode::RenameTask
             | InputMode::RenameSession
+            | InputMode::RenameAdhocSession
             | InputMode::MergeCommitMessage
     )
 }
@@ -236,6 +238,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
+                    InputMode::AddAdhocSessionName => match key.code {
+                        KeyCode::Enter => app.confirm_new_adhoc_session(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
                     InputMode::AddSessionPrompt => match key.code {
                         KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
                             app.input_buffer.push('\n');
@@ -255,17 +266,18 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char('n') | KeyCode::Esc => app.cancel_input(),
                         _ => {}
                     },
-                    InputMode::RenameProject | InputMode::RenameTask | InputMode::RenameSession => {
-                        match key.code {
-                            KeyCode::Enter => app.confirm_rename(),
-                            KeyCode::Esc => app.cancel_input(),
-                            KeyCode::Backspace => {
-                                app.input_buffer.pop();
-                            }
-                            KeyCode::Char(c) => app.input_buffer.push(c),
-                            _ => {}
+                    InputMode::RenameProject
+                    | InputMode::RenameTask
+                    | InputMode::RenameSession
+                    | InputMode::RenameAdhocSession => match key.code {
+                        KeyCode::Enter => app.confirm_rename(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
                         }
-                    }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
                     InputMode::ConfirmCreatePr => match key.code {
                         KeyCode::Char('y') => app.confirm_create_pr(),
                         KeyCode::Char('n') | KeyCode::Esc => app.cancel_input(),
