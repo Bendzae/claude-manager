@@ -621,13 +621,11 @@ impl App {
                     action: ContextAction::Delete,
                 },
             ],
-            Some(ListItem::AdhocGroup { .. }) => vec![
-                ContextMenuItem {
-                    key: cm.new_adhoc_session,
-                    label: "New adhoc session",
-                    action: ContextAction::NewAdhocSession,
-                },
-            ],
+            Some(ListItem::AdhocGroup { .. }) => vec![ContextMenuItem {
+                key: cm.new_adhoc_session,
+                label: "New adhoc session",
+                action: ContextAction::NewAdhocSession,
+            }],
             Some(ListItem::AdhocSession { .. }) => vec![
                 ContextMenuItem {
                     key: cm.rename,
@@ -857,8 +855,7 @@ impl App {
             return;
         }
         if tmux::is_adhoc_marker(&task_name) {
-            self.status_message =
-                Some("'adhoc' is reserved — pick a different task name".into());
+            self.status_message = Some("'adhoc' is reserved — pick a different task name".into());
             return;
         }
 
@@ -1050,8 +1047,7 @@ impl App {
             tmux::sanitize(&name),
         );
         if self.sessions.iter().any(|s| s.name == tmux_name_to_create) {
-            self.status_message =
-                Some(format!("Adhoc session '{name}' already exists"));
+            self.status_message = Some(format!("Adhoc session '{name}' already exists"));
             return;
         }
 
@@ -1065,8 +1061,9 @@ impl App {
         let proj_path_for_op = project_path.clone();
         let session_name = name.clone();
 
-        self.start_op("Creating adhoc session...", move || {
-            match tmux::create_adhoc_session(
+        self.start_op(
+            "Creating adhoc session...",
+            move || match tmux::create_adhoc_session(
                 &proj_name_for_op,
                 &proj_path_for_op,
                 &session_name,
@@ -1095,8 +1092,8 @@ impl App {
                     rebuild: false,
                     reload_config: false,
                 },
-            }
-        });
+            },
+        );
     }
 
     pub fn start_new_session(&mut self, use_worktree: bool) {
@@ -1404,10 +1401,9 @@ impl App {
             Some(ListItem::Session { session, .. }) => {
                 (InputMode::RenameSession, session.session_name.clone())
             }
-            Some(ListItem::AdhocSession { session, .. }) => (
-                InputMode::RenameAdhocSession,
-                session.session_name.clone(),
-            ),
+            Some(ListItem::AdhocSession { session, .. }) => {
+                (InputMode::RenameAdhocSession, session.session_name.clone())
+            }
             _ => return,
         };
         let label = match mode {

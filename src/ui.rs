@@ -631,7 +631,10 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let tab_style = |active: bool| if active { active_style } else { inactive_style };
     let sep_span = Span::styled(" │ ", Style::default().fg(TREE));
 
-    let is_adhoc = matches!(app.selected_item(), Some(app::ListItem::AdhocSession { .. }));
+    let is_adhoc = matches!(
+        app.selected_item(),
+        Some(app::ListItem::AdhocSession { .. })
+    );
     let mut tab_spans = vec![Span::styled(
         " agent",
         tab_style(app.preview_mode == PreviewMode::Output),
