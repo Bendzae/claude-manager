@@ -1,0 +1,8 @@
+{
+  "name": "claude-manager",
+  "description": "Skills for Claude Manager sessions: shared task context updates and worktree commit/merge/push.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Claude Manager"
+  }
+}
