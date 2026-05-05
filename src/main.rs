@@ -307,6 +307,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
+                    InputMode::SelectSubmitSession => match key.code {
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Up => app.move_submit_session_up(),
+                        KeyCode::Down => app.move_submit_session_down(),
+                        KeyCode::Char(c) if c == kb.move_up => app.move_submit_session_up(),
+                        KeyCode::Char(c) if c == kb.move_down => app.move_submit_session_down(),
+                        KeyCode::Enter => app.confirm_submit_session(),
+                        _ => {}
+                    },
                 }
             }
         }

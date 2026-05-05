@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
@@ -58,6 +60,7 @@ pub enum InputMode {
     MergeCommitMessage,
     ConfirmCreatePr,
     AddDiffComment,
+    SelectSubmitSession,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,10 +80,19 @@ pub struct DiffComment {
 
 #[derive(Debug, Clone)]
 pub struct PendingComment {
-    pub session_name: String,
+    pub target_key: String,
     pub file: String,
     pub line: usize,
     pub side: DiffSide,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingSubmit {
+    pub storage_key: String,
+    pub sessions: Vec<TmuxSession>,
+    pub selected: usize,
+    pub submit: bool,
+    pub comments: Vec<DiffComment>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +118,7 @@ pub enum ContextAction {
     CreateTerminal,
     KillTerminal,
     ToggleAutoContext,
+    CopyWorktreePath,
 }
 
 pub struct App {
@@ -151,12 +164,15 @@ pub struct App {
     pub worker: Worker,
     pub context_menu_items: Vec<ContextMenuItem>,
     pub context_menu_selected: usize,
-    /// Diff comments per session tmux name.
+    /// Diff comments keyed by storage key (session tmux name for sessions,
+    /// `task:{project}:{branch}` for tasks).
     pub diff_comments: HashMap<String, Vec<DiffComment>>,
     /// Diff cursor row (index into rendered diff content lines, excluding sticky header).
     pub diff_cursor: usize,
     /// In-flight comment location during AddDiffComment input mode.
     pub pending_comment: Option<PendingComment>,
+    /// In-flight submission target selection for task-level diff comments.
+    pub pending_submit: Option<PendingSubmit>,
 }
 
 pub struct OpResult {
@@ -175,6 +191,10 @@ fn task_key(project: &str, task: &str) -> String {
 
 fn adhoc_group_key(project: &str) -> String {
     format!("a:{project}")
+}
+
+pub fn task_diff_key(project: &str, branch: &str) -> String {
+    format!("task:{project}:{branch}")
 }
 
 impl App {
@@ -248,6 +268,7 @@ impl App {
             diff_comments: HashMap::new(),
             diff_cursor: 0,
             pending_comment: None,
+            pending_submit: None,
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -718,6 +739,11 @@ impl App {
                     });
                 }
                 items.push(ContextMenuItem {
+                    key: cm.copy_path,
+                    label: "Copy worktree path",
+                    action: ContextAction::CopyWorktreePath,
+                });
+                items.push(ContextMenuItem {
                     key: cm.rename,
                     label: "Rename",
                     action: ContextAction::Rename,
@@ -753,6 +779,28 @@ impl App {
             ContextAction::CreateTerminal => self.create_terminal(),
             ContextAction::KillTerminal => self.kill_terminal(),
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
+            ContextAction::CopyWorktreePath => self.copy_worktree_path(),
+        }
+    }
+
+    pub fn copy_worktree_path(&mut self) {
+        let session = match self.selected_item() {
+            Some(ListItem::Session { session, .. }) => session,
+            _ => {
+                self.status_message = Some("Select a session to copy its worktree path".into());
+                return;
+            }
+        };
+        let path = match session.worktree_path() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => {
+                self.status_message = Some("Session has no worktree".into());
+                return;
+            }
+        };
+        match copy_to_clipboard(&path) {
+            Ok(()) => self.status_message = Some(format!("Copied to clipboard: {path}")),
+            Err(e) => self.status_message = Some(format!("Copy failed: {e}")),
         }
     }
 
@@ -1873,6 +1921,7 @@ impl App {
         self.pending_task_branch = None;
         self.pending_session_name = None;
         self.pending_comment = None;
+        self.pending_submit = None;
     }
 
     pub fn toggle_preview_mode(&mut self) {
@@ -1985,34 +2034,48 @@ impl App {
         self.preview_scroll = self.preview_scroll.saturating_sub(3);
     }
 
-    /// True when the diff preview tab is active for the selected session.
+    /// True when the diff preview tab is active for a session or task.
     pub fn diff_focused(&self) -> bool {
         self.preview_mode == PreviewMode::Diff
-            && matches!(self.selected_item(), Some(ListItem::Session { .. }))
+            && matches!(
+                self.selected_item(),
+                Some(ListItem::Session { .. }) | Some(ListItem::Task { .. })
+            )
     }
 
-    fn selected_session_name(&self) -> Option<String> {
-        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
-            Some(session.name.clone())
-        } else {
-            None
+    /// Storage key for diff comments on the selected item.
+    pub fn diff_storage_key(&self) -> Option<String> {
+        match self.selected_item()? {
+            ListItem::Session { session, .. } => Some(session.name.clone()),
+            ListItem::Task {
+                project_name, task, ..
+            } if self.preview_mode == PreviewMode::Diff => {
+                Some(task_diff_key(project_name, &task.branch))
+            }
+            _ => None,
+        }
+    }
+
+    fn selected_diff_content(&self) -> Option<&str> {
+        match self.selected_item()? {
+            ListItem::Session { .. } => self.preview_content.as_deref(),
+            ListItem::Task { .. } if self.preview_mode == PreviewMode::Diff => {
+                self.task_diff.as_ref().map(|d| d.diff_output.as_str())
+            }
+            _ => None,
         }
     }
 
     fn diff_rows_for_selected(&self) -> Vec<crate::ui::DiffRow<'_>> {
-        let session = match self.selected_session_name() {
-            Some(s) => s,
+        let key = match self.diff_storage_key() {
+            Some(k) => k,
             None => return Vec::new(),
         };
-        let content = match self.preview_content.as_deref() {
+        let content = match self.selected_diff_content() {
             Some(c) => c,
             None => return Vec::new(),
         };
-        let comments = self
-            .diff_comments
-            .get(&session)
-            .cloned()
-            .unwrap_or_default();
+        let comments = self.diff_comments.get(&key).cloned().unwrap_or_default();
         crate::ui::parse_diff_rows(content, &comments)
     }
 
@@ -2083,8 +2146,8 @@ impl App {
     }
 
     pub fn start_add_diff_comment(&mut self) {
-        let session_name = match self.selected_session_name() {
-            Some(s) => s,
+        let target_key = match self.diff_storage_key() {
+            Some(k) => k,
             None => return,
         };
         let loc = match self.current_code_loc() {
@@ -2095,7 +2158,7 @@ impl App {
             }
         };
         self.pending_comment = Some(PendingComment {
-            session_name,
+            target_key,
             file: loc.file.clone(),
             line: loc.line,
             side: loc.side,
@@ -2126,7 +2189,7 @@ impl App {
             self.cancel_input();
             return;
         }
-        let entry = self.diff_comments.entry(pending.session_name).or_default();
+        let entry = self.diff_comments.entry(pending.target_key).or_default();
         entry.push(DiffComment {
             file: pending.file,
             line: pending.line,
@@ -2139,47 +2202,133 @@ impl App {
     }
 
     pub fn delete_diff_comment(&mut self) {
-        let session = match self.selected_session_name() {
-            Some(s) => s,
+        let key = match self.diff_storage_key() {
+            Some(k) => k,
             None => return,
         };
         let loc = match self.current_code_loc() {
             Some(l) => l,
             None => return,
         };
-        if let Some(list) = self.diff_comments.get_mut(&session) {
+        if let Some(list) = self.diff_comments.get_mut(&key) {
             let before = list.len();
             list.retain(|c| !(c.file == loc.file && c.line == loc.line && c.side == loc.side));
             if list.len() < before {
                 self.status_message = Some("Comment removed".into());
             }
             if list.is_empty() {
-                self.diff_comments.remove(&session);
+                self.diff_comments.remove(&key);
             }
         }
     }
 
     pub fn submit_diff_comments(&mut self, submit: bool) {
-        let session = match self.selected_session_name() {
-            Some(s) => s,
+        let key = match self.diff_storage_key() {
+            Some(k) => k,
             None => return,
         };
-        let comments = match self.diff_comments.get(&session) {
+        let comments = match self.diff_comments.get(&key) {
             Some(c) if !c.is_empty() => c.clone(),
             _ => {
                 self.status_message = Some("No comments to submit".into());
                 return;
             }
         };
-        let prompt = build_comment_prompt(&comments);
-        match tmux::send_text(&session, &prompt, submit) {
+
+        match self.selected_item().cloned() {
+            Some(ListItem::Session { session, .. }) => {
+                self.send_comments_to_session(&session.name, &key, &comments, submit);
+            }
+            Some(ListItem::Task {
+                project_name, task, ..
+            }) => {
+                let task_sessions =
+                    tmux::sessions_for_task(&project_name, &task.name, &self.sessions);
+                match task_sessions.len() {
+                    0 => {
+                        self.status_message = Some("No sessions on this task to submit to".into());
+                    }
+                    1 => {
+                        let target = task_sessions[0].name.clone();
+                        self.send_comments_to_session(&target, &key, &comments, submit);
+                    }
+                    _ => {
+                        self.pending_submit = Some(PendingSubmit {
+                            storage_key: key,
+                            sessions: task_sessions,
+                            selected: 0,
+                            submit,
+                            comments,
+                        });
+                        self.input_mode = InputMode::SelectSubmitSession;
+                        self.status_message = Some(if submit {
+                            "Select session to send + submit comments to".into()
+                        } else {
+                            "Select session to paste comments into".into()
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn move_submit_session_up(&mut self) {
+        if let Some(p) = self.pending_submit.as_mut() {
+            if p.selected > 0 {
+                p.selected -= 1;
+            }
+        }
+    }
+
+    pub fn move_submit_session_down(&mut self) {
+        if let Some(p) = self.pending_submit.as_mut() {
+            if p.selected + 1 < p.sessions.len() {
+                p.selected += 1;
+            }
+        }
+    }
+
+    pub fn confirm_submit_session(&mut self) {
+        let pending = match self.pending_submit.take() {
+            Some(p) => p,
+            None => {
+                self.input_mode = InputMode::Normal;
+                return;
+            }
+        };
+        let target = match pending.sessions.get(pending.selected) {
+            Some(s) => s.name.clone(),
+            None => {
+                self.input_mode = InputMode::Normal;
+                return;
+            }
+        };
+        self.input_mode = InputMode::Normal;
+        self.send_comments_to_session(
+            &target,
+            &pending.storage_key,
+            &pending.comments,
+            pending.submit,
+        );
+    }
+
+    fn send_comments_to_session(
+        &mut self,
+        session_name: &str,
+        storage_key: &str,
+        comments: &[DiffComment],
+        submit: bool,
+    ) {
+        let prompt = build_comment_prompt(comments);
+        match tmux::send_text(session_name, &prompt, submit) {
             Ok(()) => {
-                self.diff_comments.remove(&session);
+                self.diff_comments.remove(storage_key);
                 self.status_message = Some(if submit {
-                    format!("Sent {} comment(s) to agent", comments.len())
+                    format!("Sent {} comment(s) to {session_name}", comments.len())
                 } else {
                     format!(
-                        "Pasted {} comment(s) — review and submit in agent",
+                        "Pasted {} comment(s) into {session_name} — review and submit",
                         comments.len()
                     )
                 });
@@ -2214,4 +2363,41 @@ fn build_comment_prompt(comments: &[DiffComment]) -> String {
     }
     s.push_str("Please address each point.");
     s
+}
+
+/// Copy `text` to the system clipboard. Tries `pbcopy` (macOS), `wl-copy`
+/// (Wayland), then `xclip -selection clipboard` (X11).
+fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
+    let candidates: &[(&str, &[&str])] = &[
+        ("pbcopy", &[]),
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+    ];
+    let mut last_err = String::from("no clipboard tool found (pbcopy / wl-copy / xclip)");
+    for (cmd, args) in candidates {
+        match Command::new(cmd)
+            .args(*args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    if let Err(e) = stdin.write_all(text.as_bytes()) {
+                        last_err = format!("{cmd}: write failed: {e}");
+                        let _ = child.wait();
+                        continue;
+                    }
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => return Ok(()),
+                    Ok(status) => last_err = format!("{cmd} exited with {status}"),
+                    Err(e) => last_err = format!("{cmd}: {e}"),
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(last_err)
 }

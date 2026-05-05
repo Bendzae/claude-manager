@@ -282,8 +282,8 @@ pub fn create_session(
     // Clean any stale hooks that may have been copied from the main project's .claude/
     remove_task_context_hooks(&work_dir);
 
-    // Always install the /update-task-context skill
-    install_update_task_context_skill(&work_dir, &context_path_str);
+    // Always install the claude-manager plugin (skills + plugin enable)
+    install_claude_manager_plugin(&work_dir);
 
     // Set up stop hook if auto_context is enabled
     if auto_context {
@@ -305,6 +305,10 @@ pub fn create_session(
     );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
+    claude_cmd.push_str(&format!(
+        " --plugin-dir {}",
+        shell_escape(&claude_manager_plugin_path(&work_dir))
+    ));
     claude_cmd.push_str(&format!(
         " --append-system-prompt {}",
         shell_escape(&system_prompt)
@@ -482,8 +486,8 @@ pub fn recreate_session(
     let context_path = crate::config::task_context_path(&record.project_name, &record.task_branch);
     let context_path_str = context_path.to_string_lossy().to_string();
 
-    // Always install skill
-    install_update_task_context_skill(&work_dir, &context_path_str);
+    // Always install plugin
+    install_claude_manager_plugin(&work_dir);
 
     // Re-apply stop hook if auto_context is on
     if auto_context {
@@ -513,6 +517,10 @@ pub fn recreate_session(
     );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
+    claude_cmd.push_str(&format!(
+        " --plugin-dir {}",
+        shell_escape(&claude_manager_plugin_path(&work_dir))
+    ));
     claude_cmd.push_str(&format!(
         " --append-system-prompt {}",
         shell_escape(&system_prompt)
@@ -831,38 +839,65 @@ fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) ->
     ))
 }
 
-/// Install the /update-task-context skill into the work directory's .claude/skills/.
-fn install_update_task_context_skill(work_dir: &str, context_path: &str) {
-    let skill_dir = Path::new(work_dir)
+// Embedded claude-manager plugin files (see claude-manager-plugin/ at repo root).
+const PLUGIN_MANIFEST: &str = include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
+const PLUGIN_SKILL_UPDATE_TASK_CONTEXT: &str =
+    include_str!("../claude-manager-plugin/skills/update-task-context/SKILL.md");
+const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
+    include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
+
+/// Filesystem path to the installed claude-manager plugin directory inside `work_dir`.
+/// This is the path passed to `claude --plugin-dir`.
+fn claude_manager_plugin_path(work_dir: &str) -> String {
+    Path::new(work_dir)
+        .join(".claude")
+        .join("plugins")
+        .join("claude-manager")
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Install the bundled claude-manager plugin into the work directory's
+/// `.claude/plugins/claude-manager/`. The plugin is loaded at session start via
+/// `claude --plugin-dir <path>` (see `claude_manager_plugin_path`).
+fn install_claude_manager_plugin(work_dir: &str) {
+    // Remove the legacy standalone skill that older versions installed at
+    // `.claude/skills/update-task-context/` — it would otherwise show up
+    // alongside the plugin-namespaced skill.
+    let legacy_skill_dir = Path::new(work_dir)
         .join(".claude")
         .join("skills")
         .join("update-task-context");
-    let _ = fs::create_dir_all(&skill_dir);
+    let _ = fs::remove_dir_all(&legacy_skill_dir);
 
-    let skill_content = format!(
-        r#"---
-description: Update the shared task context file with current progress
-user-invocable: true
----
+    let plugin_dir = PathBuf::from(claude_manager_plugin_path(work_dir));
 
-Read the shared task context file at `{context_path}` and rewrite it as a clean, consolidated version that incorporates your current progress and knowledge.
+    let _ = fs::create_dir_all(plugin_dir.join(".claude-plugin"));
+    let _ = fs::create_dir_all(plugin_dir.join("skills").join("update-task-context"));
+    let _ = fs::create_dir_all(plugin_dir.join("skills").join("commit-push-task"));
 
-Rules:
-- The first line MUST be a markdown heading
-- Maintain a clear summary of the task goal, what has been done, and what is known
-- Include anything useful for other agents picking up this task
-- Remove outdated info, keep it concise
-- Do NOT include commentary or meta-text about the update itself
-"#,
-        context_path = context_path
+    let _ = fs::write(
+        plugin_dir.join(".claude-plugin").join("plugin.json"),
+        PLUGIN_MANIFEST,
+    );
+    let _ = fs::write(
+        plugin_dir
+            .join("skills")
+            .join("update-task-context")
+            .join("SKILL.md"),
+        PLUGIN_SKILL_UPDATE_TASK_CONTEXT,
+    );
+    let _ = fs::write(
+        plugin_dir
+            .join("skills")
+            .join("commit-push-task")
+            .join("SKILL.md"),
+        PLUGIN_SKILL_COMMIT_PUSH_TASK,
     );
 
-    let _ = fs::write(skill_dir.join("SKILL.md"), skill_content);
-
-    // Ensure the skill file is git-ignored locally via .git/info/exclude
-    let exclude_entry = ".claude/skills/update-task-context/";
+    // Git-ignore the locally installed plugin via .git/info/exclude.
+    let exclude_entries = [".claude/plugins/claude-manager/"];
     let git_dir = Path::new(work_dir).join(".git");
-    // Worktrees have a .git file pointing to the real git dir
     let real_git_dir = if git_dir.is_file() {
         fs::read_to_string(&git_dir).ok().and_then(|content| {
             content
@@ -878,14 +913,19 @@ Rules:
         let info_dir = gd.join("info");
         let _ = fs::create_dir_all(&info_dir);
         let exclude_path = info_dir.join("exclude");
-        let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
-        if !existing.lines().any(|l| l.trim() == exclude_entry) {
-            let mut content = existing;
-            if !content.ends_with('\n') && !content.is_empty() {
+        let mut content = fs::read_to_string(&exclude_path).unwrap_or_default();
+        let mut changed = false;
+        for entry in exclude_entries {
+            if !content.lines().any(|l| l.trim() == entry) {
+                if !content.ends_with('\n') && !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(entry);
                 content.push('\n');
+                changed = true;
             }
-            content.push_str(exclude_entry);
-            content.push('\n');
+        }
+        if changed {
             let _ = fs::write(&exclude_path, content);
         }
     }

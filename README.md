@@ -90,6 +90,7 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 | `u` | Update/rebase onto task branch | `update` |
 | `c` | Create terminal window | `create_terminal` |
 | `k` | Kill terminal window | `kill_terminal` |
+| `y` | Copy worktree path to clipboard | `copy_path` |
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
 
