@@ -46,6 +46,9 @@ fn cm_new_session() -> char {
 fn cm_new_session_no_worktree() -> char {
     'N'
 }
+fn cm_new_adhoc_session() -> char {
+    'A'
+}
 fn cm_toggle_auto_context() -> char {
     'x'
 }
@@ -109,6 +112,9 @@ pub struct ContextMenuKeyBindings {
     /// New session without worktree (default: N)
     #[serde(default = "cm_new_session_no_worktree")]
     pub new_session_no_worktree: char,
+    /// New adhoc session on project (default: A)
+    #[serde(default = "cm_new_adhoc_session")]
+    pub new_adhoc_session: char,
     /// Toggle auto-context (default: x)
     #[serde(default = "cm_toggle_auto_context")]
     pub toggle_auto_context: char,
@@ -156,6 +162,7 @@ impl Default for ContextMenuKeyBindings {
             add_task: cm_add_task(),
             new_session: cm_new_session(),
             new_session_no_worktree: cm_new_session_no_worktree(),
+            new_adhoc_session: cm_new_adhoc_session(),
             toggle_auto_context: cm_toggle_auto_context(),
             update: cm_update(),
             push: cm_push(),

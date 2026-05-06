@@ -27,6 +27,16 @@ pub enum ListItem {
         task: Task,
         session: TmuxSession,
     },
+    AdhocGroup {
+        project_name: String,
+        project_path: String,
+        session_count: usize,
+    },
+    AdhocSession {
+        project_name: String,
+        project_path: String,
+        session: TmuxSession,
+    },
 }
 
 pub use worker::PreviewMode;
@@ -41,10 +51,12 @@ pub enum InputMode {
     AddTaskPrompt,
     AddSessionName,
     AddSessionPrompt,
+    AddAdhocSessionName,
     ConfirmDelete,
     RenameProject,
     RenameTask,
     RenameSession,
+    RenameAdhocSession,
     MergeCommitMessage,
     ConfirmCreatePr,
     AddDiffComment,
@@ -97,6 +109,7 @@ pub enum ContextAction {
     AddTask,
     NewSession,
     NewSessionNoWorktree,
+    NewAdhocSession,
     Delete,
     Rename,
     Merge,
@@ -185,6 +198,10 @@ fn task_key(project: &str, task: &str) -> String {
     format!("t:{project}:{task}")
 }
 
+fn adhoc_group_key(project: &str) -> String {
+    format!("a:{project}")
+}
+
 pub fn task_diff_key(project: &str, branch: &str) -> String {
     format!("task:{project}:{branch}")
 }
@@ -204,15 +221,17 @@ impl App {
                     continue;
                 }
                 if !live_names.contains(tmux_name.as_str()) {
-                    let auto_context = config
-                        .find_task(&record.project_name, &record.task_name)
-                        .map_or(true, |t| t.auto_context);
-                    match tmux::recreate_session(tmux_name, record, auto_context) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            // Could not recreate (e.g. worktree gone) — remove stale record
-                            config::remove_session_record(tmux_name);
-                        }
+                    let result = if tmux::is_adhoc_marker(&record.task_name) {
+                        tmux::recreate_adhoc_session(tmux_name, record)
+                    } else {
+                        let auto_context = config
+                            .find_task(&record.project_name, &record.task_name)
+                            .map_or(true, |t| t.auto_context);
+                        tmux::recreate_session(tmux_name, record, auto_context)
+                    };
+                    if result.is_err() {
+                        // Could not recreate (e.g. worktree gone) — remove stale record
+                        config::remove_session_record(tmux_name);
                     }
                 }
             }
@@ -377,6 +396,10 @@ impl App {
                 name: session.name.clone(),
                 preview_mode: self.preview_mode,
             },
+            Some(ListItem::AdhocSession { session, .. }) => Selection::Session {
+                name: session.name.clone(),
+                preview_mode: PreviewMode::Output,
+            },
             Some(ListItem::Task {
                 project_name,
                 project_path,
@@ -451,6 +474,25 @@ impl App {
                 continue;
             }
 
+            // Adhoc group: only rendered when the project has at least one adhoc session.
+            let adhoc_sessions = tmux::adhoc_sessions_for_project(&project.name, &self.sessions);
+            if !adhoc_sessions.is_empty() {
+                self.items.push(ListItem::AdhocGroup {
+                    project_name: project.name.clone(),
+                    project_path: project.path.clone(),
+                    session_count: adhoc_sessions.len(),
+                });
+                if !self.collapsed.contains(&adhoc_group_key(&project.name)) {
+                    for session in adhoc_sessions {
+                        self.items.push(ListItem::AdhocSession {
+                            project_name: project.name.clone(),
+                            project_path: project.path.clone(),
+                            session,
+                        });
+                    }
+                }
+            }
+
             for task in visible_tasks {
                 self.items.push(ListItem::Task {
                     project_name: project.name.clone(),
@@ -503,6 +545,16 @@ impl App {
                 project_path,
                 ..
             } => Some((project_name, project_path)),
+            ListItem::AdhocGroup {
+                project_name,
+                project_path,
+                ..
+            } => Some((project_name, project_path)),
+            ListItem::AdhocSession {
+                project_name,
+                project_path,
+                ..
+            } => Some((project_name, project_path)),
         }
     }
 
@@ -546,7 +598,10 @@ impl App {
         // Default to Context for tasks, Output for sessions
         if matches!(self.selected_item(), Some(ListItem::Task { .. })) {
             self.preview_mode = PreviewMode::Context;
-        } else if matches!(self.selected_item(), Some(ListItem::Session { .. })) {
+        } else if matches!(
+            self.selected_item(),
+            Some(ListItem::Session { .. } | ListItem::AdhocSession { .. })
+        ) {
             self.preview_mode = PreviewMode::Output;
         }
         self.sync_worker_hints();
@@ -565,6 +620,13 @@ impl App {
                 project_name, task, ..
             }) => {
                 let key = task_key(project_name, &task.name);
+                if !self.collapsed.remove(&key) {
+                    self.collapsed.insert(key);
+                }
+                self.rebuild_items();
+            }
+            Some(ListItem::AdhocGroup { project_name, .. }) => {
+                let key = adhoc_group_key(project_name);
                 if !self.collapsed.remove(&key) {
                     self.collapsed.insert(key);
                 }
@@ -593,6 +655,9 @@ impl App {
                 self.should_attach = Some(session.name.clone());
             }
         }
+        if let Some(ListItem::AdhocSession { session, .. }) = self.selected_item() {
+            self.should_attach = Some(session.name.clone());
+        }
     }
 
     pub fn open_context_menu(&mut self) {
@@ -604,6 +669,28 @@ impl App {
                     label: "Add task",
                     action: ContextAction::AddTask,
                 },
+                ContextMenuItem {
+                    key: cm.new_adhoc_session,
+                    label: "New adhoc session",
+                    action: ContextAction::NewAdhocSession,
+                },
+                ContextMenuItem {
+                    key: cm.rename,
+                    label: "Rename",
+                    action: ContextAction::Rename,
+                },
+                ContextMenuItem {
+                    key: cm.delete,
+                    label: "Delete",
+                    action: ContextAction::Delete,
+                },
+            ],
+            Some(ListItem::AdhocGroup { .. }) => vec![ContextMenuItem {
+                key: cm.new_adhoc_session,
+                label: "New adhoc session",
+                action: ContextAction::NewAdhocSession,
+            }],
+            Some(ListItem::AdhocSession { .. }) => vec![
                 ContextMenuItem {
                     key: cm.rename,
                     label: "Rename",
@@ -754,6 +841,7 @@ impl App {
             ContextAction::AddTask => self.start_add_task(),
             ContextAction::NewSession => self.start_new_session(true),
             ContextAction::NewSessionNoWorktree => self.start_new_session(false),
+            ContextAction::NewAdhocSession => self.start_new_adhoc_session(),
             ContextAction::Delete => self.start_delete(),
             ContextAction::Rename => self.start_rename(),
             ContextAction::Merge => self.start_merge(),
@@ -1078,6 +1166,10 @@ impl App {
             self.cancel_input();
             return;
         }
+        if tmux::is_adhoc_marker(&task_name) {
+            self.status_message = Some("'adhoc' is reserved — pick a different task name".into());
+            return;
+        }
 
         self.pending_task_name = Some(task_name.clone());
         self.input_buffer = tmux::to_branch_name(&task_name);
@@ -1236,6 +1328,88 @@ impl App {
         });
     }
 
+    pub fn start_new_adhoc_session(&mut self) {
+        if self.selected_project_info().is_none() {
+            self.status_message = Some("Select a project first".into());
+            return;
+        }
+        self.input_mode = InputMode::AddAdhocSessionName;
+        self.input_buffer.clear();
+        self.status_message = Some("Adhoc session name: ".into());
+    }
+
+    pub fn confirm_new_adhoc_session(&mut self) {
+        let name = self.input_buffer.trim().to_string();
+        if name.is_empty() {
+            self.cancel_input();
+            return;
+        }
+
+        let (project_name, project_path) = match self.selected_project_info() {
+            Some((n, p)) => (n.to_string(), p.to_string()),
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let tmux_name_to_create = format!(
+            "cm__{}__{}__{}",
+            tmux::sanitize(&project_name),
+            tmux::ADHOC_MARKER,
+            tmux::sanitize(&name),
+        );
+        if self.sessions.iter().any(|s| s.name == tmux_name_to_create) {
+            self.status_message = Some(format!("Adhoc session '{name}' already exists"));
+            return;
+        }
+
+        self.collapsed.remove(&project_key(&project_name));
+        self.collapsed.remove(&adhoc_group_key(&project_name));
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+
+        let startup_skills = self.config.startup_skills.clone();
+        let proj_name_for_op = project_name.clone();
+        let proj_path_for_op = project_path.clone();
+        let session_name = name.clone();
+
+        self.start_op(
+            "Creating adhoc session...",
+            move || match tmux::create_adhoc_session(
+                &proj_name_for_op,
+                &proj_path_for_op,
+                &session_name,
+                &startup_skills,
+            ) {
+                Ok(tmux_name) => {
+                    config::add_session_record(
+                        &tmux_name,
+                        config::SessionRecord {
+                            project_name: proj_name_for_op.clone(),
+                            project_path: proj_path_for_op.clone(),
+                            task_name: tmux::ADHOC_MARKER.to_string(),
+                            task_branch: String::new(),
+                            session_name: session_name.clone(),
+                            use_worktree: false,
+                            archived: false,
+                        },
+                    );
+                    OpResult {
+                        message: format!("Created adhoc session {tmux_name}"),
+                        rebuild: true,
+                        reload_config: false,
+                    }
+                }
+                Err(e) => OpResult {
+                    message: format!("Error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            },
+        );
+    }
+
     pub fn start_new_session(&mut self, use_worktree: bool) {
         let info = self
             .selected_task_info()
@@ -1377,6 +1551,10 @@ impl App {
                 self.input_mode = InputMode::ConfirmDelete;
                 self.status_message = Some("Delete this session? (y/n)".into());
             }
+            Some(ListItem::AdhocSession { .. }) => {
+                self.input_mode = InputMode::ConfirmDelete;
+                self.status_message = Some("Delete this adhoc session? (y/n)".into());
+            }
             Some(ListItem::Task {
                 project_name, task, ..
             }) => {
@@ -1476,6 +1654,29 @@ impl App {
                 });
                 return;
             }
+            Some(ListItem::AdhocSession { session, .. }) => {
+                let name = session.name.clone();
+                let display_name = session.session_name.clone();
+                self.input_mode = InputMode::Normal;
+                self.start_op("Deleting adhoc session...", move || {
+                    match tmux::kill_session_with_fallback(&name, None) {
+                        Ok(()) => {
+                            config::remove_session_record(&name);
+                            OpResult {
+                                message: format!("Killed adhoc session {display_name}"),
+                                rebuild: true,
+                                reload_config: false,
+                            }
+                        }
+                        Err(e) => OpResult {
+                            message: format!("Error: {e}"),
+                            rebuild: false,
+                            reload_config: false,
+                        },
+                    }
+                });
+                return;
+            }
             Some(ListItem::Task {
                 project_name,
                 project_path,
@@ -1515,12 +1716,16 @@ impl App {
             Some(ListItem::Session { session, .. }) => {
                 (InputMode::RenameSession, session.session_name.clone())
             }
-            None => return,
+            Some(ListItem::AdhocSession { session, .. }) => {
+                (InputMode::RenameAdhocSession, session.session_name.clone())
+            }
+            _ => return,
         };
         let label = match mode {
             InputMode::RenameProject => "Rename project: ",
             InputMode::RenameTask => "Rename task: ",
             InputMode::RenameSession => "Rename session: ",
+            InputMode::RenameAdhocSession => "Rename adhoc session: ",
             _ => unreachable!(),
         };
         self.input_mode = mode;
@@ -1612,6 +1817,36 @@ impl App {
                         Ok(()) => {
                             config::rename_session_record(&session.name, &new_tmux);
                             self.status_message = Some(format!("Renamed session to {new_name}"));
+                        }
+                        Err(e) => {
+                            self.status_message = Some(format!("Error: {e}"));
+                        }
+                    }
+                }
+            }
+            InputMode::RenameAdhocSession => {
+                if let Some(ListItem::AdhocSession {
+                    project_name,
+                    session,
+                    ..
+                }) = self.selected_item().cloned()
+                {
+                    if session.session_name == new_name {
+                        self.cancel_input();
+                        return;
+                    }
+
+                    let new_tmux = format!(
+                        "cm__{}__{}__{}",
+                        tmux::sanitize(&project_name),
+                        tmux::ADHOC_MARKER,
+                        tmux::sanitize(&new_name),
+                    );
+                    match tmux::rename_session(&session.name, &new_tmux) {
+                        Ok(()) => {
+                            config::rename_session_record(&session.name, &new_tmux);
+                            self.status_message =
+                                Some(format!("Renamed adhoc session to {new_name}"));
                         }
                         Err(e) => {
                             self.status_message = Some(format!("Error: {e}"));
@@ -1958,6 +2193,10 @@ impl App {
     }
 
     pub fn toggle_preview_mode(&mut self) {
+        // Adhoc sessions only have the agent tab — nothing to cycle through.
+        if matches!(self.selected_item(), Some(ListItem::AdhocSession { .. })) {
+            return;
+        }
         let is_task = matches!(self.selected_item(), Some(ListItem::Task { .. }));
         if is_task {
             self.preview_mode = match self.preview_mode {

@@ -21,6 +21,17 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - Shows aggregated diff stats (+/-) against main
 - Shows active session count
 
+### Adhoc Session
+- A lightweight Claude Code session attached to a project but not to any task
+- Runs in the project directory on whatever branch is currently checked out — no worktree, no branch isolation
+- Created from the project's context menu (default key `A`); prompts for a name only — no initial prompt is sent
+- Startup skills (if configured) are still applied; runs with `--dangerously-skip-permissions`
+- Persisted in `sessions.json` and recreated on startup if the tmux session dies
+- Tmux naming convention: `cm__<project>__adhoc__<session>` — the literal `adhoc` token is reserved as a task name to avoid collisions
+- Grouped under each project as a collapsible `Adhoc` group; the group is hidden until the first adhoc session exists
+- Preview pane shows only the live Claude output (`agent` tab); no diff/context/terminal tabs
+- Supports rename, attach, and delete; deletion just kills the tmux session and drops the record (no worktree/branch cleanup)
+
 ### Session
 - A tmux session containing a Claude Code instance (window 0)
 - Only sessions created by this tool are visible/managed
