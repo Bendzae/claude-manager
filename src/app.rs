@@ -792,8 +792,7 @@ impl App {
         config::set_task_session_records_archived(&project_name, &task_name, true);
 
         // Collapse so the archived task hides cleanly when the user toggles back to active view.
-        self.collapsed
-            .insert(task_key(&project_name, &task_name));
+        self.collapsed.insert(task_key(&project_name, &task_name));
 
         self.start_op("Archiving task...", move || {
             for name in &live_names {
