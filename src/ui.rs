@@ -117,6 +117,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::MergeCommitMessage
             | InputMode::AddDiffComment
             | InputMode::SetBaseBranch
+            | InputMode::Search
     )
 }
 
@@ -328,16 +329,21 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let indicator = if is_selected { " ▸ " } else { "   " };
                 let last = is_last_task(&app.items, i, project_name);
                 let branch_char = if last { "└─ " } else { "├─ " };
+                let base_color = if task.archived { MUTED } else { TASK_COLOR };
                 let style = if is_selected {
-                    Style::default().fg(TASK_COLOR).add_modifier(Modifier::BOLD)
+                    Style::default().fg(base_color).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(TASK_COLOR)
+                    Style::default().fg(base_color)
                 };
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(branch_char, tree_style),
                     Span::styled(&task.name, style),
                 ];
+
+                if task.archived {
+                    spans.push(Span::styled("  [archived]", Style::default().fg(MUTED)));
+                }
 
                 // Show auto-context indicator (nerd font: nf-md-file_document_edit \uf0dc8)
                 if task.auto_context {
@@ -1240,6 +1246,15 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
                     (&key_display(kb.context_menu), "actions"),
                     ("⇥", "switch"),
                     (&scroll_keys, "scroll"),
+                    (&key_display(kb.search), "filter"),
+                    (
+                        &key_display(kb.toggle_archive_view),
+                        if app.view_archived {
+                            "active"
+                        } else {
+                            "archived"
+                        },
+                    ),
                     (&key_display(kb.add_project), "project"),
                     (&key_display(kb.quit), "quit"),
                 ])
@@ -1272,6 +1287,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
             help_bar(&[("⏎", "send"), (&nav_keys, "navigate"), ("Esc", "cancel")])
         }
+        InputMode::Search => help_bar(&[("⏎", "apply"), ("Esc", "clear")]),
     };
 
     let help = Paragraph::new(Line::from(help_spans));
@@ -1310,6 +1326,29 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 f.render_widget(pr_line, area);
                 return;
             }
+        }
+    }
+    // Show archived/filter indicator when nothing more important to display.
+    if app.status_message.is_none() && app.input_mode == InputMode::Normal {
+        let mut spans: Vec<Span> = Vec::new();
+        if app.view_archived {
+            spans.push(Span::styled(
+                "[archived view]",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        if !app.search_query.is_empty() {
+            if !spans.is_empty() {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                format!("filter: {}", app.search_query),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+        if !spans.is_empty() {
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
+            return;
         }
     }
     if let Some(msg) = &app.status_message {

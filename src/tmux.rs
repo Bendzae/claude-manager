@@ -584,6 +584,15 @@ pub fn kill_session(name: &str) -> Result<()> {
     kill_session_with_fallback(name, None)
 }
 
+/// Kill the tmux session only — leave worktrees, branches, and session records intact.
+/// Used when archiving a task so the session can be recreated later.
+pub fn kill_session_only(name: &str) -> Result<()> {
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .output();
+    Ok(())
+}
+
 pub fn kill_session_with_fallback(name: &str, fallback: Option<SessionCleanupInfo>) -> Result<()> {
     // Try to get paths from tmux env vars first, fall back to provided info
     let project_path = get_session_env(name, "CM_PROJECT_PATH")
