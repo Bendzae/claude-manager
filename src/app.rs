@@ -61,6 +61,7 @@ pub enum InputMode {
     ConfirmCreatePr,
     AddDiffComment,
     SelectSubmitSession,
+    SetBaseBranch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -119,6 +120,7 @@ pub enum ContextAction {
     KillTerminal,
     ToggleAutoContext,
     CopyWorktreePath,
+    SetBaseBranch,
 }
 
 pub struct App {
@@ -395,6 +397,7 @@ impl App {
                 project_name: project_name.clone(),
                 project_path: project_path.clone(),
                 branch: task.branch.clone(),
+                base_branch: task.base_branch().to_string(),
             },
             _ => Selection::None,
         };
@@ -407,6 +410,7 @@ impl App {
                     project_name: p.name.clone(),
                     project_path: p.path.clone(),
                     branch: t.branch.clone(),
+                    base_branch: t.base_branch().to_string(),
                 })
             })
             .collect();
@@ -687,6 +691,11 @@ impl App {
                         action: ContextAction::Update,
                     },
                     ContextMenuItem {
+                        key: cm.set_base_branch,
+                        label: "Set base branch",
+                        action: ContextAction::SetBaseBranch,
+                    },
+                    ContextMenuItem {
                         key: cm.push,
                         label: "Push",
                         action: ContextAction::Push,
@@ -780,7 +789,51 @@ impl App {
             ContextAction::KillTerminal => self.kill_terminal(),
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
+            ContextAction::SetBaseBranch => self.start_set_base_branch(),
         }
+    }
+
+    pub fn start_set_base_branch(&mut self) {
+        let task = match self.selected_item() {
+            Some(ListItem::Task { task, .. }) => task.clone(),
+            _ => {
+                self.status_message = Some("Select a task to set its base branch".into());
+                return;
+            }
+        };
+        self.input_mode = InputMode::SetBaseBranch;
+        self.input_buffer = task
+            .base_branch
+            .clone()
+            .unwrap_or_else(|| task.base_branch().to_string());
+        self.status_message = Some("Base branch (empty for main): ".into());
+    }
+
+    pub fn confirm_set_base_branch(&mut self) {
+        let (project_name, task_name) = match self.selected_item() {
+            Some(ListItem::Task {
+                project_name, task, ..
+            }) => (project_name.clone(), task.name.clone()),
+            _ => {
+                self.cancel_input();
+                return;
+            }
+        };
+
+        let raw = self.input_buffer.trim().to_string();
+        let new_base = if raw.is_empty() { None } else { Some(raw) };
+
+        self.config.reload();
+        self.config
+            .set_task_base_branch(&project_name, &task_name, new_base.clone());
+        let _ = self.config.save();
+
+        let label = new_base.as_deref().unwrap_or("main");
+        self.status_message = Some(format!("Base branch for '{task_name}' set to {label}"));
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+        self.rebuild_items();
+        self.sync_worker_hints();
     }
 
     pub fn copy_worktree_path(&mut self) {
@@ -1718,9 +1771,10 @@ impl App {
                 project_path, task, ..
             }) => {
                 let branch = task.branch.clone();
+                let base_branch = task.base_branch().to_string();
                 self.start_op(
                     "Updating task branch...",
-                    move || match tmux::update_task_branch(&project_path, &branch) {
+                    move || match tmux::update_task_branch(&project_path, &branch, &base_branch) {
                         Ok(msg) => OpResult {
                             message: msg,
                             rebuild: false,

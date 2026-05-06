@@ -122,6 +122,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::RenameAdhocSession
             | InputMode::MergeCommitMessage
             | InputMode::AddDiffComment
+            | InputMode::SetBaseBranch
     )
 }
 
@@ -428,6 +429,16 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     format!("  ({})", task.branch),
                     Style::default().fg(MUTED),
                 ));
+
+                // Show base branch when not the default ("main")
+                if let Some(base) = task.base_branch.as_deref() {
+                    if !base.is_empty() && base != "main" {
+                        spans.push(Span::styled(
+                            format!(" ← {base}"),
+                            Style::default().fg(Color::Yellow),
+                        ));
+                    }
+                }
 
                 // Show active session count when task is collapsed
                 if app
@@ -1386,7 +1397,8 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::RenameProject
         | InputMode::RenameTask
         | InputMode::RenameSession
-        | InputMode::RenameAdhocSession => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
+        | InputMode::RenameAdhocSession
+        | InputMode::SetBaseBranch => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
         }
