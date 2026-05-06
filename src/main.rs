@@ -33,6 +33,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::RenameTask
             | InputMode::RenameSession
             | InputMode::MergeCommitMessage
+            | InputMode::SetBaseBranch
     )
 }
 
@@ -302,6 +303,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) if c == kb.move_up => app.move_submit_session_up(),
                         KeyCode::Char(c) if c == kb.move_down => app.move_submit_session_down(),
                         KeyCode::Enter => app.confirm_submit_session(),
+                        _ => {}
+                    },
+                    InputMode::SetBaseBranch => match key.code {
+                        KeyCode::Enter => app.confirm_set_base_branch(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
                 }

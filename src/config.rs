@@ -79,6 +79,9 @@ fn cm_kill_terminal() -> char {
 fn cm_copy_path() -> char {
     'y'
 }
+fn cm_set_base_branch() -> char {
+    'B'
+}
 
 /// Keybindings for context menu actions. All fields are single characters.
 /// Configured under `[context_menu]` in `~/.claude-manager/keybindings.toml`.
@@ -126,6 +129,9 @@ pub struct ContextMenuKeyBindings {
     /// Copy session worktree path to clipboard (default: y)
     #[serde(default = "cm_copy_path")]
     pub copy_path: char,
+    /// Set task base branch (default: B)
+    #[serde(default = "cm_set_base_branch")]
+    pub set_base_branch: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -145,6 +151,7 @@ impl Default for ContextMenuKeyBindings {
             create_terminal: cm_create_terminal(),
             kill_terminal: cm_kill_terminal(),
             copy_path: cm_copy_path(),
+            set_base_branch: cm_set_base_branch(),
         }
     }
 }
@@ -223,6 +230,17 @@ pub struct Task {
     pub branch: String,
     #[serde(default)]
     pub auto_context: bool,
+    /// Base branch for `update` (rebase target) and diff stats.
+    /// `None` means default to "main".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+}
+
+impl Task {
+    /// Effective base branch for rebase/diff. Defaults to "main".
+    pub fn base_branch(&self) -> &str {
+        self.base_branch.as_deref().unwrap_or("main")
+    }
 }
 
 /// Deserialize `setup_commands` from either a single string or an array of strings.
@@ -486,6 +504,7 @@ impl Config {
                     name: task_name,
                     branch,
                     auto_context: false,
+                    base_branch: None,
                 });
                 return true;
             }
@@ -511,6 +530,24 @@ impl Config {
         if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
             if let Some(task) = project.tasks.iter_mut().find(|t| t.name == old_task_name) {
                 task.name = new_task_name;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Set the base branch for a task. Pass `None` to reset to the default ("main").
+    pub fn set_task_base_branch(
+        &mut self,
+        project_name: &str,
+        task_name: &str,
+        base_branch: Option<String>,
+    ) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
+                task.base_branch = base_branch
+                    .map(|b| b.trim().to_string())
+                    .filter(|b| !b.is_empty() && b != "main");
                 return true;
             }
         }
