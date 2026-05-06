@@ -36,6 +36,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::RenameAdhocSession
             | InputMode::MergeCommitMessage
             | InputMode::SetBaseBranch
+            | InputMode::Search
     )
 }
 
@@ -143,6 +144,10 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.scroll_preview_down()
                         }
                         KeyCode::Char(c) if c == kb.scroll_preview_up => app.scroll_preview_up(),
+                        KeyCode::Char(c) if c == kb.toggle_archive_view => {
+                            app.toggle_archive_view()
+                        }
+                        KeyCode::Char(c) if c == kb.search => app.start_search(),
                         KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },
@@ -324,6 +329,19 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.input_buffer.pop();
                         }
                         KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
+                    InputMode::Search => match key.code {
+                        KeyCode::Enter => app.confirm_search(),
+                        KeyCode::Esc => app.cancel_search(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                            app.update_search();
+                        }
+                        KeyCode::Char(c) => {
+                            app.input_buffer.push(c);
+                            app.update_search();
+                        }
                         _ => {}
                     },
                 }

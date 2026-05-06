@@ -62,6 +62,7 @@ pub enum InputMode {
     AddDiffComment,
     SelectSubmitSession,
     SetBaseBranch,
+    Search,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -121,6 +122,8 @@ pub enum ContextAction {
     ToggleAutoContext,
     CopyWorktreePath,
     SetBaseBranch,
+    Archive,
+    Unarchive,
 }
 
 pub struct App {
@@ -175,6 +178,10 @@ pub struct App {
     pub pending_comment: Option<PendingComment>,
     /// In-flight submission target selection for task-level diff comments.
     pub pending_submit: Option<PendingSubmit>,
+    /// When true, the task list shows only archived tasks instead of active ones.
+    pub view_archived: bool,
+    /// Active filter substring; tasks/projects/sessions are matched case-insensitively.
+    pub search_query: String,
 }
 
 pub struct OpResult {
@@ -210,6 +217,9 @@ impl App {
         if !saved.is_empty() {
             let live_names: HashSet<_> = sessions.iter().map(|s| s.name.as_str()).collect();
             for (tmux_name, record) in &saved {
+                if record.archived {
+                    continue;
+                }
                 if !live_names.contains(tmux_name.as_str()) {
                     let result = if tmux::is_adhoc_marker(&record.task_name) {
                         tmux::recreate_adhoc_session(tmux_name, record)
@@ -271,6 +281,8 @@ impl App {
             diff_cursor: 0,
             pending_comment: None,
             pending_submit: None,
+            view_archived: false,
+            search_query: String::new(),
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -431,7 +443,29 @@ impl App {
 
     pub fn rebuild_items(&mut self) {
         self.items.clear();
+        let needle = self.search_query.to_lowercase();
+        let needle = needle.trim();
+        let want_archived = self.view_archived;
         for project in &self.config.projects {
+            // Determine which tasks of this project match the current view + filter.
+            let visible_tasks: Vec<&Task> = project
+                .tasks
+                .iter()
+                .filter(|t| t.archived == want_archived)
+                .filter(|t| {
+                    needle.is_empty()
+                        || project.name.to_lowercase().contains(needle)
+                        || t.name.to_lowercase().contains(needle)
+                        || t.branch.to_lowercase().contains(needle)
+                })
+                .collect();
+
+            // Hide the project entirely when filtering and nothing matches under it.
+            // Without a filter we still show empty projects so the user can add tasks.
+            if !needle.is_empty() && visible_tasks.is_empty() {
+                continue;
+            }
+
             self.items.push(ListItem::Project {
                 project: project.clone(),
             });
@@ -459,7 +493,7 @@ impl App {
                 }
             }
 
-            for task in &project.tasks {
+            for task in visible_tasks {
                 self.items.push(ListItem::Task {
                     project_name: project.name.clone(),
                     project_path: project.path.clone(),
@@ -470,6 +504,11 @@ impl App {
                     .collapsed
                     .contains(&task_key(&project.name, &task.name))
                 {
+                    continue;
+                }
+
+                // Archived tasks have no live tmux sessions; skip session rendering.
+                if task.archived {
                     continue;
                 }
 
@@ -664,63 +703,88 @@ impl App {
                 },
             ],
             Some(ListItem::Task { task, .. }) => {
-                let ctx_label = if task.auto_context {
-                    "Disable auto-context"
+                if task.archived {
+                    vec![
+                        ContextMenuItem {
+                            key: cm.archive,
+                            label: "Unarchive",
+                            action: ContextAction::Unarchive,
+                        },
+                        ContextMenuItem {
+                            key: cm.rename,
+                            label: "Rename",
+                            action: ContextAction::Rename,
+                        },
+                        ContextMenuItem {
+                            key: cm.delete,
+                            label: "Delete",
+                            action: ContextAction::Delete,
+                        },
+                    ]
                 } else {
-                    "Enable auto-context"
-                };
-                vec![
-                    ContextMenuItem {
-                        key: cm.new_session,
-                        label: "New session",
-                        action: ContextAction::NewSession,
-                    },
-                    ContextMenuItem {
-                        key: cm.new_session_no_worktree,
-                        label: "New session (no worktree)",
-                        action: ContextAction::NewSessionNoWorktree,
-                    },
-                    ContextMenuItem {
-                        key: cm.toggle_auto_context,
-                        label: ctx_label,
-                        action: ContextAction::ToggleAutoContext,
-                    },
-                    ContextMenuItem {
-                        key: cm.update,
-                        label: "Update branch",
-                        action: ContextAction::Update,
-                    },
-                    ContextMenuItem {
-                        key: cm.set_base_branch,
-                        label: "Set base branch",
-                        action: ContextAction::SetBaseBranch,
-                    },
-                    ContextMenuItem {
-                        key: cm.push,
-                        label: "Push",
-                        action: ContextAction::Push,
-                    },
-                    ContextMenuItem {
-                        key: cm.checkout,
-                        label: "Checkout",
-                        action: ContextAction::Checkout,
-                    },
-                    ContextMenuItem {
-                        key: cm.open_pr,
-                        label: "Open PR",
-                        action: ContextAction::OpenPr,
-                    },
-                    ContextMenuItem {
-                        key: cm.rename,
-                        label: "Rename",
-                        action: ContextAction::Rename,
-                    },
-                    ContextMenuItem {
-                        key: cm.delete,
-                        label: "Delete",
-                        action: ContextAction::Delete,
-                    },
-                ]
+                    let ctx_label = if task.auto_context {
+                        "Disable auto-context"
+                    } else {
+                        "Enable auto-context"
+                    };
+                    vec![
+                        ContextMenuItem {
+                            key: cm.new_session,
+                            label: "New session",
+                            action: ContextAction::NewSession,
+                        },
+                        ContextMenuItem {
+                            key: cm.new_session_no_worktree,
+                            label: "New session (no worktree)",
+                            action: ContextAction::NewSessionNoWorktree,
+                        },
+                        ContextMenuItem {
+                            key: cm.toggle_auto_context,
+                            label: ctx_label,
+                            action: ContextAction::ToggleAutoContext,
+                        },
+                        ContextMenuItem {
+                            key: cm.update,
+                            label: "Update branch",
+                            action: ContextAction::Update,
+                        },
+                        ContextMenuItem {
+                            key: cm.set_base_branch,
+                            label: "Set base branch",
+                            action: ContextAction::SetBaseBranch,
+                        },
+                        ContextMenuItem {
+                            key: cm.push,
+                            label: "Push",
+                            action: ContextAction::Push,
+                        },
+                        ContextMenuItem {
+                            key: cm.checkout,
+                            label: "Checkout",
+                            action: ContextAction::Checkout,
+                        },
+                        ContextMenuItem {
+                            key: cm.open_pr,
+                            label: "Open PR",
+                            action: ContextAction::OpenPr,
+                        },
+                        ContextMenuItem {
+                            key: cm.archive,
+                            label: "Archive",
+                            action: ContextAction::Archive,
+                        },
+                        ContextMenuItem {
+                            key: cm.rename,
+                            label: "Rename",
+                            action: ContextAction::Rename,
+                        },
+                        ContextMenuItem {
+                            key: cm.delete,
+                            label: "Delete",
+                            action: ContextAction::Delete,
+                        },
+                    ]
+                }
             }
             Some(ListItem::Session { .. }) => {
                 let mut items = vec![
@@ -790,7 +854,154 @@ impl App {
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
             ContextAction::SetBaseBranch => self.start_set_base_branch(),
+            ContextAction::Archive => self.archive_task(),
+            ContextAction::Unarchive => self.unarchive_task(),
         }
+    }
+
+    pub fn archive_task(&mut self) {
+        let (project_name, task_name) = match self.selected_task_info() {
+            Some((pn, _, t)) => (pn.to_string(), t.name.clone()),
+            None => {
+                self.status_message = Some("Select a task to archive".into());
+                return;
+            }
+        };
+
+        let task_sessions = tmux::sessions_for_task(&project_name, &task_name, &self.sessions);
+        let live_names: Vec<String> = task_sessions.iter().map(|s| s.name.clone()).collect();
+        let session_count = live_names.len();
+
+        // Persist archived state on the task and its session records.
+        self.config.reload();
+        self.config
+            .set_task_archived(&project_name, &task_name, true);
+        let _ = self.config.save();
+        config::set_task_session_records_archived(&project_name, &task_name, true);
+
+        // Collapse so the archived task hides cleanly when the user toggles back to active view.
+        self.collapsed.insert(task_key(&project_name, &task_name));
+
+        self.start_op("Archiving task...", move || {
+            for name in &live_names {
+                let _ = tmux::kill_session_only(name);
+            }
+            OpResult {
+                message: format!(
+                    "Archived task '{task_name}' ({} session{} suspended)",
+                    session_count,
+                    if session_count == 1 { "" } else { "s" }
+                ),
+                rebuild: true,
+                reload_config: true,
+            }
+        });
+    }
+
+    pub fn unarchive_task(&mut self) {
+        let (project_name, task_name, task_branch, auto_context) = match self.selected_task_info() {
+            Some((pn, _, t)) => (
+                pn.to_string(),
+                t.name.clone(),
+                t.branch.clone(),
+                t.auto_context,
+            ),
+            None => {
+                self.status_message = Some("Select a task to unarchive".into());
+                return;
+            }
+        };
+
+        self.config.reload();
+        self.config
+            .set_task_archived(&project_name, &task_name, false);
+        let _ = self.config.save();
+        config::set_task_session_records_archived(&project_name, &task_name, false);
+
+        let _ = task_branch;
+        // Switch back to the active view so the unarchived task is visible.
+        if self.view_archived {
+            self.view_archived = false;
+        }
+
+        self.start_op("Unarchiving task...", move || {
+            let records = config::load_sessions();
+            let mut recreated = 0;
+            let mut failed = 0;
+            for (tmux_name, record) in &records {
+                if record.project_name == project_name && record.task_name == task_name {
+                    match tmux::recreate_session(tmux_name, record, auto_context) {
+                        Ok(_) => recreated += 1,
+                        Err(_) => {
+                            failed += 1;
+                            // Stale record (e.g. worktree removed externally) — drop it.
+                            config::remove_session_record(tmux_name);
+                        }
+                    }
+                }
+            }
+            let msg = if failed > 0 {
+                format!(
+                    "Unarchived '{task_name}' — {recreated} session(s) restored, {failed} dropped"
+                )
+            } else {
+                format!("Unarchived '{task_name}' — {recreated} session(s) restored")
+            };
+            OpResult {
+                message: msg,
+                rebuild: true,
+                reload_config: true,
+            }
+        });
+    }
+
+    pub fn toggle_archive_view(&mut self) {
+        self.view_archived = !self.view_archived;
+        self.search_query.clear();
+        self.selected = 0;
+        self.rebuild_items();
+        self.status_message = Some(if self.view_archived {
+            "Showing archived tasks".into()
+        } else {
+            "Showing active tasks".into()
+        });
+        self.sync_worker_hints();
+    }
+
+    pub fn start_search(&mut self) {
+        self.input_mode = InputMode::Search;
+        self.input_buffer = self.search_query.clone();
+        self.status_message = Some("Filter (Esc to clear): ".into());
+    }
+
+    pub fn update_search(&mut self) {
+        self.search_query = self.input_buffer.clone();
+        self.selected = 0;
+        self.rebuild_items();
+    }
+
+    pub fn confirm_search(&mut self) {
+        self.search_query = self.input_buffer.trim().to_string();
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+        self.status_message = if self.search_query.is_empty() {
+            None
+        } else {
+            Some(format!("Filter: {}", self.search_query))
+        };
+        self.selected = 0;
+        self.rebuild_items();
+        self.sync_worker_hints();
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_query.clear();
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+        self.status_message = None;
+        self.selected = 0;
+        self.rebuild_items();
+        self.sync_worker_hints();
     }
 
     pub fn start_set_base_branch(&mut self) {
@@ -1094,6 +1305,7 @@ impl App {
                             task_branch: branch.clone(),
                             session_name: session_name.clone(),
                             use_worktree,
+                            archived: false,
                         },
                     );
                     let task_msg = if branch_exists {
@@ -1180,6 +1392,7 @@ impl App {
                             task_branch: String::new(),
                             session_name: session_name.clone(),
                             use_worktree: false,
+                            archived: false,
                         },
                     );
                     OpResult {
@@ -1297,6 +1510,7 @@ impl App {
                             task_branch: task_branch.clone(),
                             session_name: session_name.clone(),
                             use_worktree,
+                            archived: false,
                         },
                     );
                     OpResult {

@@ -85,6 +85,19 @@ fn cm_copy_path() -> char {
 fn cm_set_base_branch() -> char {
     'B'
 }
+fn cm_archive() -> char {
+    'A'
+}
+fn kb_toggle_archive_view() -> char {
+    'Z'
+}
+fn kb_search() -> char {
+    '/'
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
 
 /// Keybindings for context menu actions. All fields are single characters.
 /// Configured under `[context_menu]` in `~/.claude-manager/keybindings.toml`.
@@ -138,6 +151,9 @@ pub struct ContextMenuKeyBindings {
     /// Set task base branch (default: B)
     #[serde(default = "cm_set_base_branch")]
     pub set_base_branch: char,
+    /// Archive / unarchive task (default: A)
+    #[serde(default = "cm_archive")]
+    pub archive: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -159,6 +175,7 @@ impl Default for ContextMenuKeyBindings {
             kill_terminal: cm_kill_terminal(),
             copy_path: cm_copy_path(),
             set_base_branch: cm_set_base_branch(),
+            archive: cm_archive(),
         }
     }
 }
@@ -192,6 +209,12 @@ pub struct KeyBindings {
     /// Scroll preview pane up (default: K)
     #[serde(default = "kb_scroll_preview_up")]
     pub scroll_preview_up: char,
+    /// Toggle archived task view (default: Z)
+    #[serde(default = "kb_toggle_archive_view")]
+    pub toggle_archive_view: char,
+    /// Filter tasks by substring (default: /)
+    #[serde(default = "kb_search")]
+    pub search: char,
     /// Context menu action keybindings
     #[serde(default)]
     pub context_menu_keys: ContextMenuKeyBindings,
@@ -208,6 +231,8 @@ impl Default for KeyBindings {
             add_project: kb_add_project(),
             scroll_preview_down: kb_scroll_preview_down(),
             scroll_preview_up: kb_scroll_preview_up(),
+            toggle_archive_view: kb_toggle_archive_view(),
+            search: kb_search(),
             context_menu_keys: ContextMenuKeyBindings::default(),
         }
     }
@@ -241,6 +266,9 @@ pub struct Task {
     /// `None` means default to "main".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// Archived: hidden from default view, sessions killed but worktrees/branches/context preserved.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archived: bool,
 }
 
 impl Task {
@@ -357,6 +385,9 @@ pub struct SessionRecord {
     pub task_branch: String,
     pub session_name: String,
     pub use_worktree: bool,
+    /// Session belongs to an archived task. Skipped during startup recreation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archived: bool,
 }
 
 /// Path to the persisted sessions file.
@@ -409,6 +440,31 @@ pub fn remove_task_session_records(project_name: &str, task_name: &str) {
     if sessions.len() < before {
         let _ = save_sessions(&sessions);
     }
+}
+
+/// Mark all session records for a project+task as archived (or not) and persist.
+/// Returns true if any record was updated.
+pub fn set_task_session_records_archived(
+    project_name: &str,
+    task_name: &str,
+    archived: bool,
+) -> bool {
+    let _g = IO_LOCK.lock().unwrap();
+    let mut sessions = load_sessions();
+    let mut changed = false;
+    for record in sessions.values_mut() {
+        if record.project_name == project_name
+            && record.task_name == task_name
+            && record.archived != archived
+        {
+            record.archived = archived;
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = save_sessions(&sessions);
+    }
+    changed
 }
 
 /// Re-key a session record under a new tmux name.
@@ -512,6 +568,7 @@ impl Config {
                     branch,
                     auto_context: false,
                     base_branch: None,
+                    archived: false,
                 });
                 return true;
             }
@@ -555,6 +612,22 @@ impl Config {
                 task.base_branch = base_branch
                     .map(|b| b.trim().to_string())
                     .filter(|b| !b.is_empty() && b != "main");
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Set the archived flag for a task. Returns true if the task was found.
+    pub fn set_task_archived(
+        &mut self,
+        project_name: &str,
+        task_name: &str,
+        archived: bool,
+    ) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
+                task.archived = archived;
                 return true;
             }
         }
@@ -704,6 +777,32 @@ mod tests {
         cfg.add_project("App".into(), "/tmp/app".into());
         cfg.remove_project("/tmp/app");
         assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn set_task_archived_round_trip() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "t1".into(), "b1".into());
+        assert!(!cfg.projects[0].tasks[0].archived);
+        assert!(cfg.set_task_archived("App", "t1", true));
+        assert!(cfg.projects[0].tasks[0].archived);
+        assert!(cfg.set_task_archived("App", "t1", false));
+        assert!(!cfg.projects[0].tasks[0].archived);
+        assert!(!cfg.set_task_archived("App", "missing", true));
+        assert!(!cfg.set_task_archived("Missing", "t1", true));
+    }
+
+    #[test]
+    fn task_archived_skipped_when_false() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "t1".into(), "b1".into());
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!s.contains("archived"));
+        cfg.set_task_archived("App", "t1", true);
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(s.contains("archived = true"));
     }
 
     #[test]

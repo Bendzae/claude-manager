@@ -95,6 +95,13 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - **Push** (`P`) — push task branch to origin with `--force-with-lease`
 - **Checkout** (`b`) — checkout the task branch in the main worktree
 
+### Archived Tasks
+- Tasks can be archived (`A` in the context menu) to hide them from the default list while preserving their state
+- Archive: kills active tmux sessions but **keeps** worktrees, branches, session records, and the shared task context file
+- Unarchive: recreates each saved session via tmux (uses `--continue` so claude resumes its prior conversation) and shows the task in the active view again
+- `Z` toggles between active and archived views
+- `/` opens a substring filter that matches against project name, task name, and branch — useful for searching archived tasks
+
 ### GitHub Integration
 - PR detection via `gh pr view` (checked every ~10 seconds in background)
 - PR icon (Nerd Font) shown on task lines that have an open PR
