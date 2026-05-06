@@ -13,6 +13,7 @@ pub enum Selection {
         project_name: String,
         project_path: String,
         branch: String,
+        base_branch: String,
     },
     Session {
         name: String,
@@ -34,6 +35,7 @@ pub struct TaskInfo {
     pub project_name: String,
     pub project_path: String,
     pub branch: String,
+    pub base_branch: String,
 }
 
 /// Shared state the UI thread writes to, the worker thread reads from.
@@ -179,7 +181,9 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
         let mut task_diff_stats: HashMap<String, DiffStats> = HashMap::new();
         if tick % 4 == 0 {
             for task in &tasks {
-                if let Some(stats) = tmux::get_branch_diff(&task.project_path, &task.branch) {
+                if let Some(stats) =
+                    tmux::get_branch_diff(&task.project_path, &task.branch, &task.base_branch)
+                {
                     task_diff_stats.insert(task.branch.clone(), stats);
                 }
             }
@@ -218,9 +222,10 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
                 project_name,
                 project_path,
                 branch,
+                base_branch,
             } => {
                 let diff = if tick % 4 == 0 {
-                    tmux::get_branch_diff(project_path, branch)
+                    tmux::get_branch_diff(project_path, branch, base_branch)
                 } else {
                     None
                 };

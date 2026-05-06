@@ -1030,16 +1030,35 @@ pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
     Ok(format!("Pushed {branch} to origin"))
 }
 
-pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
-    // Fetch latest main
+pub fn update_task_branch(project_path: &str, branch: &str, base_branch: &str) -> Result<String> {
+    // Fetch latest base branch (try fast-forward of local ref first, then plain fetch)
     let fetch = Command::new("git")
-        .args(["-C", project_path, "fetch", "origin", "main:main"])
+        .args([
+            "-C",
+            project_path,
+            "fetch",
+            "origin",
+            &format!("{base_branch}:{base_branch}"),
+        ])
         .output()?;
     if !fetch.status.success() {
         let _ = Command::new("git")
-            .args(["-C", project_path, "fetch", "origin", "main"])
+            .args(["-C", project_path, "fetch", "origin", base_branch])
             .output();
     }
+
+    // Pick the rebase target: prefer origin/<base> if it resolves, else local <base>.
+    let remote_ref = format!("origin/{base_branch}");
+    let target = if Command::new("git")
+        .args(["-C", project_path, "rev-parse", "--verify", &remote_ref])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        remote_ref
+    } else {
+        base_branch.to_string()
+    };
 
     // Remember current branch to restore after rebase
     let head = Command::new("git")
@@ -1047,9 +1066,9 @@ pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
         .output()?;
     let original_branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
 
-    // Rebase the task branch onto origin/main (checks out branch, rebases, leaves it checked out)
+    // Rebase the task branch onto target (checks out branch, rebases, leaves it checked out)
     let output = Command::new("git")
-        .args(["-C", project_path, "rebase", "origin/main", branch])
+        .args(["-C", project_path, "rebase", &target, branch])
         .output()?;
 
     if !output.status.success() {
@@ -1067,9 +1086,11 @@ pub fn update_task_branch(project_path: &str, branch: &str) -> Result<String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.contains("is up to date") {
-        Ok(format!("Branch {branch} is already up to date with main"))
+        Ok(format!(
+            "Branch {branch} is already up to date with {base_branch}"
+        ))
     } else {
-        Ok(format!("Rebased {branch} onto latest main"))
+        Ok(format!("Rebased {branch} onto latest {base_branch}"))
     }
 }
 
@@ -1524,18 +1545,19 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
     })
 }
 
-/// Compute diff stats for a task branch against main.
-pub fn get_branch_diff(project_path: &str, branch: &str) -> Option<DiffStats> {
-    // Try origin/main first, fall back to main
+/// Compute diff stats for a task branch against its base branch.
+pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> Option<DiffStats> {
+    // Try origin/<base> first, fall back to local <base>
+    let remote_ref = format!("origin/{base_branch}");
     let base = if Command::new("git")
-        .args(["-C", project_path, "rev-parse", "--verify", "origin/main"])
+        .args(["-C", project_path, "rev-parse", "--verify", &remote_ref])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
     {
-        "origin/main"
+        remote_ref
     } else {
-        "main"
+        base_branch.to_string()
     };
 
     let output = Command::new("git")
