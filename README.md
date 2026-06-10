@@ -145,3 +145,15 @@ context_menu = "o"
 [context_menu_keys]
 delete = "x"
 ```
+
+## Development
+
+### Git hooks
+
+The repo ships a pre-commit hook (`.githooks/pre-commit`) that runs `rustfmt`
+on staged Rust files and re-stages them, so commits always match the
+`cargo fmt --check` step in CI. Enable it once after cloning:
+
+```sh
+git config core.hooksPath .githooks
+```
