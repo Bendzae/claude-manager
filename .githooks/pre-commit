@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# Auto-format staged Rust files with rustfmt and re-stage them, so commits
+# always match `cargo fmt` (and the `cargo fmt --check` step in CI).
+#
+# Enable once per clone with:
+#     git config core.hooksPath .githooks
+#
+# Note: if a staged file also has unstaged changes, re-staging will include
+# those changes too. Stash unstaged work first if you need a partial commit.
+
+set -euo pipefail
+
+# Collect staged Rust files (Added/Copied/Modified — skips deletions).
+rust_files=()
+while IFS= read -r -d '' file; do
+    rust_files+=("$file")
+done < <(git diff --cached --name-only -z --diff-filter=ACM -- '*.rs')
+
+if [ ${#rust_files[@]} -eq 0 ]; then
+    exit 0
+fi
+
+if ! command -v rustfmt >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt not found; skipping formatting." >&2
+    echo "            install it with: rustup component add rustfmt" >&2
+    exit 0
+fi
+
+# Use the crate edition so formatting matches `cargo fmt` / CI exactly.
+edition=$(grep -m1 -E '^\s*edition\s*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+edition=${edition:-2021}
+
+rustfmt --edition "$edition" "${rust_files[@]}"
+git add -- "${rust_files[@]}"
