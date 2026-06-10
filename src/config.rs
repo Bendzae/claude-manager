@@ -504,12 +504,18 @@ impl Config {
         toml::from_str(&content).context("Failed to parse config file")
     }
 
-    /// Reload config from disk, preserving fields not managed by the UI.
-    /// This prevents overwriting externally-added config (e.g. startup_skills)
-    /// when the UI saves after mutating only project/task data.
+    /// Reload the full config from disk, discarding unsaved in-memory state.
+    ///
+    /// Call this immediately before a mutate-then-save so the mutation is
+    /// applied on top of the latest on-disk state. A full reload preserves both
+    /// externally-edited fields (e.g. `startup_skills`) AND project/task changes
+    /// written concurrently by background ops — for example a task added by
+    /// `Config::modify` while a long-running `create_session` is still finishing.
+    /// A partial reload would silently drop those concurrent additions on the
+    /// next save.
     pub fn reload(&mut self) {
         if let Ok(disk) = Self::load() {
-            self.startup_skills = disk.startup_skills;
+            *self = disk;
         }
     }
 
@@ -654,6 +660,24 @@ impl Config {
             .find(|t| t.name == task_name)
     }
 
+    /// Find a task by its branch within the project identified by path.
+    /// Unlike [`find_task`], this keys on `project_path` + `branch`, both of
+    /// which are stable across project/task renames. Use this when reconciling
+    /// persisted session records (whose display-name fields may be stale).
+    pub fn find_task_by_branch(&self, project_path: &str, branch: &str) -> Option<&Task> {
+        self.projects
+            .iter()
+            .find(|p| p.path == project_path)?
+            .tasks
+            .iter()
+            .find(|t| t.branch == branch)
+    }
+
+    /// Whether a project with the given path still exists in the config.
+    pub fn project_exists(&self, project_path: &str) -> bool {
+        self.projects.iter().any(|p| p.path == project_path)
+    }
+
     #[allow(dead_code)]
     pub fn remove_project(&mut self, path: &str) {
         self.projects.retain(|p| p.path != path);
@@ -769,6 +793,34 @@ mod tests {
         assert_eq!(task.unwrap().branch, "b1");
         assert!(cfg.find_task("App", "missing").is_none());
         assert!(cfg.find_task("Missing", "t1").is_none());
+    }
+
+    #[test]
+    fn find_task_by_branch_is_stable_across_rename() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "old-name".into(), "b1".into());
+        // Branch lookup finds it before and after a rename (rename keeps branch).
+        assert!(cfg.find_task_by_branch("/tmp/app", "b1").is_some());
+        cfg.rename_task("App", "old-name", "new-name".into());
+        let task = cfg.find_task_by_branch("/tmp/app", "b1");
+        assert!(task.is_some());
+        assert_eq!(task.unwrap().name, "new-name");
+        // A branch that no longer exists (task deleted) is reported as gone.
+        assert!(
+            cfg.find_task_by_branch("/tmp/app", "missing-branch")
+                .is_none()
+        );
+        assert!(cfg.find_task_by_branch("/tmp/other", "b1").is_none());
+    }
+
+    #[test]
+    fn project_exists_by_path() {
+        let mut cfg = empty_config();
+        assert!(!cfg.project_exists("/tmp/app"));
+        cfg.add_project("App".into(), "/tmp/app".into());
+        assert!(cfg.project_exists("/tmp/app"));
+        assert!(!cfg.project_exists("/tmp/gone"));
     }
 
     #[test]

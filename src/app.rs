@@ -220,17 +220,42 @@ impl App {
                 if record.archived {
                     continue;
                 }
-                if !live_names.contains(tmux_name.as_str()) {
-                    let result = if tmux::is_adhoc_marker(&record.task_name) {
-                        tmux::recreate_adhoc_session(tmux_name, record)
-                    } else {
-                        let auto_context = config
-                            .find_task(&record.project_name, &record.task_name)
-                            .map_or(true, |t| t.auto_context);
-                        tmux::recreate_session(tmux_name, record, auto_context)
-                    };
-                    if result.is_err() {
-                        // Could not recreate (e.g. worktree gone) — remove stale record
+                // Only act on records whose tmux session is gone. The decision
+                // to recreate vs. prune is based on whether the task still
+                // exists in config — NOT on tmux liveness — so legitimate
+                // sessions are recovered after claude-manager/tmux restarts,
+                // while sessions whose task was deleted/renamed-away are reaped
+                // instead of being resurrected on every startup.
+                if live_names.contains(tmux_name.as_str()) {
+                    continue;
+                }
+
+                if tmux::is_adhoc_marker(&record.task_name) {
+                    // Adhoc sessions are project-scoped. Recreate while the
+                    // project exists; otherwise the project is gone — prune.
+                    if !config.project_exists(&record.project_path) {
+                        config::remove_session_record(tmux_name);
+                    } else if tmux::recreate_adhoc_session(tmux_name, record).is_err() {
+                        config::remove_session_record(tmux_name);
+                    }
+                    continue;
+                }
+
+                // Task-scoped session: match by branch (+ project path), which
+                // is stable across renames, unlike the display-name fields.
+                match config.find_task_by_branch(&record.project_path, &record.task_branch) {
+                    Some(task) => {
+                        if tmux::recreate_session(tmux_name, record, task.auto_context).is_err() {
+                            // Could not recreate (e.g. worktree gone) — remove stale record
+                            config::remove_session_record(tmux_name);
+                        }
+                    }
+                    None => {
+                        // The task no longer exists in config. Reap the orphan
+                        // (worktree + cached context + record) so it isn't
+                        // resurrected on every startup. The git branch is kept,
+                        // preserving any committed work.
+                        tmux::cleanup_orphan_session(record);
                         config::remove_session_record(tmux_name);
                     }
                 }
@@ -1074,8 +1099,8 @@ impl App {
             None => return,
         };
 
+        self.config.reload();
         if let Some(new_state) = self.config.toggle_auto_context(&project_name, &task_name) {
-            self.config.reload();
             let _ = self.config.save();
 
             // Update hooks for all existing sessions of this task
