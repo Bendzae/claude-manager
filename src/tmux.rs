@@ -1951,6 +1951,51 @@ pub fn delete_task(
     }
 }
 
+/// Reap an orphaned session record whose task no longer exists in config.
+///
+/// Removes the worktree directory and cached task context, but deliberately
+/// PRESERVES the git branch so any committed work stays recoverable. This is
+/// meant for automatic startup reconciliation, where silently deleting branches
+/// would be unsafe. Explicit, user-initiated deletion still goes through
+/// [`delete_task`], which also removes the branch.
+pub fn cleanup_orphan_session(record: &crate::config::SessionRecord) {
+    // Remove the worktree directory if this session used one (committed work
+    // remains on the branch, which we keep).
+    if record.use_worktree {
+        let wt_path = worktree_dir(
+            &record.project_name,
+            &record.task_name,
+            &record.session_name,
+        );
+        let wt_str = wt_path.to_string_lossy().to_string();
+        if wt_path.exists() {
+            let _ = Command::new("git")
+                .args([
+                    "-C",
+                    &record.project_path,
+                    "worktree",
+                    "remove",
+                    "--force",
+                    &wt_str,
+                ])
+                .output();
+        }
+        // Prune stale worktree references regardless, in case the dir was
+        // already removed but git still tracks it.
+        let _ = Command::new("git")
+            .args(["-C", &record.project_path, "worktree", "prune"])
+            .output();
+    }
+
+    // Remove the cached task context directory (TASK_CONTEXT.md, pr_url.txt).
+    // The context dir is shared by all sessions of a task; since orphan status
+    // is per-task, every session of this task is being reaped together.
+    let context_path = crate::config::task_context_path(&record.project_name, &record.task_branch);
+    if let Some(parent) = context_path.parent() {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+}
+
 /// Clean up worktree and task config directories for a project.
 pub fn cleanup_project_dirs(project_name: &str) {
     let sanitized = sanitize(project_name);

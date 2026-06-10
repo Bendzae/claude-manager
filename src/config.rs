@@ -654,6 +654,24 @@ impl Config {
             .find(|t| t.name == task_name)
     }
 
+    /// Find a task by its branch within the project identified by path.
+    /// Unlike [`find_task`], this keys on `project_path` + `branch`, both of
+    /// which are stable across project/task renames. Use this when reconciling
+    /// persisted session records (whose display-name fields may be stale).
+    pub fn find_task_by_branch(&self, project_path: &str, branch: &str) -> Option<&Task> {
+        self.projects
+            .iter()
+            .find(|p| p.path == project_path)?
+            .tasks
+            .iter()
+            .find(|t| t.branch == branch)
+    }
+
+    /// Whether a project with the given path still exists in the config.
+    pub fn project_exists(&self, project_path: &str) -> bool {
+        self.projects.iter().any(|p| p.path == project_path)
+    }
+
     #[allow(dead_code)]
     pub fn remove_project(&mut self, path: &str) {
         self.projects.retain(|p| p.path != path);
@@ -769,6 +787,31 @@ mod tests {
         assert_eq!(task.unwrap().branch, "b1");
         assert!(cfg.find_task("App", "missing").is_none());
         assert!(cfg.find_task("Missing", "t1").is_none());
+    }
+
+    #[test]
+    fn find_task_by_branch_is_stable_across_rename() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "old-name".into(), "b1".into());
+        // Branch lookup finds it before and after a rename (rename keeps branch).
+        assert!(cfg.find_task_by_branch("/tmp/app", "b1").is_some());
+        cfg.rename_task("App", "old-name", "new-name".into());
+        let task = cfg.find_task_by_branch("/tmp/app", "b1");
+        assert!(task.is_some());
+        assert_eq!(task.unwrap().name, "new-name");
+        // A branch that no longer exists (task deleted) is reported as gone.
+        assert!(cfg.find_task_by_branch("/tmp/app", "missing-branch").is_none());
+        assert!(cfg.find_task_by_branch("/tmp/other", "b1").is_none());
+    }
+
+    #[test]
+    fn project_exists_by_path() {
+        let mut cfg = empty_config();
+        assert!(!cfg.project_exists("/tmp/app"));
+        cfg.add_project("App".into(), "/tmp/app".into());
+        assert!(cfg.project_exists("/tmp/app"));
+        assert!(!cfg.project_exists("/tmp/gone"));
     }
 
     #[test]
