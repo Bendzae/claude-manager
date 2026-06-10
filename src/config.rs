@@ -504,12 +504,18 @@ impl Config {
         toml::from_str(&content).context("Failed to parse config file")
     }
 
-    /// Reload config from disk, preserving fields not managed by the UI.
-    /// This prevents overwriting externally-added config (e.g. startup_skills)
-    /// when the UI saves after mutating only project/task data.
+    /// Reload the full config from disk, discarding unsaved in-memory state.
+    ///
+    /// Call this immediately before a mutate-then-save so the mutation is
+    /// applied on top of the latest on-disk state. A full reload preserves both
+    /// externally-edited fields (e.g. `startup_skills`) AND project/task changes
+    /// written concurrently by background ops — for example a task added by
+    /// `Config::modify` while a long-running `create_session` is still finishing.
+    /// A partial reload would silently drop those concurrent additions on the
+    /// next save.
     pub fn reload(&mut self) {
         if let Ok(disk) = Self::load() {
-            self.startup_skills = disk.startup_skills;
+            *self = disk;
         }
     }
 

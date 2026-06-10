@@ -1099,8 +1099,8 @@ impl App {
             None => return,
         };
 
+        self.config.reload();
         if let Some(new_state) = self.config.toggle_auto_context(&project_name, &task_name) {
-            self.config.reload();
             let _ = self.config.save();
 
             // Update hooks for all existing sessions of this task
