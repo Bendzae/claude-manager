@@ -807,7 +807,10 @@ mod tests {
         assert!(task.is_some());
         assert_eq!(task.unwrap().name, "new-name");
         // A branch that no longer exists (task deleted) is reported as gone.
-        assert!(cfg.find_task_by_branch("/tmp/app", "missing-branch").is_none());
+        assert!(
+            cfg.find_task_by_branch("/tmp/app", "missing-branch")
+                .is_none()
+        );
         assert!(cfg.find_task_by_branch("/tmp/other", "b1").is_none());
     }
 
