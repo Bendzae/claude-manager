@@ -1130,30 +1130,26 @@ pub fn push_branch(project_path: &str, branch: &str) -> Result<String> {
 }
 
 pub fn update_task_branch(project_path: &str, branch: &str, base_branch: &str) -> Result<String> {
-    // Fetch latest base branch (try fast-forward of local ref first, then plain fetch)
-    let fetch = Command::new("git")
-        .args([
-            "-C",
-            project_path,
-            "fetch",
-            "origin",
-            &format!("{base_branch}:{base_branch}"),
-        ])
-        .output()?;
-    if !fetch.status.success() {
-        let _ = Command::new("git")
-            .args(["-C", project_path, "fetch", "origin", base_branch])
-            .output();
-    }
+    // Fetch latest base branch from origin (always updates origin/<base>).
+    let _ = Command::new("git")
+        .args(["-C", project_path, "fetch", "origin", base_branch])
+        .output();
 
     // Pick the rebase target: prefer origin/<base> if it resolves, else local <base>.
     let remote_ref = format!("origin/{base_branch}");
-    let target = if Command::new("git")
+    let has_remote = Command::new("git")
         .args(["-C", project_path, "rev-parse", "--verify", &remote_ref])
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+
+    // Fast-forward the local <base> ref to origin/<base>. Worktrees share refs, so
+    // this keeps every worktree's view of the base branch (e.g. `main`) current.
+    if has_remote {
+        update_local_base_branch(project_path, base_branch, &remote_ref);
+    }
+
+    let target = if has_remote {
         remote_ref
     } else {
         base_branch.to_string()
@@ -1399,6 +1395,39 @@ pub fn merge_session_to_task(
 }
 
 /// Find a worktree path that has the given branch checked out.
+/// Fast-forward the local `base_branch` ref to `remote_ref` (origin/<base>) so that
+/// every worktree — which share a single ref store — sees the latest base branch.
+///
+/// Git refuses to update a checked-out branch via `fetch origin base:base`, so when
+/// the base branch is checked out somewhere we fast-forward it in that worktree
+/// instead. If it isn't checked out anywhere, the ref is updated directly. All steps
+/// are best-effort and no-ops when already up to date.
+fn update_local_base_branch(project_path: &str, base_branch: &str, remote_ref: &str) {
+    match find_worktree_for_branch(project_path, base_branch) {
+        Some(wt) => {
+            // Checked out — fast-forward its working tree. Skip if dirty so we never
+            // touch uncommitted work; a non-ff history is left untouched by --ff-only.
+            if !worktree_is_dirty(&wt) {
+                let _ = Command::new("git")
+                    .args(["-C", &wt, "merge", "--ff-only", remote_ref])
+                    .output();
+            }
+        }
+        None => {
+            // Not checked out anywhere — safe to update the local ref directly.
+            let _ = Command::new("git")
+                .args([
+                    "-C",
+                    project_path,
+                    "fetch",
+                    "origin",
+                    &format!("{base_branch}:{base_branch}"),
+                ])
+                .output();
+        }
+    }
+}
+
 fn find_worktree_for_branch(project_path: &str, branch: &str) -> Option<String> {
     // Check main repo first
     let output = Command::new("git")
