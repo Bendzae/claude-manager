@@ -854,6 +854,8 @@ const PLUGIN_SKILL_UPDATE_TASK_CONTEXT: &str =
     include_str!("../claude-manager-plugin/skills/update-task-context/SKILL.md");
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
     include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
+const PLUGIN_SKILL_STACKED_PR: &str =
+    include_str!("../claude-manager-plugin/skills/stacked-pr/SKILL.md");
 
 /// Filesystem path to the installed claude-manager plugin directory inside `work_dir`.
 /// This is the path passed to `claude --plugin-dir`.
@@ -884,6 +886,7 @@ fn install_claude_manager_plugin(work_dir: &str) {
     let _ = fs::create_dir_all(plugin_dir.join(".claude-plugin"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("update-task-context"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("commit-push-task"));
+    let _ = fs::create_dir_all(plugin_dir.join("skills").join("stacked-pr"));
 
     let _ = fs::write(
         plugin_dir.join(".claude-plugin").join("plugin.json"),
@@ -902,6 +905,13 @@ fn install_claude_manager_plugin(work_dir: &str) {
             .join("commit-push-task")
             .join("SKILL.md"),
         PLUGIN_SKILL_COMMIT_PUSH_TASK,
+    );
+    let _ = fs::write(
+        plugin_dir
+            .join("skills")
+            .join("stacked-pr")
+            .join("SKILL.md"),
+        PLUGIN_SKILL_STACKED_PR,
     );
 
     // Git-ignore the locally installed plugin via .git/info/exclude.
