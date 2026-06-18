@@ -88,6 +88,9 @@ fn cm_set_base_branch() -> char {
 fn cm_archive() -> char {
     'A'
 }
+fn cm_toggle_stacked() -> char {
+    's'
+}
 fn kb_toggle_archive_view() -> char {
     'Z'
 }
@@ -154,6 +157,9 @@ pub struct ContextMenuKeyBindings {
     /// Archive / unarchive task (default: A)
     #[serde(default = "cm_archive")]
     pub archive: char,
+    /// Toggle stacked-PR mode for a task (default: s)
+    #[serde(default = "cm_toggle_stacked")]
+    pub toggle_stacked: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -176,6 +182,7 @@ impl Default for ContextMenuKeyBindings {
             copy_path: cm_copy_path(),
             set_base_branch: cm_set_base_branch(),
             archive: cm_archive(),
+            toggle_stacked: cm_toggle_stacked(),
         }
     }
 }
@@ -269,6 +276,10 @@ pub struct Task {
     /// Archived: hidden from default view, sessions killed but worktrees/branches/context preserved.
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
+    /// Stacked-PR mode: this task's commits are published as a stack of dependent PRs
+    /// (via `spr`) instead of a single PR. Opt-in; defaults to false (single-PR happy path).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stacked: bool,
 }
 
 impl Task {
@@ -374,6 +385,32 @@ pub fn pr_url_path(project_name: &str, branch: &str) -> PathBuf {
         .join(crate::tmux::sanitize(project_name))
         .join(crate::tmux::sanitize(branch))
         .join("pr_url.txt")
+}
+
+/// Path to the cached stacked-PR list for a stacked task (JSON array of `[url, title]`,
+/// bottom→top). Written by `spr update`/refresh; read by the background worker (no git).
+pub fn stack_cache_path(project_name: &str, branch: &str) -> PathBuf {
+    base_dir()
+        .join("tasks")
+        .join(crate::tmux::sanitize(project_name))
+        .join(crate::tmux::sanitize(branch))
+        .join("stack.json")
+}
+
+/// Persist a freshly-published stack so the worker/UI can read it without touching git:
+/// the full list to `stack.json` and the bottom PR URL to `pr_url.txt` (PR icon / "Open PR").
+pub fn write_stack_cache(project_name: &str, branch: &str, prs: &[(String, String)]) {
+    let cache = stack_cache_path(project_name, branch);
+    if let Some(parent) = cache.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        &cache,
+        serde_json::to_string(prs).unwrap_or_else(|_| "[]".into()),
+    );
+    if let Some((url, _)) = prs.first() {
+        let _ = fs::write(pr_url_path(project_name, branch), url);
+    }
 }
 
 /// Metadata needed to recreate a tmux session after tmux dies.
@@ -575,6 +612,7 @@ impl Config {
                     auto_context: false,
                     base_branch: None,
                     archived: false,
+                    stacked: false,
                 });
                 return true;
             }
@@ -650,6 +688,35 @@ impl Config {
         None
     }
 
+    /// Set stacked-PR mode for the task identified by `project_path` + `branch`
+    /// (both stable across renames — the keys an external caller like the
+    /// `stacked-pr` skill knows). Returns true if the task was found.
+    pub fn set_task_stacked_by_branch(
+        &mut self,
+        project_path: &str,
+        branch: &str,
+        stacked: bool,
+    ) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.path == project_path) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.branch == branch) {
+                task.stacked = stacked;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Toggle stacked-PR mode for a task. Returns the new value, or `None` if not found.
+    pub fn toggle_stacked(&mut self, project_name: &str, task_name: &str) -> Option<bool> {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
+                task.stacked = !task.stacked;
+                return Some(task.stacked);
+            }
+        }
+        None
+    }
+
     #[allow(dead_code)]
     pub fn find_task(&self, project_name: &str, task_name: &str) -> Option<&Task> {
         self.projects
@@ -715,6 +782,40 @@ mod tests {
         assert!(!cfg.has_project_at("/tmp/app"));
         cfg.add_project("App".into(), "/tmp/app".into());
         assert!(cfg.has_project_at("/tmp/app"));
+    }
+
+    #[test]
+    fn toggle_stacked_flips_flag() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "feat".into(), "feat".into());
+        assert!(!cfg.projects[0].tasks[0].stacked);
+        assert_eq!(cfg.toggle_stacked("App", "feat"), Some(true));
+        assert!(cfg.projects[0].tasks[0].stacked);
+        assert_eq!(cfg.toggle_stacked("App", "feat"), Some(false));
+        assert_eq!(cfg.toggle_stacked("App", "missing"), None);
+    }
+
+    #[test]
+    fn set_task_stacked_by_branch_keys_on_path_and_branch() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "feat".into(), "feat-branch".into());
+        assert!(cfg.set_task_stacked_by_branch("/tmp/app", "feat-branch", true));
+        assert!(cfg.projects[0].tasks[0].stacked);
+        assert!(cfg.set_task_stacked_by_branch("/tmp/app", "feat-branch", false));
+        assert!(!cfg.projects[0].tasks[0].stacked);
+        // Wrong path or branch → not found.
+        assert!(!cfg.set_task_stacked_by_branch("/tmp/other", "feat-branch", true));
+        assert!(!cfg.set_task_stacked_by_branch("/tmp/app", "missing", true));
+    }
+
+    #[test]
+    fn task_without_stacked_field_defaults_false() {
+        // Backward compat: existing config.toml entries have no `stacked` key.
+        let task: Task = toml::from_str("name = \"t\"\nbranch = \"b\"\n").unwrap();
+        assert!(!task.stacked);
+        assert!(!task.archived);
     }
 
     #[test]

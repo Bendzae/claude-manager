@@ -124,6 +124,7 @@ pub enum ContextAction {
     SetBaseBranch,
     Archive,
     Unarchive,
+    ToggleStacked,
 }
 
 pub struct App {
@@ -158,8 +159,13 @@ pub struct App {
     pub terminal_counts: HashMap<String, usize>,
     /// PR URLs keyed by branch name
     pub pr_urls: HashMap<String, String>,
+    /// Stacked tasks' PRs (bottom→top `(url, title)`), keyed by branch name
+    pub stack_prs: HashMap<String, Vec<(String, String)>>,
     /// Current git branch for each project, keyed by project name
     pub project_branches: HashMap<String, String>,
+    /// Last-seen modification time of config.toml, used to detect external edits
+    /// (e.g. `claude-manager set-stacked` run by the stacked-pr skill).
+    pub config_mtime: Option<std::time::SystemTime>,
     /// Number of in-flight async ops. UI stays interactive while ops run; the
     /// status bar shows a spinner when this is non-zero.
     pub op_count: usize,
@@ -188,6 +194,13 @@ pub struct OpResult {
     pub message: String,
     pub rebuild: bool,
     pub reload_config: bool,
+}
+
+/// Modification time of config.toml, if it exists.
+fn config_file_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(Config::config_path())
+        .ok()
+        .and_then(|m| m.modified().ok())
 }
 
 fn project_key(name: &str) -> String {
@@ -294,7 +307,9 @@ impl App {
             preview_scroll: 0,
             terminal_counts: HashMap::new(),
             pr_urls: HashMap::new(),
+            stack_prs: HashMap::new(),
             project_branches: HashMap::new(),
+            config_mtime: config_file_mtime(),
             op_count: 0,
             op_receiver: rx,
             op_sender: tx,
@@ -353,6 +368,9 @@ impl App {
             if !update.pr_urls.is_empty() {
                 self.pr_urls.extend(update.pr_urls);
             }
+            if !update.stack_prs.is_empty() {
+                self.stack_prs.extend(update.stack_prs);
+            }
             if !update.project_branches.is_empty() {
                 self.project_branches = update.project_branches;
             }
@@ -398,6 +416,36 @@ impl App {
             if result.rebuild {
                 self.rebuild_items();
             }
+        }
+    }
+
+    /// Pick up config edits made by another process (e.g. `claude-manager
+    /// set-stacked` from the stacked-pr skill). Only reloads when idle (no
+    /// in-flight op, Normal mode) and the on-disk content actually differs from
+    /// memory — so the app's own saves never trigger a spurious rebuild.
+    pub fn maybe_reload_config(&mut self) {
+        if self.op_count != 0 || self.input_mode != InputMode::Normal {
+            return;
+        }
+        let mtime = config_file_mtime();
+        if mtime == self.config_mtime {
+            return;
+        }
+        self.config_mtime = mtime;
+        let Ok(disk) = std::fs::read_to_string(Config::config_path()) else {
+            return;
+        };
+        // Skip if disk matches our in-memory state (our own write).
+        if toml::to_string_pretty(&self.config)
+            .map(|s| s == disk)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if let Ok(cfg) = toml::from_str::<Config>(&disk) {
+            self.config = cfg;
+            self.rebuild_items();
+            self.sync_worker_hints();
         }
     }
 
@@ -448,6 +496,7 @@ impl App {
                     project_path: p.path.clone(),
                     branch: t.branch.clone(),
                     base_branch: t.base_branch().to_string(),
+                    stacked: t.stacked,
                 })
             })
             .collect();
@@ -752,6 +801,11 @@ impl App {
                     } else {
                         "Enable auto-context"
                     };
+                    let stacked_label = if task.stacked {
+                        "Disable stacked PRs"
+                    } else {
+                        "Enable stacked PRs"
+                    };
                     vec![
                         ContextMenuItem {
                             key: cm.new_session,
@@ -767,6 +821,11 @@ impl App {
                             key: cm.toggle_auto_context,
                             label: ctx_label,
                             action: ContextAction::ToggleAutoContext,
+                        },
+                        ContextMenuItem {
+                            key: cm.toggle_stacked,
+                            label: stacked_label,
+                            action: ContextAction::ToggleStacked,
                         },
                         ContextMenuItem {
                             key: cm.update,
@@ -877,6 +936,7 @@ impl App {
             ContextAction::CreateTerminal => self.create_terminal(),
             ContextAction::KillTerminal => self.kill_terminal(),
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
+            ContextAction::ToggleStacked => self.toggle_stacked(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
             ContextAction::SetBaseBranch => self.start_set_base_branch(),
             ContextAction::Archive => self.archive_task(),
@@ -1123,6 +1183,21 @@ impl App {
 
             let label = if new_state { "enabled" } else { "disabled" };
             self.status_message = Some(format!("Auto-context {label} for '{task_name}'"));
+            self.rebuild_items();
+        }
+    }
+
+    pub fn toggle_stacked(&mut self) {
+        let (project_name, task_name) = match self.selected_task_info() {
+            Some((pn, _, t)) => (pn.to_string(), t.name.clone()),
+            None => return,
+        };
+
+        self.config.reload();
+        if let Some(new_state) = self.config.toggle_stacked(&project_name, &task_name) {
+            let _ = self.config.save();
+            let label = if new_state { "enabled" } else { "disabled" };
+            self.status_message = Some(format!("Stacked PRs {label} for '{task_name}'"));
             self.rebuild_items();
         }
     }
@@ -2007,10 +2082,23 @@ impl App {
     pub fn update_session(&mut self) {
         match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path, task, ..
+                project_name,
+                project_path,
+                task,
             }) => {
                 let branch = task.branch.clone();
                 let base_branch = task.base_branch().to_string();
+                // Stacked task: re-publish the stack (rebases onto trunk + refreshes PRs).
+                if task.stacked {
+                    self.run_stack_update(
+                        project_name,
+                        project_path,
+                        branch,
+                        "Syncing stack...",
+                        false,
+                    );
+                    return;
+                }
                 self.start_op(
                     "Updating task branch...",
                     move || match tmux::update_task_branch(&project_path, &branch, &base_branch) {
@@ -2146,11 +2234,49 @@ impl App {
         }
     }
 
+    /// Run `git spr update` for a stacked task: publishes/refreshes one PR per commit,
+    /// caches the resulting stack for the worker/UI, and (optionally) opens the bottom PR.
+    fn run_stack_update(
+        &mut self,
+        project_name: String,
+        project_path: String,
+        branch: String,
+        label: &'static str,
+        open_bottom: bool,
+    ) {
+        self.start_op(label, move || {
+            match tmux::spr_update(&project_path, &branch) {
+                Ok(prs) => {
+                    // Cache the stack so the background worker (and UI) can read it
+                    // without touching git. Bottom PR feeds the PR icon / "Open PR".
+                    config::write_stack_cache(&project_name, &branch, &prs);
+                    if open_bottom {
+                        if let Some((url, _)) = prs.first() {
+                            let _ = std::process::Command::new("open").arg(url).output();
+                        }
+                    }
+                    OpResult {
+                        message: format!("Stack updated: {} PR(s)", prs.len()),
+                        rebuild: true,
+                        reload_config: false,
+                    }
+                }
+                Err(e) => OpResult {
+                    message: format!("Stack error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
+    }
+
     pub fn confirm_create_pr(&mut self) {
-        let (project_path, task) = match self.selected_item().cloned() {
+        let (project_path, project_name, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path, task, ..
-            }) => (project_path, task),
+                project_path,
+                project_name,
+                task,
+            }) => (project_path, project_name, task),
             _ => {
                 self.cancel_input();
                 return;
@@ -2160,6 +2286,18 @@ impl App {
         let branch = task.branch.clone();
         let task_name = task.name.clone();
         self.input_mode = InputMode::Normal;
+
+        // Stacked task: publish each commit as its own PR via `git spr`, not a single PR.
+        if task.stacked {
+            self.run_stack_update(
+                project_name,
+                project_path,
+                branch,
+                "Publishing stack...",
+                true,
+            );
+            return;
+        }
 
         self.start_op("Creating PR...", move || {
             // Push branch first

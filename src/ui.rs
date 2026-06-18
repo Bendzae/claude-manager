@@ -301,6 +301,16 @@ fn parent_task_is_last(
     true
 }
 
+/// Extract the trailing PR number from a GitHub PR URL (`.../pull/123` → `123`).
+fn pr_number(url: &str) -> Option<&str> {
+    let last = url.trim_end_matches('/').rsplit('/').next()?;
+    if !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()) {
+        Some(last)
+    } else {
+        None
+    }
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<ListItem> = Vec::new();
     let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
@@ -431,6 +441,20 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     ));
                 }
 
+                // Stacked-PR badge: ⑆ marker + PR count (or "stacked" when not yet published).
+                if task.stacked {
+                    let count = app.stack_prs.get(&task.branch).map_or(0, |p| p.len());
+                    spans.push(Span::raw("  "));
+                    if count > 0 {
+                        spans.push(Span::styled(
+                            format!("\u{2446} {count} PR{}", if count == 1 { "" } else { "s" }),
+                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        spans.push(Span::styled("\u{2446} stacked", Style::default().fg(MUTED)));
+                    }
+                }
+
                 spans.push(Span::styled(
                     format!("  ({})", task.branch),
                     Style::default().fg(MUTED),
@@ -469,6 +493,41 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 }
 
                 lines.push(ListItem::new(Line::from(spans)));
+
+                // Stacked task: render its PRs as a vertical chain beneath the row
+                // (top of stack first → base at the bottom), unless collapsed.
+                let collapsed = app
+                    .collapsed
+                    .contains(&format!("t:{project_name}:{}", task.name));
+                if task.stacked && !collapsed {
+                    if let Some(prs) = app.stack_prs.get(&task.branch).filter(|p| !p.is_empty()) {
+                        let last = is_last_task(&app.items, i, project_name);
+                        let continuation = if last { "   " } else { "│  " };
+                        let total = prs.len();
+                        // `prs` is bottom→top; print top→bottom so the base sits last.
+                        for (idx, (url, title)) in prs.iter().rev().enumerate() {
+                            let is_base = idx + 1 == total;
+                            let branch_char = if is_base { "└─ " } else { "├─ " };
+                            let mut sub = vec![
+                                Span::raw("   "),
+                                Span::styled(continuation, tree_style),
+                                Span::styled(branch_char, tree_style),
+                                Span::styled("● ", Style::default().fg(Color::Green)),
+                            ];
+                            if let Some(n) = pr_number(url) {
+                                sub.push(Span::styled(
+                                    format!("#{n} "),
+                                    Style::default().fg(ACCENT),
+                                ));
+                            }
+                            sub.push(Span::styled(
+                                title.clone(),
+                                Style::default().fg(Color::White),
+                            ));
+                            lines.push(ListItem::new(Line::from(sub)));
+                        }
+                    }
+                }
             }
             app::ListItem::AdhocGroup {
                 project_name,

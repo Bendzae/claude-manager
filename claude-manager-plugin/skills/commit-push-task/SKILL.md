@@ -43,7 +43,19 @@ If those lines are not present, abort and ask the user for the task branch name.
    ```
    git -C <main-repo-path> fetch . <worktree-branch>:<task-branch>
    ```
-   The `fetch . src:dst` form performs a fast-forward update of `<task-branch>` to `<worktree-branch>`. It refuses to run if the merge would not be fast-forward. If it fails because the task branch has diverged, abort and report — do NOT force, rebase, or merge non-ff without explicit user confirmation.
+   The `fetch . src:dst` form performs a fast-forward update of `<task-branch>` to `<worktree-branch>`. It refuses to run if the merge would not be fast-forward.
+
+   **If the fast-forward fails because the task branch has diverged:**
+   - **Default (non-stacked tasks): abort and report.** Do NOT force, rebase, or merge non-ff without explicit user confirmation.
+   - **Stacked-PR tasks** (see the `stacked-pr` skill): divergence is expected — publishing the stack rewrites the task branch history (`git spr` rebases onto trunk + adds `commit-id:` trailers), so a worktree forked before the last publish no longer fast-forwards. Recover by **rebasing the worktree's new commits onto the task tip, then fast-forwarding**:
+     ```
+     # on the worktree branch, in the worktree:
+     git fetch <main-repo-path> <task-branch>
+     git rebase FETCH_HEAD            # replays only the worktree's new commits onto the task tip
+     # resolve any conflicts (git add → git rebase --continue), then ff as above:
+     git -C <main-repo-path> fetch . <worktree-branch>:<task-branch>
+     ```
+     This replays just the worktree's unique commits, so the ff then succeeds. Only do this for stacked tasks or when the user confirms.
 
 6. Push only the task branch:
    ```
