@@ -124,6 +124,7 @@ pub enum ContextAction {
     SetBaseBranch,
     Archive,
     Unarchive,
+    ToggleStacked,
 }
 
 pub struct App {
@@ -158,6 +159,8 @@ pub struct App {
     pub terminal_counts: HashMap<String, usize>,
     /// PR URLs keyed by branch name
     pub pr_urls: HashMap<String, String>,
+    /// Stacked tasks' PRs (bottom→top `(url, title)`), keyed by branch name
+    pub stack_prs: HashMap<String, Vec<(String, String)>>,
     /// Current git branch for each project, keyed by project name
     pub project_branches: HashMap<String, String>,
     /// Number of in-flight async ops. UI stays interactive while ops run; the
@@ -294,6 +297,7 @@ impl App {
             preview_scroll: 0,
             terminal_counts: HashMap::new(),
             pr_urls: HashMap::new(),
+            stack_prs: HashMap::new(),
             project_branches: HashMap::new(),
             op_count: 0,
             op_receiver: rx,
@@ -352,6 +356,9 @@ impl App {
             }
             if !update.pr_urls.is_empty() {
                 self.pr_urls.extend(update.pr_urls);
+            }
+            if !update.stack_prs.is_empty() {
+                self.stack_prs.extend(update.stack_prs);
             }
             if !update.project_branches.is_empty() {
                 self.project_branches = update.project_branches;
@@ -448,6 +455,7 @@ impl App {
                     project_path: p.path.clone(),
                     branch: t.branch.clone(),
                     base_branch: t.base_branch().to_string(),
+                    stacked: t.stacked,
                 })
             })
             .collect();
@@ -752,6 +760,11 @@ impl App {
                     } else {
                         "Enable auto-context"
                     };
+                    let stacked_label = if task.stacked {
+                        "Disable stacked PRs"
+                    } else {
+                        "Enable stacked PRs"
+                    };
                     vec![
                         ContextMenuItem {
                             key: cm.new_session,
@@ -767,6 +780,11 @@ impl App {
                             key: cm.toggle_auto_context,
                             label: ctx_label,
                             action: ContextAction::ToggleAutoContext,
+                        },
+                        ContextMenuItem {
+                            key: cm.toggle_stacked,
+                            label: stacked_label,
+                            action: ContextAction::ToggleStacked,
                         },
                         ContextMenuItem {
                             key: cm.update,
@@ -877,6 +895,7 @@ impl App {
             ContextAction::CreateTerminal => self.create_terminal(),
             ContextAction::KillTerminal => self.kill_terminal(),
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
+            ContextAction::ToggleStacked => self.toggle_stacked(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
             ContextAction::SetBaseBranch => self.start_set_base_branch(),
             ContextAction::Archive => self.archive_task(),
@@ -1123,6 +1142,21 @@ impl App {
 
             let label = if new_state { "enabled" } else { "disabled" };
             self.status_message = Some(format!("Auto-context {label} for '{task_name}'"));
+            self.rebuild_items();
+        }
+    }
+
+    pub fn toggle_stacked(&mut self) {
+        let (project_name, task_name) = match self.selected_task_info() {
+            Some((pn, _, t)) => (pn.to_string(), t.name.clone()),
+            None => return,
+        };
+
+        self.config.reload();
+        if let Some(new_state) = self.config.toggle_stacked(&project_name, &task_name) {
+            let _ = self.config.save();
+            let label = if new_state { "enabled" } else { "disabled" };
+            self.status_message = Some(format!("Stacked PRs {label} for '{task_name}'"));
             self.rebuild_items();
         }
     }
@@ -2007,10 +2041,23 @@ impl App {
     pub fn update_session(&mut self) {
         match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path, task, ..
+                project_name,
+                project_path,
+                task,
             }) => {
                 let branch = task.branch.clone();
                 let base_branch = task.base_branch().to_string();
+                // Stacked task: re-publish the stack (rebases onto trunk + refreshes PRs).
+                if task.stacked {
+                    self.run_stack_update(
+                        project_name,
+                        project_path,
+                        branch,
+                        "Syncing stack...",
+                        false,
+                    );
+                    return;
+                }
                 self.start_op(
                     "Updating task branch...",
                     move || match tmux::update_task_branch(&project_path, &branch, &base_branch) {
@@ -2146,11 +2193,58 @@ impl App {
         }
     }
 
+    /// Run `git spr update` for a stacked task: publishes/refreshes one PR per commit,
+    /// caches the resulting stack for the worker/UI, and (optionally) opens the bottom PR.
+    fn run_stack_update(
+        &mut self,
+        project_name: String,
+        project_path: String,
+        branch: String,
+        label: &'static str,
+        open_bottom: bool,
+    ) {
+        self.start_op(label, move || {
+            match tmux::spr_update(&project_path, &branch) {
+                Ok(prs) => {
+                    // Cache the stack so the background worker (and UI) can read it without
+                    // touching git. The bottom PR feeds the PR icon / "Open PR".
+                    let cache = config::stack_cache_path(&project_name, &branch);
+                    if let Some(parent) = cache.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(
+                        &cache,
+                        serde_json::to_string(&prs).unwrap_or_else(|_| "[]".into()),
+                    );
+                    if let Some((url, _)) = prs.first() {
+                        let pr_path = config::pr_url_path(&project_name, &branch);
+                        let _ = std::fs::write(&pr_path, url);
+                        if open_bottom {
+                            let _ = std::process::Command::new("open").arg(url).output();
+                        }
+                    }
+                    OpResult {
+                        message: format!("Stack updated: {} PR(s)", prs.len()),
+                        rebuild: true,
+                        reload_config: false,
+                    }
+                }
+                Err(e) => OpResult {
+                    message: format!("Stack error: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                },
+            }
+        });
+    }
+
     pub fn confirm_create_pr(&mut self) {
-        let (project_path, task) = match self.selected_item().cloned() {
+        let (project_path, project_name, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path, task, ..
-            }) => (project_path, task),
+                project_path,
+                project_name,
+                task,
+            }) => (project_path, project_name, task),
             _ => {
                 self.cancel_input();
                 return;
@@ -2160,6 +2254,18 @@ impl App {
         let branch = task.branch.clone();
         let task_name = task.name.clone();
         self.input_mode = InputMode::Normal;
+
+        // Stacked task: publish each commit as its own PR via `git spr`, not a single PR.
+        if task.stacked {
+            self.run_stack_update(
+                project_name,
+                project_path,
+                branch,
+                "Publishing stack...",
+                true,
+            );
+            return;
+        }
 
         self.start_op("Creating PR...", move || {
             // Push branch first

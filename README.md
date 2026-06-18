@@ -78,9 +78,12 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 | `u` | Update/rebase branch onto main | `update` |
 | `P` | Push branch | `push` |
 | `b` | Checkout branch in project dir | `checkout` |
-| `o` | Open/create PR | `open_pr` |
+| `o` | Open/create PR (publishes the stack when stacked) | `open_pr` |
+| `s` | Toggle stacked-PR mode | `toggle_stacked` |
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
+
+In **stacked-PR mode** a task publishes one PR per commit via [`git spr`](https://github.com/ejoffe/spr) instead of a single PR. Enable it with `s`, then `o` to publish the stack and `u` to refresh it after edits. The task row shows a `⑆ N PRs` badge and lists each PR (top of stack first) beneath it. Requires `git spr` installed and GitHub auth (`gh auth login`). See the `stacked-pr` agent skill for the commit-shaping workflow.
 
 **Session actions:**
 

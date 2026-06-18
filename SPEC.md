@@ -21,6 +21,15 @@ A minimal TUI (Rust + ratatui) to manage multiple Claude Code sessions across pr
 - Shows aggregated diff stats (+/-) against main
 - Shows active session count
 
+### Stacked PRs
+- A task can opt into **stacked-PR mode** (`stacked` flag on the task; toggled from the context menu, default key `s`). Backward compatible: the flag defaults to `false` and is omitted from existing config, so non-stacked tasks behave exactly as before.
+- In stacked mode the task's commits are published as a **stack of dependent PRs — one PR per commit** — via [`git spr`](https://github.com/ejoffe/spr) (ejoffe), instead of a single PR. The bottom commit (closest to trunk) merges first; the top (HEAD) merges last. `spr` tracks commit↔PR identity with a `commit-id:` trailer that survives amends/rebases.
+- **Publish** with "Open/create PR" (`o`) → runs `git spr update`. **Refresh** after edits with "Update branch" (`u`) → re-runs `git spr update` (rebases onto trunk + updates every PR). Both are explicit, user-triggered actions.
+- The resulting stack is cached to `~/.claude-manager/tasks/<project>/<branch>/stack.json` (JSON array of `[url, title]`, bottom→top). The background worker reads this file (no git) to populate the UI; the bottom PR feeds the existing PR icon / "Open PR".
+- **UI**: stacked tasks show a `⑆ N PRs` badge and render each PR as a row beneath the task (top of stack first, base last), with a status dot and `#<number> <title>`.
+- **Sync**: publishing rewrites the task branch history, so worktrees forked before a publish no longer fast-forward into the task branch. The `commit-push-task` skill falls back to rebase-then-fast-forward for stacked tasks (rebase the worktree's new commits onto the task tip, then ff). Worktree→task sync for non-stacked tasks is unchanged.
+- Requires `git spr` installed and GitHub auth (`gh auth login` or `GITHUB_TOKEN`). The interactive `spr` star prompt is silenced automatically (`stargazer: true` in `~/.spr.yml`). See the `stacked-pr` agent skill for the commit-shaping workflow.
+
 ### Adhoc Session
 - A lightweight Claude Code session attached to a project but not to any task
 - Runs in the project directory on whatever branch is currently checked out — no worktree, no branch isolation

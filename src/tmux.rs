@@ -1189,6 +1189,124 @@ pub fn update_task_branch(project_path: &str, branch: &str, base_branch: &str) -
     }
 }
 
+/// Whether the `git spr` subcommand is available.
+pub fn spr_installed() -> bool {
+    Command::new("git")
+        .args(["spr", "version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Ensure `git spr` never blocks on the interactive "enjoying git spr?" star prompt
+/// by writing `stargazer: true` to `~/.spr.yml` (idempotent).
+fn ensure_spr_stargazer() {
+    let Some(home) = dirs::home_dir() else { return };
+    let path = home.join(".spr.yml");
+    let already = fs::read_to_string(&path)
+        .map(|c| c.lines().any(|l| l.trim_start().starts_with("stargazer:")))
+        .unwrap_or(false);
+    if already {
+        return;
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "stargazer: true");
+    }
+}
+
+/// One pull request in a stack: its URL and title (commit subject).
+pub type StackPr = (String, String);
+
+/// Parse `git spr status --text` output (`<url> : <title>` per line) into PRs.
+/// spr lists top→bottom; we reverse to bottom→top (merge order).
+fn parse_spr_status(stdout: &str) -> Vec<StackPr> {
+    let mut prs: Vec<StackPr> = stdout
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let (url, title) = line.split_once(" : ")?;
+            let url = url.trim();
+            if !url.starts_with("http") {
+                return None;
+            }
+            Some((url.to_string(), title.trim().to_string()))
+        })
+        .collect();
+    prs.reverse();
+    prs
+}
+
+/// Current branch name, or `None` if detached/unknown.
+fn current_branch(project_path: &str) -> Option<String> {
+    let out = Command::new("git")
+        .args(["-C", project_path, "rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() || name == "HEAD" {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn checkout_branch(project_path: &str, branch: &str) -> Result<()> {
+    let out = Command::new("git")
+        .args(["-C", project_path, "checkout", branch])
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("Could not checkout '{branch}' in {project_path}: {stderr}");
+    }
+    Ok(())
+}
+
+/// Publish/update a task's commits as a stack of dependent PRs via `git spr update`.
+/// Each commit on `branch` (relative to trunk) becomes one PR. Returns the stack's
+/// PRs bottom→top. spr rewrites `branch` history (rebase onto trunk + `commit-id`
+/// trailers); pre-existing session worktrees re-sync on their next push (rebase-then-ff).
+pub fn spr_update(project_path: &str, branch: &str) -> Result<Vec<StackPr>> {
+    if branch.is_empty() || branch == "main" || branch == "master" {
+        bail!("Refusing to create a stack from protected branch '{branch}'");
+    }
+    if !spr_installed() {
+        bail!("`git spr` not found. Install with `brew install ejoffe/tap/spr`.");
+    }
+    ensure_spr_stargazer();
+
+    let original = current_branch(project_path);
+    if original.as_deref() != Some(branch) {
+        checkout_branch(project_path, branch)?;
+    }
+
+    let output = Command::new("git")
+        .args(["-C", project_path, "spr", "update"])
+        .output()?;
+
+    if !output.status.success() {
+        // On a rebase conflict spr leaves `branch` mid-rebase; keep it checked out
+        // so the user can resolve. Surface stdout+stderr.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        bail!("`git spr update` failed:\n{stdout}{stderr}");
+    }
+
+    // Read the resulting stack while `branch` is still checked out, then restore HEAD.
+    let status = Command::new("git")
+        .args(["-C", project_path, "spr", "status", "--text"])
+        .output();
+    if let Some(orig) = &original {
+        if orig != branch {
+            let _ = checkout_branch(project_path, orig);
+        }
+    }
+    let prs = match status {
+        Ok(o) if o.status.success() => parse_spr_status(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
+    };
+    Ok(prs)
+}
+
 pub fn rebase_session_on_task(
     project_path: &str,
     task_branch: &str,
@@ -2046,6 +2164,31 @@ pub fn cleanup_project_dirs(project_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- spr status parsing ---
+
+    #[test]
+    fn parse_spr_status_reverses_to_bottom_top() {
+        // spr lists top→bottom; we return bottom→top (merge order).
+        let out = "\
+https://github.com/o/r/pull/14 : Add dashboard
+https://github.com/o/r/pull/13 : Add API
+https://github.com/o/r/pull/12 : Add model
+";
+        let prs = parse_spr_status(out);
+        assert_eq!(prs.len(), 3);
+        assert_eq!(prs[0].0, "https://github.com/o/r/pull/12");
+        assert_eq!(prs[0].1, "Add model");
+        assert_eq!(prs[2].1, "Add dashboard");
+    }
+
+    #[test]
+    fn parse_spr_status_ignores_non_pr_lines() {
+        let out = "warming up\nhttps://github.com/o/r/pull/1 : Title\n\n";
+        let prs = parse_spr_status(out);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].1, "Title");
+    }
 
     // --- sanitize ---
 
