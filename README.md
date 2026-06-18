@@ -85,6 +85,16 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 
 In **stacked-PR mode** a task publishes one PR per commit via [`git spr`](https://github.com/ejoffe/spr) instead of a single PR. Enable it with `s`, then `o` to publish the stack and `u` to refresh it after edits. The task row shows a `⑆ N PRs` badge and lists each PR (top of stack first) beneath it. Requires `git spr` installed and GitHub auth (`gh auth login`). See the `stacked-pr` agent skill for the commit-shaping workflow.
 
+Stacked mode can also be driven from outside the TUI (the `stacked-pr` skill uses these so an agent can manage the stack for its own task — all operate on the task branch):
+
+```bash
+claude-manager set-stacked   <project-path> <branch> [on|off]   # toggle the flag (default: on)
+claude-manager stack-publish <project-path> <branch>            # git spr update — create/refresh PRs
+claude-manager stack-sync    <project-path> <branch>            # git spr sync — reconcile after merges
+```
+
+A running TUI picks up config/flag changes on its next idle refresh, and the published stack on its next poll.
+
 **Session actions:**
 
 | Key | Action | Config key |

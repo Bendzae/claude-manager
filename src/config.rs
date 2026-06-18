@@ -397,6 +397,22 @@ pub fn stack_cache_path(project_name: &str, branch: &str) -> PathBuf {
         .join("stack.json")
 }
 
+/// Persist a freshly-published stack so the worker/UI can read it without touching git:
+/// the full list to `stack.json` and the bottom PR URL to `pr_url.txt` (PR icon / "Open PR").
+pub fn write_stack_cache(project_name: &str, branch: &str, prs: &[(String, String)]) {
+    let cache = stack_cache_path(project_name, branch);
+    if let Some(parent) = cache.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        &cache,
+        serde_json::to_string(prs).unwrap_or_else(|_| "[]".into()),
+    );
+    if let Some((url, _)) = prs.first() {
+        let _ = fs::write(pr_url_path(project_name, branch), url);
+    }
+}
+
 /// Metadata needed to recreate a tmux session after tmux dies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
@@ -672,6 +688,24 @@ impl Config {
         None
     }
 
+    /// Set stacked-PR mode for the task identified by `project_path` + `branch`
+    /// (both stable across renames — the keys an external caller like the
+    /// `stacked-pr` skill knows). Returns true if the task was found.
+    pub fn set_task_stacked_by_branch(
+        &mut self,
+        project_path: &str,
+        branch: &str,
+        stacked: bool,
+    ) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.path == project_path) {
+            if let Some(task) = project.tasks.iter_mut().find(|t| t.branch == branch) {
+                task.stacked = stacked;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Toggle stacked-PR mode for a task. Returns the new value, or `None` if not found.
     pub fn toggle_stacked(&mut self, project_name: &str, task_name: &str) -> Option<bool> {
         if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
@@ -760,6 +794,20 @@ mod tests {
         assert!(cfg.projects[0].tasks[0].stacked);
         assert_eq!(cfg.toggle_stacked("App", "feat"), Some(false));
         assert_eq!(cfg.toggle_stacked("App", "missing"), None);
+    }
+
+    #[test]
+    fn set_task_stacked_by_branch_keys_on_path_and_branch() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "feat".into(), "feat-branch".into());
+        assert!(cfg.set_task_stacked_by_branch("/tmp/app", "feat-branch", true));
+        assert!(cfg.projects[0].tasks[0].stacked);
+        assert!(cfg.set_task_stacked_by_branch("/tmp/app", "feat-branch", false));
+        assert!(!cfg.projects[0].tasks[0].stacked);
+        // Wrong path or branch → not found.
+        assert!(!cfg.set_task_stacked_by_branch("/tmp/other", "feat-branch", true));
+        assert!(!cfg.set_task_stacked_by_branch("/tmp/app", "missing", true));
     }
 
     #[test]

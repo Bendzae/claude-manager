@@ -13,7 +13,20 @@ task branch:
  ● commit "Add user UI"      → PR #3  (base: PR #2)   ← top, merges last
 ```
 
-Your job in a session (a worktree) is to **shape the commits** so each one is a clean, PR-sized, dependency-ordered unit. Publishing the stack (running `git spr update`) is done from the Claude Manager TUI on the task — you do **not** run `spr` from the worktree.
+Your job in a session (a worktree) is to **shape the commits** so each one is a clean, PR-sized, dependency-ordered unit, then **merge them into the task branch** and **publish** the stack. Publishing always runs on the **task branch** — drive it with the `claude-manager` CLI (below) or let the user use the TUI. Never run `git spr` directly in the worktree (that would publish the worktree branch as a separate, diverging stack).
+
+## First: enable stacked-PR mode for the task
+
+When this skill is invoked, or whenever the user asks to make/split this task's work into a stack of PRs, **turn on stacked-PR mode for the task automatically** so the TUI publishes a stack (not a single PR). Don't wait to be told — enable it as soon as it's clear stacking is wanted.
+
+```bash
+# Project path = the MAIN repo (not this worktree). Get it from the first
+# `git worktree list` entry. Branch = the "Task branch:" from the session reminder.
+MAIN_REPO=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -1)
+claude-manager set-stacked "$MAIN_REPO" "<task-branch>" on
+```
+
+This flips the task's `stacked` flag in Claude Manager's config; the running TUI picks it up on its next idle refresh (the task row then shows the `⑆ stacked` badge). If `claude-manager` isn't on `PATH`, tell the user to enable stacked mode from the task's context menu (key `s`) and continue. To turn it back off: `claude-manager set-stacked "$MAIN_REPO" "<task-branch>" off`.
 
 ## The golden rule: one commit = one PR
 
@@ -55,13 +68,31 @@ Find the target SHA with `git log --oneline <base>..HEAD`. Autosquash moves the 
 
 Use the **`commit-push-task`** skill. For stacked tasks the task branch history is rewritten on each publish (spr rebases onto trunk + adds trailers), so a pre-publish worktree may no longer fast-forward. `commit-push-task` handles this by falling back to **rebase-then-fast-forward** (rebase the worktree's new commits onto the task tip, then ff). Resolve any rebase conflict in the worktree.
 
-### 4. Publish / refresh the stack (from the TUI)
+### 4. Publish / refresh / sync the stack
 
-On the stacked task in Claude Manager:
-- **Open PR** (`o`) — first publish: runs `git spr update`, creating one PR per commit and caching the stack (shown as `⑆ N PRs` with a row per PR under the task).
-- **Update branch** (`u`) — refresh after edits: re-runs `git spr update` (rebases onto trunk + updates every PR in place).
+Publishing always operates on the **task branch** (the stack's source of truth), so **merge your worktree into the task branch first** (step 3), then publish. The stack is one PR per commit on the task branch — not on your worktree branch.
 
-Both are outward-facing (they create/update real GitHub PRs) — only trigger when the user asks to publish.
+You can drive this yourself with the `claude-manager` CLI (it runs the same `git spr` operations the TUI does, on the task branch, and updates the cache the UI reads):
+
+```bash
+MAIN_REPO=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -1)
+
+# publish or refresh the stack (git spr update): create one PR per commit,
+# or update existing PRs in place after edits/amends
+claude-manager stack-publish "$MAIN_REPO" "<task-branch>"
+
+# after some PRs merge on GitHub or trunk moves: reconcile (git spr sync) —
+# rebases the remaining stack onto trunk and updates PRs
+claude-manager stack-sync "$MAIN_REPO" "<task-branch>"
+```
+
+Or the user can do it from the TUI: **Open PR** (`o`) to publish, **Update branch** (`u`) to refresh.
+
+**These are outward-facing** — they create/update real GitHub PRs. Only publish when the user has asked to (or clearly authorized it); don't publish a stack unprompted. Do **not** merge — `git spr merge` is a human step (see Agent rules).
+
+After a `stack-sync` rewrites the task branch, your worktree may no longer fast-forward — re-sync it with the rebase-then-ff path in step 3 before continuing.
+
+> Run `stack-publish`/`stack-sync` from the worktree (the CLI figures out the main repo). Do **not** run `git spr` directly in the worktree — that would publish the *worktree* branch's commits as a separate stack and diverge from the task branch.
 
 ## Agent rules (keep `git spr` non-interactive)
 

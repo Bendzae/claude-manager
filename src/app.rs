@@ -163,6 +163,9 @@ pub struct App {
     pub stack_prs: HashMap<String, Vec<(String, String)>>,
     /// Current git branch for each project, keyed by project name
     pub project_branches: HashMap<String, String>,
+    /// Last-seen modification time of config.toml, used to detect external edits
+    /// (e.g. `claude-manager set-stacked` run by the stacked-pr skill).
+    pub config_mtime: Option<std::time::SystemTime>,
     /// Number of in-flight async ops. UI stays interactive while ops run; the
     /// status bar shows a spinner when this is non-zero.
     pub op_count: usize,
@@ -191,6 +194,13 @@ pub struct OpResult {
     pub message: String,
     pub rebuild: bool,
     pub reload_config: bool,
+}
+
+/// Modification time of config.toml, if it exists.
+fn config_file_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(Config::config_path())
+        .ok()
+        .and_then(|m| m.modified().ok())
 }
 
 fn project_key(name: &str) -> String {
@@ -299,6 +309,7 @@ impl App {
             pr_urls: HashMap::new(),
             stack_prs: HashMap::new(),
             project_branches: HashMap::new(),
+            config_mtime: config_file_mtime(),
             op_count: 0,
             op_receiver: rx,
             op_sender: tx,
@@ -405,6 +416,36 @@ impl App {
             if result.rebuild {
                 self.rebuild_items();
             }
+        }
+    }
+
+    /// Pick up config edits made by another process (e.g. `claude-manager
+    /// set-stacked` from the stacked-pr skill). Only reloads when idle (no
+    /// in-flight op, Normal mode) and the on-disk content actually differs from
+    /// memory — so the app's own saves never trigger a spurious rebuild.
+    pub fn maybe_reload_config(&mut self) {
+        if self.op_count != 0 || self.input_mode != InputMode::Normal {
+            return;
+        }
+        let mtime = config_file_mtime();
+        if mtime == self.config_mtime {
+            return;
+        }
+        self.config_mtime = mtime;
+        let Ok(disk) = std::fs::read_to_string(Config::config_path()) else {
+            return;
+        };
+        // Skip if disk matches our in-memory state (our own write).
+        if toml::to_string_pretty(&self.config)
+            .map(|s| s == disk)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        if let Ok(cfg) = toml::from_str::<Config>(&disk) {
+            self.config = cfg;
+            self.rebuild_items();
+            self.sync_worker_hints();
         }
     }
 
@@ -2206,20 +2247,11 @@ impl App {
         self.start_op(label, move || {
             match tmux::spr_update(&project_path, &branch) {
                 Ok(prs) => {
-                    // Cache the stack so the background worker (and UI) can read it without
-                    // touching git. The bottom PR feeds the PR icon / "Open PR".
-                    let cache = config::stack_cache_path(&project_name, &branch);
-                    if let Some(parent) = cache.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let _ = std::fs::write(
-                        &cache,
-                        serde_json::to_string(&prs).unwrap_or_else(|_| "[]".into()),
-                    );
-                    if let Some((url, _)) = prs.first() {
-                        let pr_path = config::pr_url_path(&project_name, &branch);
-                        let _ = std::fs::write(&pr_path, url);
-                        if open_bottom {
+                    // Cache the stack so the background worker (and UI) can read it
+                    // without touching git. Bottom PR feeds the PR icon / "Open PR".
+                    config::write_stack_cache(&project_name, &branch, &prs);
+                    if open_bottom {
+                        if let Some((url, _)) = prs.first() {
                             let _ = std::process::Command::new("open").arg(url).output();
                         }
                     }

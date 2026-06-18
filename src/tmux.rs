@@ -1276,8 +1276,22 @@ fn checkout_branch(project_path: &str, branch: &str) -> Result<()> {
 /// PRs bottom→top. spr rewrites `branch` history (rebase onto trunk + `commit-id`
 /// trailers); pre-existing session worktrees re-sync on their next push (rebase-then-ff).
 pub fn spr_update(project_path: &str, branch: &str) -> Result<Vec<StackPr>> {
+    run_spr_command(project_path, branch, "update")
+}
+
+/// Reconcile the stack after PRs merge or trunk moves (`git spr sync`): fetch trunk,
+/// rebase the remaining stack onto it, update PRs. Returns the stack's PRs bottom→top.
+pub fn spr_sync(project_path: &str, branch: &str) -> Result<Vec<StackPr>> {
+    run_spr_command(project_path, branch, "sync")
+}
+
+/// Run `git spr <subcommand>` on `branch` in `project_path`: check the branch out,
+/// run the command, read the resulting stack via `spr status --text`, restore HEAD.
+/// On a rebase conflict spr leaves `branch` mid-rebase (checked out) for the user to
+/// resolve; the error surfaces stdout+stderr.
+fn run_spr_command(project_path: &str, branch: &str, subcommand: &str) -> Result<Vec<StackPr>> {
     if branch.is_empty() || branch == "main" || branch == "master" {
-        bail!("Refusing to create a stack from protected branch '{branch}'");
+        bail!("Refusing to run `git spr {subcommand}` on protected branch '{branch}'");
     }
     if !spr_installed() {
         bail!("`git spr` not found. Install with `brew install ejoffe/tap/spr`.");
@@ -1290,15 +1304,13 @@ pub fn spr_update(project_path: &str, branch: &str) -> Result<Vec<StackPr>> {
     }
 
     let output = Command::new("git")
-        .args(["-C", project_path, "spr", "update"])
+        .args(["-C", project_path, "spr", subcommand])
         .output()?;
 
     if !output.status.success() {
-        // On a rebase conflict spr leaves `branch` mid-rebase; keep it checked out
-        // so the user can resolve. Surface stdout+stderr.
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        bail!("`git spr update` failed:\n{stdout}{stderr}");
+        bail!("`git spr {subcommand}` failed:\n{stdout}{stderr}");
     }
 
     // Read the resulting stack while `branch` is still checked out, then restore HEAD.
