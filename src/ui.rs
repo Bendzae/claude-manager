@@ -23,8 +23,22 @@ const MUTED: Color = Color::Rgb(90, 90, 100);
 const TREE: Color = Color::Rgb(60, 60, 70);
 const TASK_COLOR: Color = Color::Yellow;
 const SESSION_COLOR: Color = Color::Green;
+/// Background tint for the selected row.
+const SELECT_BG: Color = Color::Rgb(38, 40, 54);
 const PAD_LEFT: u16 = 1;
 const PAD_TOP: u16 = 1;
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Status icon + colour for a session, used both inline and for the status rail.
+fn status_glyph(status: SessionStatus, tick: usize) -> (&'static str, Color) {
+    match status {
+        SessionStatus::Running => (SPINNER[tick % SPINNER.len()], Color::Yellow),
+        SessionStatus::WaitingForInput => ("●", Color::Green),
+        SessionStatus::WaitingForPermission => ("!", Color::Magenta),
+        SessionStatus::Finished => ("●", Color::Red),
+    }
+}
 
 #[allow(dead_code)] // used only by the parked diff/preview panels (see below)
 fn md_skin() -> MadSkin {
@@ -64,31 +78,87 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let chunks = Layout::vertical([
         Constraint::Length(PAD_TOP),
-        Constraint::Min(5),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(1), // dashboard header
+        Constraint::Min(5),    // project cards
+        Constraint::Length(1), // help
+        Constraint::Length(1), // status
     ])
     .split(outer);
 
-    // The preview/diff column was removed; the list now spans the full width.
+    let list_area = chunks[2];
+
+    draw_dashboard(f, app, chunks[1]);
+    // The preview/diff column was removed; the cards span the full width.
     // The panel renderers (draw_preview_panel / draw_task_diff_panel) and their
     // backing state are retained for upcoming dedicated fullscreen views.
-    draw_list(f, app, chunks[1]);
+    draw_list(f, app, list_area);
 
-    draw_help(f, app, chunks[2]);
-    draw_status(f, app, chunks[3]);
+    draw_help(f, app, chunks[3]);
+    draw_status(f, app, chunks[4]);
 
     if app.input_mode == InputMode::ContextMenu {
-        draw_context_menu(f, app, chunks[1]);
+        draw_context_menu(f, app, list_area);
     }
 
     if app.input_mode == InputMode::SelectSubmitSession {
-        draw_submit_session_select(f, app, chunks[1]);
+        draw_submit_session_select(f, app, list_area);
     }
 
     if is_text_input_mode(app.input_mode) {
-        draw_floating_input(f, app, chunks[1]);
+        draw_floating_input(f, app, list_area);
     }
+}
+
+/// Top dashboard strip: app name + live counts of session states.
+fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
+    let mut running = 0usize;
+    let mut waiting = 0usize;
+    let mut perm = 0usize;
+    for st in app.session_statuses.values() {
+        match st {
+            SessionStatus::Running => running += 1,
+            SessionStatus::WaitingForInput => waiting += 1,
+            SessionStatus::WaitingForPermission => perm += 1,
+            SessionStatus::Finished => {}
+        }
+    }
+    let projects = app.config.projects.len();
+
+    let mut spans = vec![
+        Span::styled(
+            "claude-manager",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled(
+            format!("\u{25c6} {projects} proj"),
+            Style::default().fg(MUTED),
+        ),
+    ];
+    let sep = Style::default().fg(TREE);
+    if waiting > 0 {
+        spans.push(Span::styled("   ·   ", sep));
+        spans.push(Span::styled(
+            format!("● {waiting} waiting"),
+            Style::default().fg(Color::Green),
+        ));
+    }
+    if perm > 0 {
+        spans.push(Span::styled("   ·   ", sep));
+        spans.push(Span::styled(
+            format!("! {perm} needs you"),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    if running > 0 {
+        let frame = SPINNER[app.tick % SPINNER.len()];
+        spans.push(Span::styled("   ·   ", sep));
+        spans.push(Span::styled(
+            format!("{frame} {running} running"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn is_text_input_mode(mode: InputMode) -> bool {
@@ -369,16 +439,26 @@ struct ColWidths {
 /// A pre-measured overview row. Metadata cells are kept separate so the second
 /// pass can right-align each within its autoscaled column width.
 enum Row<'a> {
-    /// Blank separator line between projects.
-    Spacer,
-    /// A row with no metadata columns (adhoc groups/sessions, stacked PRs).
-    Plain(Line<'a>),
-    /// Name/tree on the left, metadata to align on the right.
-    Cols {
+    /// Rounded top border of a project card (title + branch).
+    CardTop {
+        chevron: &'static str,
+        name: Span<'a>,
+        meta: Vec<Span<'a>>,
+        branch: Option<String>,
+        collapsed: bool,
+        selected: bool,
+    },
+    /// A content row drawn inside the current card.
+    Body {
         left: Vec<Span<'a>>,
         churn: Vec<Span<'a>>,
         badge: Vec<Span<'a>>,
         branch: Option<String>,
+        /// Colour for the status rail (`None` → blank gutter).
+        rail: Option<Color>,
+        selected: bool,
+        /// Whether this row's name/metadata size the shared columns.
+        has_meta: bool,
     },
 }
 
@@ -431,6 +511,92 @@ fn row_line<'a>(left: Vec<Span<'a>>, right: Vec<Span<'a>>, name_w: usize) -> Lin
     Line::from(spans)
 }
 
+/// Interior offset of card body content: `│` + space + rail + space.
+const CARD_INDENT: usize = 4;
+
+/// Dim column-header row, indented to line up with card body columns.
+fn header_line<'a>(w: &ColWidths) -> ListItem<'a> {
+    let dim = Style::default().fg(MUTED).add_modifier(Modifier::BOLD);
+    let churn = if w.churn > 0 {
+        vec![Span::styled("CHANGES", dim)]
+    } else {
+        Vec::new()
+    };
+    let badge = if w.badge > 0 {
+        vec![Span::styled("PR", dim)]
+    } else {
+        Vec::new()
+    };
+    let branch = (w.branch > 0).then(|| "BRANCH".to_string());
+    let right = meta_block(churn, badge, branch, w);
+    let inner = row_line(vec![Span::styled("NAME", dim)], right, w.name);
+    let mut spans = vec![Span::raw(" ".repeat(CARD_INDENT))];
+    spans.extend(inner.spans);
+    ListItem::new(Line::from(spans))
+}
+
+/// Rounded top border of a project card: `╭─ ▼ name … (branch) ─╮`.
+fn card_top<'a>(
+    width: u16,
+    chevron: &str,
+    name: Span<'a>,
+    meta: Vec<Span<'a>>,
+    branch: Option<String>,
+    selected: bool,
+) -> ListItem<'a> {
+    let border = Style::default().fg(if selected { ACCENT } else { TREE });
+    let mut left = vec![
+        Span::styled("╭─ ", border),
+        Span::styled(chevron.to_string(), Style::default().fg(MUTED)),
+        name,
+    ];
+    left.extend(meta);
+    left.push(Span::raw(" "));
+    let right = match branch {
+        Some(b) => vec![
+            Span::styled(format!("({b})"), Style::default().fg(MUTED)),
+            Span::styled(" ─╮", border),
+        ],
+        None => vec![Span::styled("─╮", border)],
+    };
+    let fill = (width as usize).saturating_sub(spans_width(&left) + spans_width(&right));
+    let mut spans = left;
+    spans.push(Span::styled("─".repeat(fill), border));
+    spans.extend(right);
+    ListItem::new(Line::from(spans))
+}
+
+/// Rounded bottom border of a project card.
+fn card_bottom<'a>(width: u16) -> ListItem<'a> {
+    let s = format!("╰{}╯", "─".repeat((width as usize).saturating_sub(2)));
+    ListItem::new(Line::from(Span::styled(s, Style::default().fg(TREE))))
+}
+
+/// Wrap a body `inner` line in card borders with a status rail, padding to the
+/// full width and tinting the interior when selected.
+fn wrap_body<'a>(width: u16, rail: Option<Color>, inner: Line<'a>, selected: bool) -> ListItem<'a> {
+    let border = Style::default().fg(TREE);
+    let rail_span = match rail {
+        Some(c) => Span::styled("▎", Style::default().fg(c)),
+        None => Span::raw(" "),
+    };
+    let mut mid = vec![Span::raw(" "), rail_span, Span::raw(" ")];
+    mid.extend(inner.spans);
+    // Pad the interior out to the right border.
+    let used = 1 + spans_width(&mid); // left border + interior
+    let pad = (width as usize).saturating_sub(used + 1); // +1 right border
+    mid.push(Span::raw(" ".repeat(pad)));
+    if selected {
+        for s in &mut mid {
+            s.style = s.style.bg(SELECT_BG);
+        }
+    }
+    let mut spans = vec![Span::styled("│", border)];
+    spans.extend(mid);
+    spans.push(Span::styled("│", border));
+    ListItem::new(Line::from(spans))
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut rows: Vec<Row> = Vec::new();
     let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
@@ -439,13 +605,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     for (i, item) in app.items.iter().enumerate() {
         let is_selected = i == app.selected;
 
-        if matches!(item, app::ListItem::Project { .. }) && !rows.is_empty() {
-            rows.push(Row::Spacer);
-        }
-
         match item {
             app::ListItem::Project { project } => {
-                let indicator = if is_selected { " ▸ " } else { "   " };
                 let collapsed = is_project_collapsed(app, &project.name);
                 let chevron = if collapsed { "▶ " } else { "▼ " };
                 let name_style = if is_selected {
@@ -455,14 +616,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
                 };
-                let mut left = vec![
-                    Span::styled(indicator, indicator_style),
-                    Span::styled(chevron, Style::default().fg(MUTED)),
-                    Span::styled(&project.name, name_style),
-                    Span::styled(format!("  {}", project.path), Style::default().fg(MUTED)),
-                ];
+                let name = Span::styled(project.name.as_str(), name_style);
 
-                // Show task/session counts when project is collapsed
+                // Show task/session counts when project is collapsed.
+                let mut meta: Vec<Span> = Vec::new();
                 if collapsed {
                     let task_count = project.tasks.len();
                     let sanitized = tmux::sanitize(&project.name);
@@ -488,20 +645,21 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         if active_sessions > 0 {
                             parts.push(format!("{active_sessions} active"));
                         }
-                        left.push(Span::styled(
+                        meta.push(Span::styled(
                             format!("  [{}]", parts.join(", ")),
                             Style::default().fg(Color::Green),
                         ));
                     }
                 }
 
-                // Current branch, aligned in the right-hand branch column.
                 let branch = app.project_branches.get(&project.name).cloned();
-                rows.push(Row::Cols {
-                    left,
-                    churn: Vec::new(),
-                    badge: Vec::new(),
+                rows.push(Row::CardTop {
+                    chevron,
+                    name,
+                    meta,
                     branch,
+                    collapsed,
+                    selected: is_selected,
                 });
             }
             app::ListItem::Task {
@@ -593,11 +751,14 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     _ => task.branch.clone(),
                 };
 
-                rows.push(Row::Cols {
+                rows.push(Row::Body {
                     left,
                     churn: churn_spans(added, removed),
                     badge,
                     branch: Some(branch_label),
+                    rail: None,
+                    selected: is_selected,
+                    has_meta: true,
                 });
 
                 // Stacked task: render its PRs as a vertical chain beneath the row
@@ -630,7 +791,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                                 title.clone(),
                                 Style::default().fg(Color::White),
                             ));
-                            rows.push(Row::Plain(Line::from(sub)));
+                            rows.push(Row::Body {
+                                left: sub,
+                                churn: Vec::new(),
+                                badge: Vec::new(),
+                                branch: None,
+                                rail: None,
+                                selected: false,
+                                has_meta: false,
+                            });
                         }
                     }
                 }
@@ -662,7 +831,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Green),
                     ));
                 }
-                rows.push(Row::Plain(Line::from(spans)));
+                rows.push(Row::Body {
+                    left: spans,
+                    churn: Vec::new(),
+                    badge: Vec::new(),
+                    branch: None,
+                    rail: None,
+                    selected: is_selected,
+                    has_meta: false,
+                });
             }
             app::ListItem::AdhocSession {
                 project_name,
@@ -683,16 +860,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     .get(&session.name)
                     .copied()
                     .unwrap_or(SessionStatus::Finished);
-                const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                let (status_icon, status_color) = match status {
-                    SessionStatus::Running => {
-                        let frame = SPINNER[app.tick % SPINNER.len()];
-                        (frame, Color::Yellow)
-                    }
-                    SessionStatus::WaitingForInput => ("●", Color::Green),
-                    SessionStatus::WaitingForPermission => ("!", Color::Magenta),
-                    SessionStatus::Finished => ("●", Color::Red),
-                };
+                let (status_icon, status_color) = status_glyph(status, app.tick);
 
                 let group_last = is_last_adhoc_group_lookup(&app.items, i, project_name);
                 let session_last = is_last_adhoc_session(&app.items, i, project_name);
@@ -707,7 +875,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("⌂ ", Style::default().fg(ACCENT)),
                     Span::styled(&session.session_name, style),
                 ];
-                rows.push(Row::Plain(Line::from(spans)));
+                rows.push(Row::Body {
+                    left: spans,
+                    churn: Vec::new(),
+                    badge: Vec::new(),
+                    branch: None,
+                    rail: Some(status_color),
+                    selected: is_selected,
+                    has_meta: false,
+                });
             }
             app::ListItem::Session {
                 project_name,
@@ -729,16 +905,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     .get(&session.name)
                     .copied()
                     .unwrap_or(SessionStatus::Finished);
-                const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                let (status_icon, status_color) = match status {
-                    SessionStatus::Running => {
-                        let frame = SPINNER[app.tick % SPINNER.len()];
-                        (frame, Color::Yellow)
-                    }
-                    SessionStatus::WaitingForInput => ("●", Color::Green),
-                    SessionStatus::WaitingForPermission => ("!", Color::Magenta),
-                    SessionStatus::Finished => ("●", Color::Red),
-                };
+                let (status_icon, status_color) = status_glyph(status, app.tick);
 
                 let parent_last = parent_task_is_last(&app.items, i, project_name, &task.name);
                 let session_last = is_last_session(&app.items, i, project_name, &task.name);
@@ -767,27 +934,35 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     .map(|s| churn_spans(s.added, s.removed))
                     .unwrap_or_default();
                 let branch = app.session_branches.get(&session.name).cloned();
-                rows.push(Row::Cols {
+                rows.push(Row::Body {
                     left,
                     churn,
                     badge: Vec::new(),
                     branch,
+                    rail: Some(status_color),
+                    selected: is_selected,
+                    has_meta: true,
                 });
             }
         }
     }
 
-    // Pass 2: size each metadata column to its widest cell, then emit.
+    // Pass 2: size columns to content (and to the column-header labels), then
+    // emit cards with the column header on top.
     let mut widths = ColWidths::default();
     for row in &rows {
-        if let Row::Cols {
+        if let Row::Body {
             left,
             churn,
             badge,
             branch,
+            has_meta,
+            ..
         } = row
         {
-            widths.name = widths.name.max(spans_width(left));
+            if *has_meta {
+                widths.name = widths.name.max(spans_width(left));
+            }
             widths.churn = widths.churn.max(spans_width(churn));
             widths.badge = widths.badge.max(spans_width(badge));
             if let Some(b) = branch {
@@ -796,23 +971,62 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     widths.branch = widths.branch.min(BRANCH_MAX);
+    if widths.churn > 0 {
+        widths.churn = widths.churn.max("CHANGES".len());
+    }
+    if widths.badge > 0 {
+        widths.badge = widths.badge.max("PR".len());
+    }
+    if widths.branch > 0 {
+        widths.branch = widths.branch.max("BRANCH".len());
+    }
 
-    let lines: Vec<ListItem> = rows
-        .into_iter()
-        .map(|row| match row {
-            Row::Spacer => ListItem::new(Line::raw("")),
-            Row::Plain(line) => ListItem::new(line),
-            Row::Cols {
+    let mut lines: Vec<ListItem> = vec![header_line(&widths)];
+    let mut card_open = false;
+    let mut seen_card = false;
+    for row in rows {
+        match row {
+            Row::CardTop {
+                chevron,
+                name,
+                meta,
+                branch,
+                collapsed,
+                selected,
+            } => {
+                if card_open {
+                    lines.push(card_bottom(area.width));
+                    card_open = false;
+                }
+                if seen_card {
+                    lines.push(ListItem::new(Line::raw("")));
+                }
+                seen_card = true;
+                lines.push(card_top(area.width, chevron, name, meta, branch, selected));
+                if collapsed {
+                    lines.push(card_bottom(area.width));
+                } else {
+                    card_open = true;
+                }
+            }
+            Row::Body {
                 left,
                 churn,
                 badge,
                 branch,
+                rail,
+                selected,
+                ..
             } => {
                 let right = meta_block(churn, badge, branch, &widths);
-                ListItem::new(row_line(left, right, widths.name))
+                let inner = row_line(left, right, widths.name);
+                lines.push(wrap_body(area.width, rail, inner, selected));
             }
-        })
-        .collect();
+        }
+    }
+    if card_open {
+        lines.push(card_bottom(area.width));
+    }
 
     let list = List::new(lines).block(Block::default().borders(Borders::NONE));
     f.render_widget(list, area);
