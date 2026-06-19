@@ -1784,6 +1784,29 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
 }
 
 /// Compute diff stats for a task branch against its base branch.
+/// Resolve a diff base ref, preferring `origin/<base>` when it exists (matching
+/// `get_branch_diff`), else the local branch name.
+pub fn resolve_base_ref(project_path: &str, base_branch: &str) -> String {
+    let remote = format!("origin/{base_branch}");
+    let has_remote = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &remote,
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if has_remote {
+        remote
+    } else {
+        base_branch.to_string()
+    }
+}
+
 pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> Option<DiffStats> {
     // Try origin/<base> first, fall back to local <base>
     let remote_ref = format!("origin/{base_branch}");

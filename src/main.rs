@@ -171,10 +171,48 @@ fn main() -> Result<()> {
         } else if let Some(path) = app.should_open_editor.take() {
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
             std::process::Command::new(&editor).arg(&path).status()?;
+        } else if let Some(job) = app.should_run_difit.take() {
+            run_difit(&job);
         }
     }
 
     Ok(())
+}
+
+/// Launch difit for a review job (blocks until the browser tab closes), then
+/// forward any review comments to the target agent session as a new prompt.
+fn run_difit(job: &crate::app::DifitJob) {
+    println!(
+        "Launching difit ({})…\nReview in your browser, then close the tab to return.",
+        job.description
+    );
+    let output = std::process::Command::new("difit")
+        .args(&job.args)
+        .current_dir(&job.cwd)
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Failed to launch difit: {e}");
+            return;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match crate::app::extract_difit_comments(&stdout) {
+        Some(comments) => match &job.session {
+            Some(session) => {
+                let prompt = format!(
+                    "The following code review comments were left in difit. Please address them:\n\n{comments}"
+                );
+                match tmux::send_text(session, &prompt, true) {
+                    Ok(()) => println!("Forwarded review comments to session '{session}'."),
+                    Err(e) => eprintln!("Failed to forward comments to '{session}': {e}"),
+                }
+            }
+            None => println!("Review comments (no session to forward to):\n\n{comments}"),
+        },
+        None => println!("No review comments left."),
+    }
 }
 
 fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
@@ -451,6 +489,16 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     },
                 }
             }
+        }
+
+        // Suspend the TUI to run an external interactive command (attach,
+        // editor, difit); the main loop runs it, then re-enters the TUI.
+        if app.should_attach.is_some()
+            || app.should_attach_window.is_some()
+            || app.should_open_editor.is_some()
+            || app.should_run_difit.is_some()
+        {
+            return Ok(());
         }
 
         // Apply background updates (non-blocking)

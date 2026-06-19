@@ -125,6 +125,31 @@ pub enum ContextAction {
     Archive,
     Unarchive,
     ToggleStacked,
+    Review,
+}
+
+/// A request to launch the external `difit` diff viewer. Set on the app, run by
+/// the main loop after it suspends the TUI.
+#[derive(Debug, Clone)]
+pub struct DifitJob {
+    /// Directory to run difit in.
+    pub cwd: String,
+    /// difit CLI arguments (target/compare-with and flags).
+    pub args: Vec<String>,
+    /// Session to forward any review comments to (first session for a task).
+    pub session: Option<String>,
+    /// Human-readable description of what's being reviewed.
+    pub description: String,
+}
+
+/// Extract the review-comment block difit prints to stdout on exit. Returns
+/// `None` when the session left no comments (difit prints nothing).
+pub fn extract_difit_comments(stdout: &str) -> Option<String> {
+    const MARKER: &str = "Comments from review session:";
+    let idx = stdout.find(MARKER)?;
+    // Back up to the start of the marker's line so the header is included.
+    let line_start = stdout[..idx].rfind('\n').map(|n| n + 1).unwrap_or(0);
+    Some(stdout[line_start..].trim_end().to_string())
 }
 
 pub struct App {
@@ -194,6 +219,8 @@ pub struct App {
     /// during rendering so popups can anchor to it. Interior-mutable since draw
     /// only borrows `&App`.
     pub selected_row: std::cell::Cell<u16>,
+    /// Pending request to launch difit; handled by the main loop.
+    pub should_run_difit: Option<DifitJob>,
 }
 
 pub struct OpResult {
@@ -333,6 +360,7 @@ impl App {
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
             selected_row: std::cell::Cell::new(0),
+            should_run_difit: None,
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -828,6 +856,11 @@ impl App {
                             action: ContextAction::NewSessionNoWorktree,
                         },
                         ContextMenuItem {
+                            key: cm.review,
+                            label: "Review diff (difit)",
+                            action: ContextAction::Review,
+                        },
+                        ContextMenuItem {
                             key: cm.toggle_auto_context,
                             label: ctx_label,
                             action: ContextAction::ToggleAutoContext,
@@ -882,6 +915,11 @@ impl App {
             }
             Some(ListItem::Session { .. }) => {
                 let mut items = vec![
+                    ContextMenuItem {
+                        key: cm.review,
+                        label: "Review diff (difit)",
+                        action: ContextAction::Review,
+                    },
                     ContextMenuItem {
                         key: cm.merge,
                         label: "Merge",
@@ -951,6 +989,7 @@ impl App {
             ContextAction::SetBaseBranch => self.start_set_base_branch(),
             ContextAction::Archive => self.archive_task(),
             ContextAction::Unarchive => self.unarchive_task(),
+            ContextAction::Review => self.start_review(),
         }
     }
 
@@ -1068,6 +1107,54 @@ impl App {
         let name = crate::theme::THEMES[self.theme_index].name;
         crate::config::save_theme(name);
         self.status_message = Some(format!("Theme: {name}"));
+    }
+
+    /// Launch difit to review a task (branch vs base) or a session (uncommitted
+    /// changes). Review comments are forwarded to the agent on exit.
+    pub fn start_review(&mut self) {
+        let job = match self.selected_item().cloned() {
+            Some(ListItem::Task {
+                project_name,
+                project_path,
+                task,
+            }) => {
+                let base = task
+                    .base_branch
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string());
+                let base_ref = tmux::resolve_base_ref(&project_path, &base);
+                let session = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
+                    .first()
+                    .map(|s| s.name.clone());
+                DifitJob {
+                    cwd: project_path,
+                    args: vec![base_ref, task.branch.clone(), "--merge-base".to_string()],
+                    session,
+                    description: format!("{} vs {base}", task.branch),
+                }
+            }
+            Some(ListItem::Session {
+                project_path,
+                session,
+                ..
+            }) => {
+                let cwd = session
+                    .worktree_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(project_path);
+                DifitJob {
+                    cwd,
+                    args: vec![".".to_string(), "--include-untracked".to_string()],
+                    session: Some(session.name.clone()),
+                    description: format!("uncommitted changes in {}", session.session_name),
+                }
+            }
+            _ => {
+                self.status_message = Some("Select a task or session to review".into());
+                return;
+            }
+        };
+        self.should_run_difit = Some(job);
     }
 
     pub fn start_search(&mut self) {
