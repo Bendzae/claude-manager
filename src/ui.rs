@@ -948,7 +948,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut lines: Vec<ListItem> = vec![header_line(&widths)];
+    // A card only gets a closing bottom border once it has body content; empty
+    // and collapsed projects render as just the top border line.
     let mut card_open = false;
+    let mut card_has_body = false;
     let mut seen_card = false;
     let mut sel_row = 0u16;
     for row in rows {
@@ -961,10 +964,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 collapsed,
                 selected,
             } => {
-                if card_open {
+                if card_open && card_has_body {
                     lines.push(card_bottom(area.width));
-                    card_open = false;
                 }
+                card_open = false;
+                card_has_body = false;
                 if seen_card {
                     lines.push(ListItem::new(Line::raw("")));
                 }
@@ -973,9 +977,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     sel_row = lines.len() as u16;
                 }
                 lines.push(card_top(area.width, chevron, name, meta, branch, selected));
-                if collapsed {
-                    lines.push(card_bottom(area.width));
-                } else {
+                if !collapsed {
                     card_open = true;
                 }
             }
@@ -993,11 +995,12 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 if selected {
                     sel_row = lines.len() as u16;
                 }
+                card_has_body = true;
                 lines.push(wrap_body(area.width, rail, inner, selected));
             }
         }
     }
-    if card_open {
+    if card_open && card_has_body {
         lines.push(card_bottom(area.width));
     }
     app.selected_row.set(sel_row);
