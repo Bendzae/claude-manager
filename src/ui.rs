@@ -296,6 +296,92 @@ fn pr_number(url: &str) -> Option<&str> {
     }
 }
 
+// --- Overview row layout ---------------------------------------------------
+// Each row keeps the name/tree on the left and packs its metadata into
+// fixed-width columns flush against the right edge, so churn / status / branch
+// line up vertically across every row.
+const COL_CHURN: usize = 12; // e.g. "+1234 -567"
+const COL_BADGE: usize = 9; // PR / stacked / merged markers
+const COL_BRANCH: usize = 24; // branch name (truncated)
+const COL_GAP: usize = 2;
+const RIGHT_W: usize = COL_CHURN + COL_GAP + COL_BADGE + COL_GAP + COL_BRANCH;
+
+fn spans_width(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.width()).sum()
+}
+
+/// Right-align `spans` within a `width`-column field (left-padded with spaces).
+fn col_right<'a>(spans: Vec<Span<'a>>, width: usize) -> Vec<Span<'a>> {
+    let pad = width.saturating_sub(spans_width(&spans));
+    let mut out = Vec::with_capacity(spans.len() + 1);
+    if pad > 0 {
+        out.push(Span::raw(" ".repeat(pad)));
+    }
+    out.extend(spans);
+    out
+}
+
+/// Truncate to `max` display columns, appending '…' when cut.
+fn truncate_ellipsis(s: &str, max: usize) -> String {
+    let len = s.chars().count();
+    if len <= max {
+        s.to_string()
+    } else if max <= 1 {
+        "…".to_string()
+    } else {
+        let mut t: String = s.chars().take(max - 1).collect();
+        t.push('…');
+        t
+    }
+}
+
+fn churn_spans(added: usize, removed: usize) -> Vec<Span<'static>> {
+    if added == 0 && removed == 0 {
+        return Vec::new();
+    }
+    vec![
+        Span::styled(format!("+{added}"), Style::default().fg(Color::Green)),
+        Span::raw(" "),
+        Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
+    ]
+}
+
+/// Build the right-hand metadata block: churn | badge | branch, each a
+/// fixed-width right-aligned column so the block is always `RIGHT_W` wide.
+fn meta_columns<'a>(
+    churn: Vec<Span<'a>>,
+    badge: Vec<Span<'a>>,
+    branch: Vec<Span<'a>>,
+) -> Vec<Span<'a>> {
+    let mut out = col_right(churn, COL_CHURN);
+    out.push(Span::raw(" ".repeat(COL_GAP)));
+    out.extend(col_right(badge, COL_BADGE));
+    out.push(Span::raw(" ".repeat(COL_GAP)));
+    out.extend(col_right(branch, COL_BRANCH));
+    out
+}
+
+/// Compose a row: `left` spans, then the `right` metadata block padded so it
+/// sits flush against `width`. Narrow terminals fall back to inline layout.
+fn row_line<'a>(width: u16, left: Vec<Span<'a>>, right: Vec<Span<'a>>) -> Line<'a> {
+    if right.is_empty() {
+        return Line::from(left);
+    }
+    let left_w = spans_width(&left);
+    let right_w = spans_width(&right);
+    let avail = width as usize;
+    if left_w + right_w + COL_GAP > avail {
+        let mut spans = left;
+        spans.push(Span::raw("  "));
+        spans.extend(right);
+        return Line::from(spans);
+    }
+    let mut spans = left;
+    spans.push(Span::raw(" ".repeat(avail - left_w - right_w)));
+    spans.extend(right);
+    Line::from(spans)
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<ListItem> = Vec::new();
     let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
@@ -320,18 +406,12 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
                 };
-                let mut spans = vec![
+                let mut left = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(chevron, Style::default().fg(MUTED)),
                     Span::styled(&project.name, name_style),
                     Span::styled(format!("  {}", project.path), Style::default().fg(MUTED)),
                 ];
-                if let Some(branch) = app.project_branches.get(&project.name) {
-                    spans.push(Span::styled(
-                        format!("  ({})", branch),
-                        Style::default().fg(MUTED),
-                    ));
-                }
 
                 // Show task/session counts when project is collapsed
                 if collapsed {
@@ -359,14 +439,26 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         if active_sessions > 0 {
                             parts.push(format!("{active_sessions} active"));
                         }
-                        spans.push(Span::styled(
+                        left.push(Span::styled(
                             format!("  [{}]", parts.join(", ")),
                             Style::default().fg(Color::Green),
                         ));
                     }
                 }
 
-                lines.push(ListItem::new(Line::from(spans)));
+                // Current branch, aligned in the right-hand branch column.
+                let right = match app.project_branches.get(&project.name) {
+                    Some(branch) => col_right(
+                        vec![Span::styled(
+                            truncate_ellipsis(branch, COL_BRANCH),
+                            Style::default().fg(MUTED),
+                        )],
+                        RIGHT_W,
+                    ),
+                    None => Vec::new(),
+                };
+
+                lines.push(ListItem::new(row_line(area.width, left, right)));
             }
             app::ListItem::Task {
                 project_name, task, ..
@@ -380,79 +472,22 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default().fg(base_color)
                 };
-                let mut spans = vec![
+                let mut left = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(branch_char, tree_style),
                     Span::styled(&task.name, style),
                 ];
 
                 if task.archived {
-                    spans.push(Span::styled("  [archived]", Style::default().fg(MUTED)));
+                    left.push(Span::styled("  [archived]", Style::default().fg(MUTED)));
                 }
 
                 // Show auto-context indicator (nerd font: nf-md-file_document_edit \uf0dc8)
                 if task.auto_context {
-                    spans.push(Span::styled(
+                    left.push(Span::styled(
                         "  \u{f0dc8}",
                         Style::default().fg(Color::Cyan),
                     ));
-                }
-
-                // Show diff stats for the task branch vs main
-                let (added, removed) = app
-                    .task_diff_stats
-                    .get(&task.branch)
-                    .map(|s| (s.added, s.removed))
-                    .unwrap_or((0, 0));
-                if added > 0 || removed > 0 {
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(
-                        format!("+{added}"),
-                        Style::default().fg(Color::Green),
-                    ));
-                    spans.push(Span::styled(",", Style::default().fg(MUTED)));
-                    spans.push(Span::styled(
-                        format!("-{removed}"),
-                        Style::default().fg(Color::Red),
-                    ));
-                }
-
-                // Show PR icon if a PR exists for this branch
-                if app.pr_urls.contains_key(&task.branch) {
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(
-                        "\u{e728}",
-                        Style::default().fg(Color::Magenta),
-                    ));
-                }
-
-                // Stacked-PR badge: ⑆ marker + PR count (or "stacked" when not yet published).
-                if task.stacked {
-                    let count = app.stack_prs.get(&task.branch).map_or(0, |p| p.len());
-                    spans.push(Span::raw("  "));
-                    if count > 0 {
-                        spans.push(Span::styled(
-                            format!("\u{2446} {count} PR{}", if count == 1 { "" } else { "s" }),
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-                        ));
-                    } else {
-                        spans.push(Span::styled("\u{2446} stacked", Style::default().fg(MUTED)));
-                    }
-                }
-
-                spans.push(Span::styled(
-                    format!("  ({})", task.branch),
-                    Style::default().fg(MUTED),
-                ));
-
-                // Show base branch when not the default ("main")
-                if let Some(base) = task.base_branch.as_deref() {
-                    if !base.is_empty() && base != "main" {
-                        spans.push(Span::styled(
-                            format!(" ← {base}"),
-                            Style::default().fg(Color::Yellow),
-                        ));
-                    }
                 }
 
                 // Show active session count when task is collapsed
@@ -470,14 +505,54 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         })
                         .count();
                     if active > 0 {
-                        spans.push(Span::styled(
+                        left.push(Span::styled(
                             format!("  [{active} active]"),
                             Style::default().fg(Color::Green),
                         ));
                     }
                 }
 
-                lines.push(ListItem::new(Line::from(spans)));
+                // --- right-hand metadata columns: churn | badge | branch ---
+                let (added, removed) = app
+                    .task_diff_stats
+                    .get(&task.branch)
+                    .map(|s| (s.added, s.removed))
+                    .unwrap_or((0, 0));
+
+                // Badge column: stacked-PR marker takes precedence, else PR icon.
+                let badge = if task.stacked {
+                    let count = app.stack_prs.get(&task.branch).map_or(0, |p| p.len());
+                    if count > 0 {
+                        vec![Span::styled(
+                            format!("\u{2446} {count}"),
+                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        )]
+                    } else {
+                        vec![Span::styled("\u{2446}", Style::default().fg(MUTED))]
+                    }
+                } else if app.pr_urls.contains_key(&task.branch) {
+                    vec![Span::styled(
+                        "\u{e728}",
+                        Style::default().fg(Color::Magenta),
+                    )]
+                } else {
+                    Vec::new()
+                };
+
+                // Branch column: branch name, with "← base" suffix for non-main bases.
+                let branch_label = match task.base_branch.as_deref() {
+                    Some(base) if !base.is_empty() && base != "main" => {
+                        format!("{} \u{2190} {base}", task.branch)
+                    }
+                    _ => task.branch.clone(),
+                };
+                let branch = vec![Span::styled(
+                    truncate_ellipsis(&branch_label, COL_BRANCH),
+                    Style::default().fg(MUTED),
+                )];
+
+                let right = meta_columns(churn_spans(added, removed), badge, branch);
+                lines.push(ListItem::new(row_line(area.width, left, right)));
 
                 // Stacked task: render its PRs as a vertical chain beneath the row
                 // (top of stack first → base at the bottom), unless collapsed.
@@ -625,41 +700,38 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let branch_char = if session_last { "└─ " } else { "├─ " };
 
                 let wt = session.worktree_path();
-                let mut spans = vec![
+                let mut left = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(continuation, tree_style),
                     Span::styled(branch_char, tree_style),
                     Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
                 ];
                 if wt.is_some() {
-                    spans.push(Span::styled("\u{e0a0} ", Style::default().fg(TREE)));
+                    left.push(Span::styled("\u{e0a0} ", Style::default().fg(TREE)));
                 } else {
-                    spans.push(Span::styled("⌂ ", Style::default().fg(ACCENT)));
+                    left.push(Span::styled("⌂ ", Style::default().fg(ACCENT)));
                 }
-                spans.push(Span::styled(&session.session_name, style));
-                if app
+                left.push(Span::styled(&session.session_name, style));
+
+                // --- right-hand metadata columns: churn | merged badge ---
+                let merged = app
                     .merged_sessions
                     .get(&session.name)
                     .copied()
-                    .unwrap_or(false)
-                {
-                    spans.push(Span::styled("  ✓", Style::default().fg(ACCENT)));
-                }
-                if let Some(stats) = app.diff_stats.get(&session.name) {
-                    if !stats.is_empty() {
-                        spans.push(Span::raw("  "));
-                        spans.push(Span::styled(
-                            format!("+{}", stats.added),
-                            Style::default().fg(Color::Green),
-                        ));
-                        spans.push(Span::styled(",", Style::default().fg(MUTED)));
-                        spans.push(Span::styled(
-                            format!("-{}", stats.removed),
-                            Style::default().fg(Color::Red),
-                        ));
-                    }
-                }
-                lines.push(ListItem::new(Line::from(spans)));
+                    .unwrap_or(false);
+                let badge = if merged {
+                    vec![Span::styled("\u{2713} merged", Style::default().fg(ACCENT))]
+                } else {
+                    Vec::new()
+                };
+                let churn = app
+                    .diff_stats
+                    .get(&session.name)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| churn_spans(s.added, s.removed))
+                    .unwrap_or_default();
+                let right = meta_columns(churn, badge, Vec::new());
+                lines.push(ListItem::new(row_line(area.width, left, right)));
             }
         }
     }
@@ -1555,5 +1627,53 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
         let status = Paragraph::new(Span::styled(content, style));
         f.render_widget(status, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_ellipsis_keeps_short_strings() {
+        assert_eq!(truncate_ellipsis("feat/auth", 24), "feat/auth");
+    }
+
+    #[test]
+    fn truncate_ellipsis_cuts_long_strings_with_marker() {
+        let t = truncate_ellipsis("feature/really-long-branch-name-here", 10);
+        assert_eq!(t.chars().count(), 10);
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn meta_columns_is_always_right_w_wide() {
+        // Fully populated and fully empty rows must both span exactly RIGHT_W,
+        // otherwise columns would drift between rows.
+        let full = meta_columns(
+            churn_spans(1234, 567),
+            vec![Span::raw("PR")],
+            vec![Span::raw(truncate_ellipsis("feat/auth", COL_BRANCH))],
+        );
+        let empty = meta_columns(Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(spans_width(&full), RIGHT_W);
+        assert_eq!(spans_width(&empty), RIGHT_W);
+    }
+
+    #[test]
+    fn row_line_fills_available_width() {
+        let left = vec![Span::raw("  ├─ my-task")];
+        let right = meta_columns(churn_spans(10, 2), Vec::new(), Vec::new());
+        let line = row_line(80, left, right);
+        assert_eq!(line.width(), 80);
+    }
+
+    #[test]
+    fn row_line_falls_back_inline_when_too_narrow() {
+        let left = vec![Span::raw("a very long task name that eats the row")];
+        let right = meta_columns(churn_spans(10, 2), Vec::new(), Vec::new());
+        // 20 cols cannot fit left + RIGHT_W; should not panic and stays readable.
+        let line = row_line(20, left, right);
+        assert!(line.width() >= 20);
     }
 }
