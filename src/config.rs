@@ -29,12 +29,6 @@ fn kb_context_menu() -> char {
 fn kb_add_project() -> char {
     'p'
 }
-fn kb_scroll_preview_down() -> char {
-    'J'
-}
-fn kb_scroll_preview_up() -> char {
-    'K'
-}
 
 // Context menu action key defaults
 fn cm_add_task() -> char {
@@ -48,9 +42,6 @@ fn cm_new_session_no_worktree() -> char {
 }
 fn cm_new_adhoc_session() -> char {
     'A'
-}
-fn cm_toggle_auto_context() -> char {
-    'x'
 }
 fn cm_update() -> char {
     'u'
@@ -73,12 +64,6 @@ fn cm_delete() -> char {
 fn cm_merge() -> char {
     'm'
 }
-fn cm_create_terminal() -> char {
-    'c'
-}
-fn cm_kill_terminal() -> char {
-    'k'
-}
 fn cm_copy_path() -> char {
     'y'
 }
@@ -91,11 +76,23 @@ fn cm_archive() -> char {
 fn cm_toggle_stacked() -> char {
     's'
 }
+
+fn cm_review() -> char {
+    'r'
+}
+
+fn cm_terminal() -> char {
+    't'
+}
 fn kb_toggle_archive_view() -> char {
     'Z'
 }
 fn kb_search() -> char {
     '/'
+}
+
+fn kb_cycle_theme() -> char {
+    't'
 }
 
 fn is_false(b: &bool) -> bool {
@@ -118,9 +115,6 @@ pub struct ContextMenuKeyBindings {
     /// New adhoc session on project (default: A)
     #[serde(default = "cm_new_adhoc_session")]
     pub new_adhoc_session: char,
-    /// Toggle auto-context (default: x)
-    #[serde(default = "cm_toggle_auto_context")]
-    pub toggle_auto_context: char,
     /// Update branch (default: u)
     #[serde(default = "cm_update")]
     pub update: char,
@@ -142,12 +136,6 @@ pub struct ContextMenuKeyBindings {
     /// Merge session (default: m)
     #[serde(default = "cm_merge")]
     pub merge: char,
-    /// Create terminal window (default: c)
-    #[serde(default = "cm_create_terminal")]
-    pub create_terminal: char,
-    /// Kill terminal window (default: k)
-    #[serde(default = "cm_kill_terminal")]
-    pub kill_terminal: char,
     /// Copy session worktree path to clipboard (default: y)
     #[serde(default = "cm_copy_path")]
     pub copy_path: char,
@@ -160,6 +148,12 @@ pub struct ContextMenuKeyBindings {
     /// Toggle stacked-PR mode for a task (default: s)
     #[serde(default = "cm_toggle_stacked")]
     pub toggle_stacked: char,
+    /// Review diff in difit (default: r)
+    #[serde(default = "cm_review")]
+    pub review: char,
+    /// Open/attach a terminal in the session worktree (default: t)
+    #[serde(default = "cm_terminal")]
+    pub terminal: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -169,7 +163,6 @@ impl Default for ContextMenuKeyBindings {
             new_session: cm_new_session(),
             new_session_no_worktree: cm_new_session_no_worktree(),
             new_adhoc_session: cm_new_adhoc_session(),
-            toggle_auto_context: cm_toggle_auto_context(),
             update: cm_update(),
             push: cm_push(),
             checkout: cm_checkout(),
@@ -177,12 +170,12 @@ impl Default for ContextMenuKeyBindings {
             rename: cm_rename(),
             delete: cm_delete(),
             merge: cm_merge(),
-            create_terminal: cm_create_terminal(),
-            kill_terminal: cm_kill_terminal(),
             copy_path: cm_copy_path(),
             set_base_branch: cm_set_base_branch(),
             archive: cm_archive(),
             toggle_stacked: cm_toggle_stacked(),
+            review: cm_review(),
+            terminal: cm_terminal(),
         }
     }
 }
@@ -210,18 +203,15 @@ pub struct KeyBindings {
     /// Add project from current directory (default: p)
     #[serde(default = "kb_add_project")]
     pub add_project: char,
-    /// Scroll preview pane down (default: J)
-    #[serde(default = "kb_scroll_preview_down")]
-    pub scroll_preview_down: char,
-    /// Scroll preview pane up (default: K)
-    #[serde(default = "kb_scroll_preview_up")]
-    pub scroll_preview_up: char,
     /// Toggle archived task view (default: Z)
     #[serde(default = "kb_toggle_archive_view")]
     pub toggle_archive_view: char,
     /// Filter tasks by substring (default: /)
     #[serde(default = "kb_search")]
     pub search: char,
+    /// Cycle the color theme (default: t)
+    #[serde(default = "kb_cycle_theme")]
+    pub cycle_theme: char,
     /// Context menu action keybindings
     #[serde(default)]
     pub context_menu_keys: ContextMenuKeyBindings,
@@ -236,10 +226,9 @@ impl Default for KeyBindings {
             toggle_collapse: kb_toggle_collapse(),
             context_menu: kb_context_menu(),
             add_project: kb_add_project(),
-            scroll_preview_down: kb_scroll_preview_down(),
-            scroll_preview_up: kb_scroll_preview_up(),
             toggle_archive_view: kb_toggle_archive_view(),
             search: kb_search(),
+            cycle_theme: kb_cycle_theme(),
             context_menu_keys: ContextMenuKeyBindings::default(),
         }
     }
@@ -267,8 +256,6 @@ impl KeyBindings {
 pub struct Task {
     pub name: String,
     pub branch: String,
-    #[serde(default)]
-    pub auto_context: bool,
     /// Base branch for `update` (rebase target) and diff stats.
     /// `None` means default to "main".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -367,6 +354,24 @@ pub fn base_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".claude-manager")
+}
+
+/// Path to the persisted UI theme name.
+pub fn theme_path() -> PathBuf {
+    base_dir().join("theme")
+}
+
+/// Load the persisted theme name, if any.
+pub fn load_theme() -> Option<String> {
+    fs::read_to_string(theme_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Persist the selected theme name.
+pub fn save_theme(name: &str) {
+    let _ = fs::write(theme_path(), name);
 }
 
 /// Path to the shared task context file for a given project/branch.
@@ -609,7 +614,6 @@ impl Config {
                 project.tasks.push(Task {
                     name: task_name,
                     branch,
-                    auto_context: false,
                     base_branch: None,
                     archived: false,
                     stacked: false,
@@ -678,16 +682,6 @@ impl Config {
         false
     }
 
-    pub fn toggle_auto_context(&mut self, project_name: &str, task_name: &str) -> Option<bool> {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
-            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
-                task.auto_context = !task.auto_context;
-                return Some(task.auto_context);
-            }
-        }
-        None
-    }
-
     /// Set stacked-PR mode for the task identified by `project_path` + `branch`
     /// (both stable across renames — the keys an external caller like the
     /// `stacked-pr` skill knows). Returns true if the task was found.
@@ -745,7 +739,6 @@ impl Config {
         self.projects.iter().any(|p| p.path == project_path)
     }
 
-    #[allow(dead_code)]
     pub fn remove_project(&mut self, path: &str) {
         self.projects.retain(|p| p.path != path);
     }

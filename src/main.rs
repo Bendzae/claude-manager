@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod theme;
 mod tmux;
 mod ui;
 mod worker;
@@ -219,39 +220,22 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         }
                         KeyCode::Up => app.move_up(),
                         KeyCode::Down => app.move_down(),
-                        KeyCode::Char(c) if c == kb.move_up && app.diff_focused() => {
-                            app.move_diff_cursor_up()
-                        }
-                        KeyCode::Char(c) if c == kb.move_down && app.diff_focused() => {
-                            app.move_diff_cursor_down()
-                        }
                         KeyCode::Char(c) if c == kb.move_up => app.move_up(),
                         KeyCode::Char(c) if c == kb.move_down => app.move_down(),
-                        KeyCode::Char('c') if app.diff_focused() => app.start_add_diff_comment(),
-                        KeyCode::Char('x') if app.diff_focused() => app.delete_diff_comment(),
-                        KeyCode::Char('s') if app.diff_focused() => app.submit_diff_comments(false),
-                        KeyCode::Char('S') if app.diff_focused() => app.submit_diff_comments(true),
                         KeyCode::Enter => {
                             app.enter_selected();
-                            if app.should_attach.is_some()
-                                || app.should_attach_window.is_some()
-                                || app.should_open_editor.is_some()
-                            {
+                            if app.should_attach.is_some() || app.should_open_editor.is_some() {
                                 return Ok(());
                             }
                         }
                         KeyCode::Char(c) if c == kb.toggle_collapse => app.toggle_collapse(),
                         KeyCode::Char(c) if c == kb.context_menu => app.open_context_menu(),
                         KeyCode::Char(c) if c == kb.add_project => app.start_add_project(),
-                        KeyCode::Char(c) if c == kb.scroll_preview_down => {
-                            app.scroll_preview_down()
-                        }
-                        KeyCode::Char(c) if c == kb.scroll_preview_up => app.scroll_preview_up(),
                         KeyCode::Char(c) if c == kb.toggle_archive_view => {
                             app.toggle_archive_view()
                         }
                         KeyCode::Char(c) if c == kb.search => app.start_search(),
-                        KeyCode::Tab => app.toggle_preview_mode(),
+                        KeyCode::Char(c) if c == kb.cycle_theme => app.cycle_theme(),
                         _ => {}
                     },
                     InputMode::ContextMenu => match key.code {
@@ -295,6 +279,16 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                 app.execute_context_action(action);
                             }
                         }
+                        _ => {}
+                    },
+                    InputMode::AddProjectPath => match key.code {
+                        KeyCode::Enter => app.confirm_add_project_path(),
+                        KeyCode::Tab => app.complete_project_path(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
                     InputMode::AddProjectName => match key.code {
@@ -404,27 +398,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
-                    InputMode::AddDiffComment => match key.code {
-                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-                            app.input_buffer.push('\n');
-                        }
-                        KeyCode::Enter => app.confirm_add_diff_comment(),
-                        KeyCode::Esc => app.cancel_input(),
-                        KeyCode::Backspace => {
-                            app.input_buffer.pop();
-                        }
-                        KeyCode::Char(c) => app.input_buffer.push(c),
-                        _ => {}
-                    },
-                    InputMode::SelectSubmitSession => match key.code {
-                        KeyCode::Esc => app.cancel_input(),
-                        KeyCode::Up => app.move_submit_session_up(),
-                        KeyCode::Down => app.move_submit_session_down(),
-                        KeyCode::Char(c) if c == kb.move_up => app.move_submit_session_up(),
-                        KeyCode::Char(c) if c == kb.move_down => app.move_submit_session_down(),
-                        KeyCode::Enter => app.confirm_submit_session(),
-                        _ => {}
-                    },
                     InputMode::SetBaseBranch => match key.code {
                         KeyCode::Enter => app.confirm_set_base_branch(),
                         KeyCode::Esc => app.cancel_input(),
@@ -449,6 +422,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     },
                 }
             }
+        }
+
+        // A context-menu action may request attaching to a session/terminal or
+        // opening the editor; suspend the TUI so the main loop can run it.
+        if app.should_attach.is_some()
+            || app.should_attach_window.is_some()
+            || app.should_open_editor.is_some()
+        {
+            return Ok(());
         }
 
         // Apply background updates (non-blocking)

@@ -216,7 +216,6 @@ pub fn create_session(
     copy_patterns: &[String],
     setup_commands: &[String],
     initial_prompt: Option<&str>,
-    auto_context: bool,
     startup_skills: &[String],
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
@@ -284,11 +283,6 @@ pub fn create_session(
 
     // Always install the claude-manager plugin (skills + plugin enable)
     install_claude_manager_plugin(&work_dir);
-
-    // Set up stop hook if auto_context is enabled
-    if auto_context {
-        setup_task_context(&work_dir, task_name, task_branch, &context_path);
-    }
 
     let session_branch = if use_worktree {
         let branch = format!("{task_branch}-{}", sanitize(session_name));
@@ -459,11 +453,7 @@ pub fn recreate_adhoc_session(
 /// Reuses the existing worktree if present; does NOT send an initial prompt.
 /// `tmux_name` is the expected session name (which may differ from what
 /// build_tmux_name would produce if the session was renamed).
-pub fn recreate_session(
-    tmux_name: &str,
-    record: &crate::config::SessionRecord,
-    auto_context: bool,
-) -> Result<String> {
+pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) -> Result<String> {
     let work_dir = if record.use_worktree {
         let wt_path = worktree_dir(
             &record.project_name,
@@ -488,16 +478,6 @@ pub fn recreate_session(
 
     // Always install plugin
     install_claude_manager_plugin(&work_dir);
-
-    // Re-apply stop hook if auto_context is on
-    if auto_context {
-        setup_task_context(
-            &work_dir,
-            &record.task_name,
-            &record.task_branch,
-            &context_path,
-        );
-    }
 
     let session_branch = if record.use_worktree {
         Some(format!(
@@ -634,6 +614,67 @@ pub fn attach_session(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Attach to a specific window of a session (selects it first).
+pub fn attach_session_window(session_name: &str, window_idx: usize) -> Result<()> {
+    let _ = Command::new("tmux")
+        .args([
+            "select-window",
+            "-t",
+            &format!("{session_name}:{window_idx}"),
+        ])
+        .output();
+
+    let status = Command::new("tmux")
+        .args(["attach-session", "-t", session_name])
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to attach to tmux session");
+    }
+    Ok(())
+}
+
+/// Number of terminal windows in a session (windows past index 0, the agent).
+pub fn count_terminal_windows(session_name: &str) -> usize {
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", session_name, "-F", "#{window_index}"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|line| line.trim().parse::<usize>().is_ok_and(|i| i > 0))
+            .count(),
+        _ => 0,
+    }
+}
+
+/// Create a terminal window in the session rooted at `work_dir`. Returns its
+/// window index.
+pub fn create_terminal_window(session_name: &str, work_dir: &str) -> Result<usize> {
+    let output = Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            session_name,
+            "-c",
+            work_dir,
+            "-P",
+            "-F",
+            "#{window_index}",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to create terminal window");
+    }
+
+    let idx = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(1);
+    Ok(idx)
+}
+
 fn get_session_env(session_name: &str, var: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["show-environment", "-t", session_name, var])
@@ -763,13 +804,6 @@ fn copy_patterns_to_worktree(project_path: &str, worktree_path: &str, patterns: 
         .output();
 }
 
-/// Get the working directory for a tmux session (worktree or project path).
-pub fn get_session_work_dir(session_name: &str) -> Option<String> {
-    get_session_env(session_name, "CM_WORKTREE_PATH")
-        .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))
-}
-
-/// Remove auto-context hooks from a work directory's .claude/settings.local.json.
 pub fn remove_task_context_hooks(work_dir: &str) {
     let settings_path = Path::new(work_dir).join(".claude/settings.local.json");
     let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
@@ -948,122 +982,6 @@ fn install_claude_manager_plugin(work_dir: &str) {
             let _ = fs::write(&exclude_path, content);
         }
     }
-}
-
-/// Set up shared task context for a session (stop hook only, when auto_context is enabled).
-/// Creates the context file if it doesn't exist and writes the stop hook into settings.
-pub fn setup_task_context(work_dir: &str, task_name: &str, task_branch: &str, context_path: &Path) {
-    let context_path_str = context_path.to_string_lossy().to_string();
-
-    // Create context file with initial content if it doesn't exist
-    if !context_path.exists() {
-        if let Some(parent) = context_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let initial = format!("# {task_name}\nBranch: {task_branch}\n");
-        let _ = fs::write(context_path, initial);
-    }
-
-    // Write .claude/settings.local.json with stop hook only
-    let claude_dir = Path::new(work_dir).join(".claude");
-    let _ = fs::create_dir_all(&claude_dir);
-
-    // Stop hook: runs claude -p in the background to update context file asynchronously
-    let hook_dir = context_path.parent().unwrap_or(context_path);
-    let hook_script_path = hook_dir.join("stop-hook.sh");
-    let stop_script = format!(
-        r#"#!/bin/bash
-CONTEXT_FILE='{context}'
-INPUT=$(cat)
-MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
-SUMMARY=$(echo "$INPUT" | jq -r '.transcript_summary // empty')
-[ -z "$MSG" ] && exit 0
-
-# Run context update in the background so the user isn't blocked
-(
-TMPFILE=$(mktemp)
-CURRENT=$(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
-cat > "$TMPFILE" <<PROMPT_END
-You are a file writer. You read context and produce updated file content. You NEVER produce commentary, explanations, or meta-text. Your entire output is written directly to a file.
-
-Current file:
-<current>
-$CURRENT
-</current>
-
-Conversation summary:
-<summary>
-$SUMMARY
-</summary>
-
-Latest message:
-<message>
-$MSG
-</message>
-
-Rules:
-- Output the updated file content and NOTHING else
-- The first line MUST be a markdown heading (starting with the hash symbol and a space)
-- Do NOT output any commentary, explanations, or meta-text
-- If nothing changed, output the current file content exactly as-is
-- Maintain a clear summary of the task goal, what has been done, and what is known
-- Include anything useful for other agents picking up this task
-- Remove outdated info, keep it concise
-PROMPT_END
-
-unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
-cd /tmp
-OUTFILE="$CONTEXT_FILE.tmp"
-claude -p --model sonnet < "$TMPFILE" > "$OUTFILE" 2>/dev/null
-
-# Validate output: must be non-empty and start with a markdown heading
-if [ -s "$OUTFILE" ] && head -1 "$OUTFILE" | grep -q '^#'; then
-    mv "$OUTFILE" "$CONTEXT_FILE"
-else
-    rm -f "$OUTFILE"
-fi
-
-rm -f "$TMPFILE"
-) &
-disown
-exit 0"#,
-        context = context_path_str
-    );
-    let _ = fs::write(&hook_script_path, &stop_script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&hook_script_path, fs::Permissions::from_mode(0o755));
-    }
-    let hook_script_str = hook_script_path.to_string_lossy().to_string();
-
-    let settings = serde_json::json!({
-        "hooks": {
-            "Stop": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": hook_script_str
-                }]
-            }]
-        }
-    });
-
-    let settings_path = claude_dir.join("settings.local.json");
-
-    // Merge with existing settings if present
-    let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    if let Some(obj) = existing.as_object_mut() {
-        obj.insert("hooks".to_string(), settings["hooks"].clone());
-    }
-
-    let _ = fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&existing).unwrap_or_default(),
-    );
 }
 
 /// Check if a worktree has uncommitted changes.
@@ -1608,117 +1526,10 @@ fn find_worktree_for_branch(project_path: &str, branch: &str) -> Option<String> 
     None
 }
 
-pub fn capture_pane(session_name: &str) -> Option<String> {
-    let output = Command::new("tmux")
-        .args(["capture-pane", "-t", session_name, "-p", "-e"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    Some(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Count the number of terminal windows (non-claude windows) in a session.
-/// Window 0 is always claude; terminals are windows 1+.
-pub fn count_terminal_windows(session_name: &str) -> usize {
-    let output = Command::new("tmux")
-        .args(["list-windows", "-t", session_name, "-F", "#{window_index}"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            // Count windows with index > 0
-            stdout
-                .lines()
-                .filter(|line| line.trim().parse::<usize>().is_ok_and(|i| i > 0))
-                .count()
-        }
-        _ => 0,
-    }
-}
-
-/// Create a new terminal window in the session. Returns the window index.
-pub fn create_terminal_window(session_name: &str) -> Result<usize> {
-    // Get the working directory from window 0 (claude)
-    let dir_output = Command::new("tmux")
-        .args([
-            "display-message",
-            "-t",
-            &format!("{session_name}:0"),
-            "-p",
-            "#{pane_current_path}",
-        ])
-        .output()?;
-    let work_dir = String::from_utf8_lossy(&dir_output.stdout)
-        .trim()
-        .to_string();
-
-    let output = Command::new("tmux")
-        .args([
-            "new-window",
-            "-t",
-            session_name,
-            "-c",
-            &work_dir,
-            "-P",
-            "-F",
-            "#{window_index}",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        bail!("Failed to create terminal window");
-    }
-
-    let idx = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(1);
-    Ok(idx)
-}
-
-/// Kill a terminal window by its 0-indexed terminal number (window index = terminal_idx + 1).
-pub fn kill_terminal_window(session_name: &str, terminal_idx: usize) -> Result<()> {
-    let window_idx = terminal_idx + 1;
-    let output = Command::new("tmux")
-        .args(["kill-window", "-t", &format!("{session_name}:{window_idx}")])
-        .output()?;
-
-    if !output.status.success() {
-        bail!("Failed to kill terminal window");
-    }
-    Ok(())
-}
-
-/// Attach to a specific window in a session.
-pub fn attach_session_window(session_name: &str, window_idx: usize) -> Result<()> {
-    // Select the window first, then attach
-    let _ = Command::new("tmux")
-        .args([
-            "select-window",
-            "-t",
-            &format!("{session_name}:{window_idx}"),
-        ])
-        .output();
-
-    let status = Command::new("tmux")
-        .args(["attach-session", "-t", session_name])
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to attach to tmux session");
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct DiffStats {
     pub added: usize,
     pub removed: usize,
-    pub diff_output: String,
 }
 
 impl DiffStats {
@@ -1727,43 +1538,12 @@ impl DiffStats {
     }
 }
 
-/// Check if a session's worktree has no differences from its task branch.
-/// Returns `Some(true)` if the working tree (including uncommitted changes)
-/// is identical to the task branch.
-pub fn is_session_merged(session_name: &str) -> Option<bool> {
-    let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
-    let task_branch = get_session_env(session_name, "CM_TASK_BRANCH")?;
-
-    if !Path::new(&worktree_path).exists() {
-        return None;
-    }
-
-    // Check if working tree has any differences from the task branch
-    // (covers both committed and uncommitted changes)
-    let no_diff = Command::new("git")
-        .args(["-C", &worktree_path, "diff", "--quiet", &task_branch])
-        .output()
-        .ok()?
-        .status
-        .success();
-
-    // Also check for untracked files
-    if no_diff {
-        let output = Command::new("git")
-            .args([
-                "-C",
-                &worktree_path,
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-            ])
-            .output()
-            .ok()?;
-        let has_untracked = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
-        return Some(!has_untracked);
-    }
-
-    Some(false)
+/// The branch currently checked out in the session's worktree (or the project
+/// directory for no-worktree sessions).
+pub fn get_session_branch(session_name: &str) -> Option<String> {
+    let path = get_session_env(session_name, "CM_WORKTREE_PATH")
+        .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))?;
+    current_branch(&path)
 }
 
 /// Compute diff stats for a session's worktree against its base commit.
@@ -1806,14 +1586,33 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
         }
     }
 
-    Some(DiffStats {
-        added,
-        removed,
-        diff_output,
-    })
+    Some(DiffStats { added, removed })
 }
 
 /// Compute diff stats for a task branch against its base branch.
+/// Resolve a diff base ref, preferring `origin/<base>` when it exists (matching
+/// `get_branch_diff`), else the local branch name.
+pub fn resolve_base_ref(project_path: &str, base_branch: &str) -> String {
+    let remote = format!("origin/{base_branch}");
+    let has_remote = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &remote,
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if has_remote {
+        remote
+    } else {
+        base_branch.to_string()
+    }
+}
+
 pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> Option<DiffStats> {
     // Try origin/<base> first, fall back to local <base>
     let remote_ref = format!("origin/{base_branch}");
@@ -1855,11 +1654,7 @@ pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> O
         }
     }
 
-    Some(DiffStats {
-        added,
-        removed,
-        diff_output,
-    })
+    Some(DiffStats { added, removed })
 }
 
 /// Raw signals from a tmux session for status detection.
@@ -2421,7 +2216,6 @@ https://github.com/o/r/pull/12 : Add model
         let stats = DiffStats {
             added: 0,
             removed: 0,
-            diff_output: String::new(),
         };
         assert!(stats.is_empty());
     }
@@ -2431,7 +2225,6 @@ https://github.com/o/r/pull/12 : Add model
         let stats = DiffStats {
             added: 5,
             removed: 3,
-            diff_output: "some diff".into(),
         };
         assert!(!stats.is_empty());
     }

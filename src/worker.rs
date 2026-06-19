@@ -5,30 +5,6 @@ use std::time::Duration;
 
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
 
-/// What the UI has selected.
-#[derive(Clone)]
-pub enum Selection {
-    None,
-    Task {
-        project_name: String,
-        project_path: String,
-        branch: String,
-        base_branch: String,
-    },
-    Session {
-        name: String,
-        preview_mode: PreviewMode,
-    },
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum PreviewMode {
-    Output,
-    Diff,
-    Context,
-    Terminal(usize), // 0-indexed terminal number
-}
-
 /// Task info for computing branch diffs.
 #[derive(Clone)]
 pub struct TaskInfo {
@@ -41,7 +17,6 @@ pub struct TaskInfo {
 
 /// Shared state the UI thread writes to, the worker thread reads from.
 pub struct WorkerHints {
-    pub selection: Selection,
     pub tasks: Vec<TaskInfo>,
     /// Project name → project path, so the worker can query the current branch.
     pub project_paths: Vec<(String, String)>,
@@ -52,15 +27,10 @@ pub struct WorkerUpdate {
     pub sessions: Vec<TmuxSession>,
     pub statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
-    pub preview_content: Option<String>,
-    pub task_diff: Option<DiffStats>,
-    pub task_context_content: Option<String>,
     /// Keyed by branch name.
     pub task_diff_stats: HashMap<String, DiffStats>,
-    /// Sessions whose branch is fully merged into the task branch.
-    pub merged_sessions: HashMap<String, bool>,
-    /// Keyed by session tmux name.
-    pub terminal_counts: HashMap<String, usize>,
+    /// Branch checked out in each session's worktree, keyed by session tmux name.
+    pub session_branches: HashMap<String, String>,
     /// PR URLs keyed by branch name.
     pub pr_urls: HashMap<String, String>,
     /// Stacked tasks' PRs (bottom→top `(url, title)`), keyed by branch name.
@@ -80,7 +50,6 @@ pub struct Worker {
 impl Worker {
     pub fn spawn() -> Self {
         let hints = Arc::new(Mutex::new(WorkerHints {
-            selection: Selection::None,
             tasks: Vec::new(),
             project_paths: Vec::new(),
         }));
@@ -98,8 +67,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
     let mut content_hashes: HashMap<String, u64> = HashMap::new();
     let mut stable_ticks: HashMap<String, u32> = HashMap::new();
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
-    let mut merged_sessions: HashMap<String, bool> = HashMap::new();
-    let mut terminal_counts: HashMap<String, usize> = HashMap::new();
+    let mut session_branches: HashMap<String, String> = HashMap::new();
     let mut pr_urls: HashMap<String, String> = HashMap::new();
     let mut stack_prs: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut tick: u64 = 0;
@@ -156,29 +124,21 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
         if tick % 4 == 0 {
             let session_names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
             diff_stats.retain(|k, _| session_names.contains(k));
-            merged_sessions.retain(|k, _| session_names.contains(k));
-            terminal_counts.retain(|k, _| session_names.contains(k));
+            session_branches.retain(|k, _| session_names.contains(k));
 
             for session in &sessions {
                 if let Some(stats) = tmux::get_diff_stats(&session.name) {
                     diff_stats.insert(session.name.clone(), stats);
                 }
-                if let Some(merged) = tmux::is_session_merged(&session.name) {
-                    merged_sessions.insert(session.name.clone(), merged);
+                if let Some(branch) = tmux::get_session_branch(&session.name) {
+                    session_branches.insert(session.name.clone(), branch);
                 }
-                let count = tmux::count_terminal_windows(&session.name);
-                terminal_counts.insert(session.name.clone(), count);
             }
         }
 
-        // Handle selection-based content
-        let (selection, tasks, project_paths) = {
+        let (tasks, project_paths) = {
             let h = hints.lock().unwrap();
-            (
-                h.selection.clone(),
-                h.tasks.clone(),
-                h.project_paths.clone(),
-            )
+            (h.tasks.clone(), h.project_paths.clone())
         };
 
         // Compute task branch diffs (less frequently)
@@ -236,50 +196,12 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             }
         }
 
-        let (preview_content, task_diff, task_context_content) = match &selection {
-            Selection::None => (None, None, None),
-            Selection::Task {
-                project_name,
-                project_path,
-                branch,
-                base_branch,
-            } => {
-                let diff = if tick % 4 == 0 {
-                    tmux::get_branch_diff(project_path, branch, base_branch)
-                } else {
-                    None
-                };
-                let context = {
-                    let ctx_path = crate::config::task_context_path(project_name, branch);
-                    std::fs::read_to_string(&ctx_path).ok()
-                };
-                (None, diff, context)
-            }
-            Selection::Session { name, preview_mode } => {
-                let content = match preview_mode {
-                    PreviewMode::Output => tmux::capture_pane(&format!("{name}:0")),
-                    PreviewMode::Diff => diff_stats.get(name).map(|s| s.diff_output.clone()),
-                    PreviewMode::Context => None,
-                    PreviewMode::Terminal(idx) => {
-                        // Terminal windows are 1-indexed (window 0 is claude)
-                        let target = format!("{name}:{}", idx + 1);
-                        tmux::capture_pane(&target)
-                    }
-                };
-                (content, None, None)
-            }
-        };
-
         let update = WorkerUpdate {
             sessions,
             statuses,
             diff_stats: diff_stats.clone(),
-            merged_sessions: merged_sessions.clone(),
-            preview_content,
-            task_diff,
-            task_context_content,
+            session_branches: session_branches.clone(),
             task_diff_stats,
-            terminal_counts: terminal_counts.clone(),
             pr_urls: pr_urls.clone(),
             stack_prs: stack_prs.clone(),
             project_branches,
