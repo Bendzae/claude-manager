@@ -188,6 +188,8 @@ pub struct App {
     pub view_archived: bool,
     /// Active filter substring; tasks/projects/sessions are matched case-insensitively.
     pub search_query: String,
+    /// Index into `theme::THEMES` of the active color theme.
+    pub theme_index: usize,
 }
 
 pub struct OpResult {
@@ -323,6 +325,9 @@ impl App {
             pending_submit: None,
             view_archived: false,
             search_query: String::new(),
+            theme_index: config::load_theme()
+                .map(|n| crate::theme::by_name(&n))
+                .unwrap_or(0),
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -1051,6 +1056,13 @@ impl App {
             "Showing active tasks".into()
         });
         self.sync_worker_hints();
+    }
+
+    pub fn cycle_theme(&mut self) {
+        self.theme_index = (self.theme_index + 1) % crate::theme::THEMES.len();
+        let name = crate::theme::THEMES[self.theme_index].name;
+        crate::config::save_theme(name);
+        self.status_message = Some(format!("Theme: {name}"));
     }
 
     pub fn start_search(&mut self) {

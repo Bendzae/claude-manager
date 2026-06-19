@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod theme;
 mod tmux;
 mod ui;
 mod worker;
@@ -251,6 +252,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.toggle_archive_view()
                         }
                         KeyCode::Char(c) if c == kb.search => app.start_search(),
+                        KeyCode::Char(c) if c == kb.cycle_theme => app.cycle_theme(),
                         KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },

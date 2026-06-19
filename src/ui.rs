@@ -9,6 +9,7 @@ use termimad::MadSkin;
 use termimad::minimad::Alignment;
 
 use crate::app::{self, App, DiffComment, DiffSide, InputMode, PreviewMode, task_diff_key};
+use crate::theme::current;
 use crate::tmux::{self, SessionStatus};
 
 #[derive(Clone)]
@@ -18,13 +19,6 @@ pub struct DiffLineLoc {
     pub side: DiffSide,
 }
 
-const ACCENT: Color = Color::Cyan;
-const MUTED: Color = Color::Rgb(90, 90, 100);
-const TREE: Color = Color::Rgb(60, 60, 70);
-const TASK_COLOR: Color = Color::Yellow;
-const SESSION_COLOR: Color = Color::Green;
-/// Background tint for the selected row.
-const SELECT_BG: Color = Color::Rgb(38, 40, 54);
 const PAD_LEFT: u16 = 1;
 const PAD_TOP: u16 = 1;
 
@@ -33,16 +27,16 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 /// Status icon + colour for a session, used both inline and for the status rail.
 fn status_glyph(status: SessionStatus, tick: usize) -> (&'static str, Color) {
     match status {
-        SessionStatus::Running => (SPINNER[tick % SPINNER.len()], Color::Yellow),
-        SessionStatus::WaitingForInput => ("●", Color::Green),
-        SessionStatus::WaitingForPermission => ("!", Color::Magenta),
-        SessionStatus::Finished => ("●", Color::Red),
+        SessionStatus::Running => (SPINNER[tick % SPINNER.len()], current().yellow),
+        SessionStatus::WaitingForInput => ("●", current().green),
+        SessionStatus::WaitingForPermission => ("!", current().magenta),
+        SessionStatus::Finished => ("●", current().red),
     }
 }
 
 #[allow(dead_code)] // used only by the parked diff/preview panels (see below)
 fn md_skin() -> MadSkin {
-    use termimad::crossterm::style::{Attribute, Color as CtColor};
+    use termimad::crossterm::style::{Attribute, Color as Ct};
 
     let mut skin = MadSkin::default_dark();
 
@@ -52,25 +46,25 @@ fn md_skin() -> MadSkin {
     }
 
     // Colorful headers
-    skin.headers[0].set_fg(CtColor::Cyan);
+    skin.headers[0].set_fg(Ct::Cyan);
     skin.headers[0].add_attr(Attribute::Bold);
-    skin.headers[1].set_fg(CtColor::Magenta);
+    skin.headers[1].set_fg(Ct::Magenta);
     skin.headers[1].add_attr(Attribute::Bold);
-    skin.headers[2].set_fg(CtColor::Yellow);
+    skin.headers[2].set_fg(Ct::Yellow);
 
-    skin.bold.set_fg(CtColor::White);
-    skin.italic.set_fg(CtColor::AnsiValue(183)); // light purple
-    skin.inline_code
-        .set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
-    skin.code_block
-        .set_fgbg(CtColor::Green, CtColor::AnsiValue(236));
-    skin.bullet = termimad::StyledChar::from_fg_char(CtColor::Cyan, '•');
-    skin.quote_mark = termimad::StyledChar::from_fg_char(CtColor::Cyan, '▐');
+    skin.bold.set_fg(Ct::White);
+    skin.italic.set_fg(Ct::AnsiValue(183)); // light purple
+    skin.inline_code.set_fgbg(Ct::Green, Ct::AnsiValue(236));
+    skin.code_block.set_fgbg(Ct::Green, Ct::AnsiValue(236));
+    skin.bullet = termimad::StyledChar::from_fg_char(Ct::Cyan, '•');
+    skin.quote_mark = termimad::StyledChar::from_fg_char(Ct::Cyan, '▐');
 
     skin
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    crate::theme::set(crate::theme::THEMES[app.theme_index % crate::theme::THEMES.len()]);
+
     let outer = f.area().inner(Margin {
         horizontal: PAD_LEFT,
         vertical: 0,
@@ -127,27 +121,29 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
         Span::styled(
             "claude-manager",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(current().accent)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("   "),
         Span::styled(
             format!("\u{25c6} {projects} proj"),
-            Style::default().fg(MUTED),
+            Style::default().fg(current().muted),
         ),
     ];
-    let sep = Style::default().fg(TREE);
+    let sep = Style::default().fg(current().border);
     if waiting > 0 {
         spans.push(Span::styled("   ·   ", sep));
         spans.push(Span::styled(
             format!("● {waiting} waiting"),
-            Style::default().fg(Color::Green),
+            Style::default().fg(current().green),
         ));
     }
     if perm > 0 {
         spans.push(Span::styled("   ·   ", sep));
         spans.push(Span::styled(
             format!("! {perm} needs you"),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(current().magenta),
         ));
     }
     if running > 0 {
@@ -155,7 +151,7 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled("   ·   ", sep));
         spans.push(Span::styled(
             format!("{frame} {running} running"),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(current().yellow),
         ));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -227,10 +223,12 @@ fn draw_floating_input(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
+        .border_style(Style::default().fg(current().accent))
         .title(Span::styled(
             format!(" {title} "),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(current().accent)
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
@@ -243,10 +241,10 @@ fn draw_floating_input(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, seg)| {
             let mut spans = vec![Span::styled(
                 (*seg).to_string(),
-                Style::default().fg(Color::White),
+                Style::default().fg(current().white),
             )];
             if i == last_idx {
-                spans.push(Span::styled("▌", Style::default().fg(ACCENT)));
+                spans.push(Span::styled("▌", Style::default().fg(current().accent)));
             }
             Line::from(spans)
         })
@@ -421,9 +419,9 @@ fn churn_spans(added: usize, removed: usize) -> Vec<Span<'static>> {
         return Vec::new();
     }
     vec![
-        Span::styled(format!("+{added}"), Style::default().fg(Color::Green)),
+        Span::styled(format!("+{added}"), Style::default().fg(current().green)),
         Span::raw(" "),
-        Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
+        Span::styled(format!("-{removed}"), Style::default().fg(current().red)),
     ]
 }
 
@@ -483,7 +481,7 @@ fn meta_block<'a>(
             .map(|b| truncate_ellipsis(&b, w.branch))
             .unwrap_or_default();
         cells.push(col_left(
-            vec![Span::styled(text, Style::default().fg(MUTED))],
+            vec![Span::styled(text, Style::default().fg(current().muted))],
             w.branch,
         ));
     }
@@ -516,7 +514,9 @@ const CARD_INDENT: usize = 4;
 
 /// Dim column-header row, indented to line up with card body columns.
 fn header_line<'a>(w: &ColWidths) -> ListItem<'a> {
-    let dim = Style::default().fg(MUTED).add_modifier(Modifier::BOLD);
+    let dim = Style::default()
+        .fg(current().muted)
+        .add_modifier(Modifier::BOLD);
     let churn = if w.churn > 0 {
         vec![Span::styled("CHANGES", dim)]
     } else {
@@ -544,17 +544,21 @@ fn card_top<'a>(
     branch: Option<String>,
     selected: bool,
 ) -> ListItem<'a> {
-    let border = Style::default().fg(if selected { ACCENT } else { TREE });
+    let border = Style::default().fg(if selected {
+        current().accent
+    } else {
+        current().border
+    });
     let mut left = vec![
         Span::styled("╭─ ", border),
-        Span::styled(chevron.to_string(), Style::default().fg(MUTED)),
+        Span::styled(chevron.to_string(), Style::default().fg(current().muted)),
         name,
     ];
     left.extend(meta);
     left.push(Span::raw(" "));
     let right = match branch {
         Some(b) => vec![
-            Span::styled(format!("({b})"), Style::default().fg(MUTED)),
+            Span::styled(format!("({b})"), Style::default().fg(current().muted)),
             Span::styled(" ─╮", border),
         ],
         None => vec![Span::styled("─╮", border)],
@@ -569,13 +573,16 @@ fn card_top<'a>(
 /// Rounded bottom border of a project card.
 fn card_bottom<'a>(width: u16) -> ListItem<'a> {
     let s = format!("╰{}╯", "─".repeat((width as usize).saturating_sub(2)));
-    ListItem::new(Line::from(Span::styled(s, Style::default().fg(TREE))))
+    ListItem::new(Line::from(Span::styled(
+        s,
+        Style::default().fg(current().border),
+    )))
 }
 
 /// Wrap a body `inner` line in card borders with a status rail, padding to the
 /// full width and tinting the interior when selected.
 fn wrap_body<'a>(width: u16, rail: Option<Color>, inner: Line<'a>, selected: bool) -> ListItem<'a> {
-    let border = Style::default().fg(TREE);
+    let border = Style::default().fg(current().border);
     let rail_span = match rail {
         Some(c) => Span::styled("▎", Style::default().fg(c)),
         None => Span::raw(" "),
@@ -588,7 +595,7 @@ fn wrap_body<'a>(width: u16, rail: Option<Color>, inner: Line<'a>, selected: boo
     mid.push(Span::raw(" ".repeat(pad)));
     if selected {
         for s in &mut mid {
-            s.style = s.style.bg(SELECT_BG);
+            s.style = s.style.bg(current().select_bg);
         }
     }
     let mut spans = vec![Span::styled("│", border)];
@@ -599,8 +606,10 @@ fn wrap_body<'a>(width: u16, rail: Option<Color>, inner: Line<'a>, selected: boo
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut rows: Vec<Row> = Vec::new();
-    let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-    let tree_style = Style::default().fg(TREE);
+    let indicator_style = Style::default()
+        .fg(current().accent)
+        .add_modifier(Modifier::BOLD);
+    let tree_style = Style::default().fg(current().border);
 
     for (i, item) in app.items.iter().enumerate() {
         let is_selected = i == app.selected;
@@ -610,10 +619,12 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let collapsed = is_project_collapsed(app, &project.name);
                 let chevron = if collapsed { "▶ " } else { "▼ " };
                 let name_style = if is_selected {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(current().accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
-                        .fg(Color::White)
+                        .fg(current().white)
                         .add_modifier(Modifier::BOLD)
                 };
                 let name = Span::styled(project.name.as_str(), name_style);
@@ -647,7 +658,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         }
                         meta.push(Span::styled(
                             format!("  [{}]", parts.join(", ")),
-                            Style::default().fg(Color::Green),
+                            Style::default().fg(current().green),
                         ));
                     }
                 }
@@ -668,7 +679,11 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let indicator = if is_selected { " ▸ " } else { "   " };
                 let last = is_last_task(&app.items, i, project_name);
                 let branch_char = if last { "└─ " } else { "├─ " };
-                let base_color = if task.archived { MUTED } else { TASK_COLOR };
+                let base_color = if task.archived {
+                    current().muted
+                } else {
+                    current().yellow
+                };
                 let style = if is_selected {
                     Style::default().fg(base_color).add_modifier(Modifier::BOLD)
                 } else {
@@ -681,14 +696,17 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 ];
 
                 if task.archived {
-                    left.push(Span::styled("  [archived]", Style::default().fg(MUTED)));
+                    left.push(Span::styled(
+                        "  [archived]",
+                        Style::default().fg(current().muted),
+                    ));
                 }
 
                 // Show auto-context indicator (nerd font: nf-md-file_document_edit \uf0dc8)
                 if task.auto_context {
                     left.push(Span::styled(
                         "  \u{f0dc8}",
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(current().cyan),
                     ));
                 }
 
@@ -709,7 +727,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     if active > 0 {
                         left.push(Span::styled(
                             format!("  [{active} active]"),
-                            Style::default().fg(Color::Green),
+                            Style::default().fg(current().green),
                         ));
                     }
                 }
@@ -727,10 +745,15 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     if count > 0 {
                         vec![Span::styled(
                             format!("\u{2446} {count}"),
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(current().accent)
+                                .add_modifier(Modifier::BOLD),
                         )]
                     } else {
-                        vec![Span::styled("\u{2446}", Style::default().fg(MUTED))]
+                        vec![Span::styled(
+                            "\u{2446}",
+                            Style::default().fg(current().muted),
+                        )]
                     }
                 } else if let Some(url) = app.pr_urls.get(&task.branch) {
                     // Show "#<number>" instead of a bare icon; fall back to "PR"
@@ -738,7 +761,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     let label = pr_number(url)
                         .map(|n| format!("#{n}"))
                         .unwrap_or_else(|| "PR".to_string());
-                    vec![Span::styled(label, Style::default().fg(Color::Magenta))]
+                    vec![Span::styled(label, Style::default().fg(current().magenta))]
                 } else {
                     Vec::new()
                 };
@@ -779,17 +802,17 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                                 Span::raw("   "),
                                 Span::styled(continuation, tree_style),
                                 Span::styled(branch_char, tree_style),
-                                Span::styled("● ", Style::default().fg(Color::Green)),
+                                Span::styled("● ", Style::default().fg(current().green)),
                             ];
                             if let Some(n) = pr_number(url) {
                                 sub.push(Span::styled(
                                     format!("#{n} "),
-                                    Style::default().fg(ACCENT),
+                                    Style::default().fg(current().accent),
                                 ));
                             }
                             sub.push(Span::styled(
                                 title.clone(),
-                                Style::default().fg(Color::White),
+                                Style::default().fg(current().white),
                             ));
                             rows.push(Row::Body {
                                 left: sub,
@@ -815,20 +838,22 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let collapsed = app.collapsed.contains(&format!("a:{project_name}"));
                 let chevron = if collapsed { "▶ " } else { "▼ " };
                 let style = if is_selected {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(current().accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(ACCENT)
+                    Style::default().fg(current().accent)
                 };
                 let mut spans = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(branch_char, tree_style),
-                    Span::styled(chevron, Style::default().fg(MUTED)),
+                    Span::styled(chevron, Style::default().fg(current().muted)),
                     Span::styled("⌂ adhoc", style),
                 ];
                 if collapsed && *session_count > 0 {
                     spans.push(Span::styled(
                         format!("  [{session_count}]"),
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(current().green),
                     ));
                 }
                 rows.push(Row::Body {
@@ -849,10 +874,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let indicator = if is_selected { " ▸ " } else { "   " };
                 let style = if is_selected {
                     Style::default()
-                        .fg(SESSION_COLOR)
+                        .fg(current().green)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(SESSION_COLOR)
+                    Style::default().fg(current().green)
                 };
 
                 let status = app
@@ -872,7 +897,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(continuation, tree_style),
                     Span::styled(branch_char, tree_style),
                     Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
-                    Span::styled("⌂ ", Style::default().fg(ACCENT)),
+                    Span::styled("⌂ ", Style::default().fg(current().accent)),
                     Span::styled(&session.session_name, style),
                 ];
                 rows.push(Row::Body {
@@ -894,10 +919,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let indicator = if is_selected { " ▸ " } else { "   " };
                 let style = if is_selected {
                     Style::default()
-                        .fg(SESSION_COLOR)
+                        .fg(current().green)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(SESSION_COLOR)
+                    Style::default().fg(current().green)
                 };
 
                 let status = app
@@ -920,9 +945,12 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
                 ];
                 if wt.is_some() {
-                    left.push(Span::styled("\u{e0a0} ", Style::default().fg(TREE)));
+                    left.push(Span::styled(
+                        "\u{e0a0} ",
+                        Style::default().fg(current().border),
+                    ));
                 } else {
-                    left.push(Span::styled("⌂ ", Style::default().fg(ACCENT)));
+                    left.push(Span::styled("⌂ ", Style::default().fg(current().accent)));
                 }
                 left.push(Span::styled(&session.session_name, style));
 
@@ -1040,7 +1068,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT));
+        .border_style(Style::default().fg(current().accent));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1058,11 +1086,13 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     // Draw tabs
-    let active_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-    let inactive_style = Style::default().fg(MUTED);
+    let active_style = Style::default()
+        .fg(current().accent)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(current().muted);
 
     let tab_style = |active: bool| if active { active_style } else { inactive_style };
-    let sep_span = Span::styled(" │ ", Style::default().fg(TREE));
+    let sep_span = Span::styled(" │ ", Style::default().fg(current().border));
 
     let is_adhoc = matches!(
         app.selected_item(),
@@ -1097,7 +1127,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
 
     // Draw separator line
     let sep = "─".repeat(rows[1].width as usize);
-    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(TREE)));
+    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(current().border)));
     f.render_widget(separator, rows[1]);
 
     // Draw content
@@ -1189,7 +1219,7 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT));
+        .border_style(Style::default().fg(current().accent));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1205,10 +1235,12 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    let active_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
-    let inactive_style = Style::default().fg(MUTED);
+    let active_style = Style::default()
+        .fg(current().accent)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(current().muted);
     let tab_style = |active: bool| if active { active_style } else { inactive_style };
-    let sep_span = Span::styled(" │ ", Style::default().fg(TREE));
+    let sep_span = Span::styled(" │ ", Style::default().fg(current().border));
     let is_context = app.preview_mode == PreviewMode::Context;
 
     let tab = Paragraph::new(Line::from(vec![
@@ -1219,7 +1251,7 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tab, rows[0]);
 
     let sep = "─".repeat(rows[1].width as usize);
-    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(TREE)));
+    let separator = Paragraph::new(Span::styled(sep, Style::default().fg(current().border)));
     f.render_widget(separator, rows[1]);
 
     let content_area = rows[2];
@@ -1248,8 +1280,10 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
                 f.render_widget(paragraph, content_area);
             }
             None => {
-                let msg =
-                    Paragraph::new(Span::styled("No task context", Style::default().fg(MUTED)));
+                let msg = Paragraph::new(Span::styled(
+                    "No task context",
+                    Style::default().fg(current().muted),
+                ));
                 f.render_widget(msg, content_area);
             }
         }
@@ -1293,8 +1327,8 @@ const LOADING_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "�
 fn render_loading(f: &mut Frame, app: &App, area: Rect) {
     let frame = LOADING_SPINNER[app.tick % LOADING_SPINNER.len()];
     let loading = Paragraph::new(Line::from(vec![
-        Span::styled(format!("{frame} "), Style::default().fg(MUTED)),
-        Span::styled("loading…", Style::default().fg(MUTED)),
+        Span::styled(format!("{frame} "), Style::default().fg(current().muted)),
+        Span::styled("loading…", Style::default().fg(current().muted)),
     ]));
     f.render_widget(loading, area);
 }
@@ -1435,10 +1469,10 @@ fn style_diff_lines<'a>(
                     Span::styled(
                         format!("── {file} "),
                         Style::default()
-                            .fg(Color::White)
+                            .fg(current().white)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(sep, Style::default().fg(TREE)),
+                    Span::styled(sep, Style::default().fg(current().border)),
                 ])
             }
             DiffRow::Hunk { raw } => {
@@ -1463,8 +1497,8 @@ fn style_diff_lines<'a>(
                     }
                 }
                 Line::from(vec![
-                    Span::styled(format!("{:>13}", ""), Style::default().fg(MUTED)),
-                    Span::styled(*raw, Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("{:>13}", ""), Style::default().fg(current().muted)),
+                    Span::styled(*raw, Style::default().fg(current().cyan)),
                 ])
             }
             DiffRow::Code { loc, raw } => {
@@ -1478,9 +1512,9 @@ fn style_diff_lines<'a>(
                         let l = Line::from(vec![
                             Span::styled(
                                 format!("{}    │{:>5} │ ", marker, loc.line),
-                                Style::default().fg(MUTED),
+                                Style::default().fg(current().muted),
                             ),
-                            Span::styled(*raw, Style::default().fg(Color::Green)),
+                            Span::styled(*raw, Style::default().fg(current().green)),
                         ]);
                         new_line_for_context = loc.line + 1;
                         l
@@ -1489,9 +1523,9 @@ fn style_diff_lines<'a>(
                         let l = Line::from(vec![
                             Span::styled(
                                 format!("{}{:>4}│      │ ", marker, loc.line),
-                                Style::default().fg(MUTED),
+                                Style::default().fg(current().muted),
                             ),
-                            Span::styled(*raw, Style::default().fg(Color::Red)),
+                            Span::styled(*raw, Style::default().fg(current().red)),
                         ]);
                         old_line_for_context = loc.line + 1;
                         l
@@ -1500,7 +1534,7 @@ fn style_diff_lines<'a>(
                         let l = Line::from(vec![
                             Span::styled(
                                 format!("{}{:>4}│{:>5} │ ", marker, old_line_for_context, loc.line),
-                                Style::default().fg(MUTED),
+                                Style::default().fg(current().muted),
                             ),
                             Span::raw(*raw),
                         ]);
@@ -1511,8 +1545,8 @@ fn style_diff_lines<'a>(
                 }
             }
             DiffRow::Comment { text } => Line::from(vec![
-                Span::styled("             ", Style::default().fg(MUTED)),
-                Span::styled(text.clone(), Style::default().fg(Color::Magenta)),
+                Span::styled("             ", Style::default().fg(current().muted)),
+                Span::styled(text.clone(), Style::default().fg(current().magenta)),
             ]),
             DiffRow::Blank => Line::raw(""),
         };
@@ -1571,12 +1605,12 @@ fn render_diff_with_stats(
     // Build sticky header
     let mut header_lines: Vec<Line> = Vec::new();
     header_lines.push(Line::from(vec![
-        Span::styled(format!("+{added}"), Style::default().fg(Color::Green)),
-        Span::styled(",", Style::default().fg(MUTED)),
-        Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)),
+        Span::styled(format!("+{added}"), Style::default().fg(current().green)),
+        Span::styled(",", Style::default().fg(current().muted)),
+        Span::styled(format!("-{removed}"), Style::default().fg(current().red)),
         Span::styled(
             format!("  {} file(s)", files.len()),
-            Style::default().fg(MUTED),
+            Style::default().fg(current().muted),
         ),
     ]));
     header_lines.push(Line::raw(""));
@@ -1639,7 +1673,7 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT));
+        .border_style(Style::default().fg(current().accent));
 
     let inner = block.inner(menu_area);
     f.render_widget(block, menu_area);
@@ -1657,11 +1691,13 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let label_style = if is_selected {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(current().accent)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(current().white)
         };
-        let key_style = Style::default().fg(MUTED);
+        let key_style = Style::default().fg(current().muted);
 
         let key_str = if item.key.is_uppercase() {
             format!("S-{}", item.key.to_lowercase())
@@ -1719,10 +1755,12 @@ fn draw_submit_session_select(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
+        .border_style(Style::default().fg(current().accent))
         .title(Span::styled(
             format!(" {title} "),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(current().accent)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(menu_area);
@@ -1741,14 +1779,14 @@ fn draw_submit_session_select(f: &mut Frame, app: &App, area: Rect) {
         };
         let label_style = if is_selected {
             Style::default()
-                .fg(SESSION_COLOR)
+                .fg(current().green)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(current().white)
         };
         let prefix = if is_selected { "▸ " } else { "  " };
         let line = Line::from(vec![
-            Span::styled(prefix, Style::default().fg(ACCENT)),
+            Span::styled(prefix, Style::default().fg(current().accent)),
             Span::styled(session.session_name.clone(), label_style),
         ]);
         f.render_widget(Paragraph::new(line), row_area);
@@ -1830,7 +1868,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
 
 fn help_bar(items: &[(&str, &str)]) -> Vec<Span<'static>> {
     let key_style = Style::default().fg(Color::Rgb(140, 140, 150));
-    let desc_style = Style::default().fg(MUTED);
+    let desc_style = Style::default().fg(current().muted);
     let sep_style = Style::default().fg(Color::Rgb(50, 50, 60));
 
     let mut spans = Vec::new();
@@ -1854,8 +1892,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         if let Some(app::ListItem::Task { task, .. }) = app.selected_item() {
             if let Some(url) = app.pr_urls.get(&task.branch) {
                 let pr_line = Paragraph::new(Line::from(vec![
-                    Span::styled("\u{e728} ", Style::default().fg(Color::Magenta)),
-                    Span::styled(url.as_str(), Style::default().fg(MUTED)),
+                    Span::styled("\u{e728} ", Style::default().fg(current().magenta)),
+                    Span::styled(url.as_str(), Style::default().fg(current().muted)),
                 ]));
                 f.render_widget(pr_line, area);
                 return;
@@ -1868,7 +1906,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         if app.view_archived {
             spans.push(Span::styled(
                 "[archived view]",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(current().yellow),
             ));
         }
         if !app.search_query.is_empty() {
@@ -1877,7 +1915,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             }
             spans.push(Span::styled(
                 format!("filter: {}", app.search_query),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(current().cyan),
             ));
         }
         if !spans.is_empty() {
@@ -1887,9 +1925,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     if let Some(msg) = &app.status_message {
         let style = if msg.starts_with("Error") {
-            Style::default().fg(Color::Red)
+            Style::default().fg(current().red)
         } else {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(current().yellow)
         };
 
         let content = if app.op_count > 0 {

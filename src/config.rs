@@ -98,6 +98,10 @@ fn kb_search() -> char {
     '/'
 }
 
+fn kb_cycle_theme() -> char {
+    't'
+}
+
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -222,6 +226,9 @@ pub struct KeyBindings {
     /// Filter tasks by substring (default: /)
     #[serde(default = "kb_search")]
     pub search: char,
+    /// Cycle the color theme (default: t)
+    #[serde(default = "kb_cycle_theme")]
+    pub cycle_theme: char,
     /// Context menu action keybindings
     #[serde(default)]
     pub context_menu_keys: ContextMenuKeyBindings,
@@ -240,6 +247,7 @@ impl Default for KeyBindings {
             scroll_preview_up: kb_scroll_preview_up(),
             toggle_archive_view: kb_toggle_archive_view(),
             search: kb_search(),
+            cycle_theme: kb_cycle_theme(),
             context_menu_keys: ContextMenuKeyBindings::default(),
         }
     }
@@ -367,6 +375,24 @@ pub fn base_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
         .join(".claude-manager")
+}
+
+/// Path to the persisted UI theme name.
+pub fn theme_path() -> PathBuf {
+    base_dir().join("theme")
+}
+
+/// Load the persisted theme name, if any.
+pub fn load_theme() -> Option<String> {
+    fs::read_to_string(theme_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Persist the selected theme name.
+pub fn save_theme(name: &str) {
+    let _ = fs::write(theme_path(), name);
 }
 
 /// Path to the shared task context file for a given project/branch.
