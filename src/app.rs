@@ -152,7 +152,7 @@ pub struct App {
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
-    pub merged_sessions: HashMap<String, bool>,
+    pub session_branches: HashMap<String, String>,
     pub task_diff_stats: HashMap<String, DiffStats>,
     pub preview_scroll: usize,
     /// Number of terminal windows per session (keyed by session tmux name)
@@ -302,7 +302,7 @@ impl App {
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
-            merged_sessions: HashMap::new(),
+            session_branches: HashMap::new(),
             task_diff_stats: HashMap::new(),
             preview_scroll: 0,
             terminal_counts: HashMap::new(),
@@ -354,8 +354,8 @@ impl App {
             self.sessions = update.sessions;
             self.session_statuses = update.statuses;
             self.diff_stats = update.diff_stats;
-            if !update.merged_sessions.is_empty() {
-                self.merged_sessions = update.merged_sessions;
+            if !update.session_branches.is_empty() {
+                self.session_branches = update.session_branches;
             }
             self.preview_content = update.preview_content;
             if update.task_diff.is_some() {

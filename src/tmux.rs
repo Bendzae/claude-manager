@@ -1728,42 +1728,12 @@ impl DiffStats {
 }
 
 /// Check if a session's worktree has no differences from its task branch.
-/// Returns `Some(true)` if the working tree (including uncommitted changes)
-/// is identical to the task branch.
-pub fn is_session_merged(session_name: &str) -> Option<bool> {
-    let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")?;
-    let task_branch = get_session_env(session_name, "CM_TASK_BRANCH")?;
-
-    if !Path::new(&worktree_path).exists() {
-        return None;
-    }
-
-    // Check if working tree has any differences from the task branch
-    // (covers both committed and uncommitted changes)
-    let no_diff = Command::new("git")
-        .args(["-C", &worktree_path, "diff", "--quiet", &task_branch])
-        .output()
-        .ok()?
-        .status
-        .success();
-
-    // Also check for untracked files
-    if no_diff {
-        let output = Command::new("git")
-            .args([
-                "-C",
-                &worktree_path,
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-            ])
-            .output()
-            .ok()?;
-        let has_untracked = !String::from_utf8_lossy(&output.stdout).trim().is_empty();
-        return Some(!has_untracked);
-    }
-
-    Some(false)
+/// The branch currently checked out in the session's worktree (or the project
+/// directory for no-worktree sessions).
+pub fn get_session_branch(session_name: &str) -> Option<String> {
+    let path = get_session_env(session_name, "CM_WORKTREE_PATH")
+        .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))?;
+    current_branch(&path)
 }
 
 /// Compute diff stats for a session's worktree against its base commit.

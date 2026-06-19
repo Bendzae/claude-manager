@@ -298,13 +298,14 @@ fn pr_number(url: &str) -> Option<&str> {
 
 // --- Overview row layout ---------------------------------------------------
 // Each row keeps the name/tree on the left and packs its metadata into
-// fixed-width columns flush against the right edge, so churn / status / branch
-// line up vertically across every row.
-const COL_CHURN: usize = 12; // e.g. "+1234 -567"
-const COL_BADGE: usize = 9; // PR / stacked / merged markers
-const COL_BRANCH: usize = 24; // branch name (truncated)
+// columns flush against the right edge, so churn / status / branch line up
+// vertically across every row. Column widths are autoscaled per render to the
+// widest cell in each column (see `ColWidths`), so nothing is truncated or
+// padded more than it needs to be.
 const COL_GAP: usize = 2;
-const RIGHT_W: usize = COL_CHURN + COL_GAP + COL_BADGE + COL_GAP + COL_BRANCH;
+// Branch column is autoscaled to the widest branch in view, but capped here so
+// a single long branch can't crowd the name column off the screen.
+const BRANCH_MAX: usize = 80;
 
 fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.width()).sum()
@@ -318,6 +319,16 @@ fn col_right<'a>(spans: Vec<Span<'a>>, width: usize) -> Vec<Span<'a>> {
         out.push(Span::raw(" ".repeat(pad)));
     }
     out.extend(spans);
+    out
+}
+
+/// Left-align `spans` within a `width`-column field (right-padded with spaces).
+fn col_left<'a>(spans: Vec<Span<'a>>, width: usize) -> Vec<Span<'a>> {
+    let pad = width.saturating_sub(spans_width(&spans));
+    let mut out = spans;
+    if pad > 0 {
+        out.push(Span::raw(" ".repeat(pad)));
+    }
     out
 }
 
@@ -346,52 +357,90 @@ fn churn_spans(added: usize, removed: usize) -> Vec<Span<'static>> {
     ]
 }
 
-/// Build the right-hand metadata block: churn | badge | branch, each a
-/// fixed-width right-aligned column so the block is always `RIGHT_W` wide.
-fn meta_columns<'a>(
+/// Per-column display widths, sized to the widest cell in each column.
+#[derive(Default)]
+struct ColWidths {
+    name: usize,
+    churn: usize,
+    badge: usize,
+    branch: usize,
+}
+
+/// A pre-measured overview row. Metadata cells are kept separate so the second
+/// pass can right-align each within its autoscaled column width.
+enum Row<'a> {
+    /// Blank separator line between projects.
+    Spacer,
+    /// A row with no metadata columns (adhoc groups/sessions, stacked PRs).
+    Plain(Line<'a>),
+    /// Name/tree on the left, metadata to align on the right.
+    Cols {
+        left: Vec<Span<'a>>,
+        churn: Vec<Span<'a>>,
+        badge: Vec<Span<'a>>,
+        branch: Option<String>,
+    },
+}
+
+/// Build the right-hand metadata block: churn | badge | branch, each right-
+/// aligned within its autoscaled column. Columns nothing populates (width 0)
+/// are dropped along with their gap.
+fn meta_block<'a>(
     churn: Vec<Span<'a>>,
     badge: Vec<Span<'a>>,
-    branch: Vec<Span<'a>>,
+    branch: Option<String>,
+    w: &ColWidths,
 ) -> Vec<Span<'a>> {
-    let mut out = col_right(churn, COL_CHURN);
-    out.push(Span::raw(" ".repeat(COL_GAP)));
-    out.extend(col_right(badge, COL_BADGE));
-    out.push(Span::raw(" ".repeat(COL_GAP)));
-    out.extend(col_right(branch, COL_BRANCH));
+    let mut cells: Vec<Vec<Span<'a>>> = Vec::new();
+    if w.churn > 0 {
+        cells.push(col_right(churn, w.churn));
+    }
+    if w.badge > 0 {
+        cells.push(col_left(badge, w.badge));
+    }
+    if w.branch > 0 {
+        let text = branch
+            .map(|b| truncate_ellipsis(&b, w.branch))
+            .unwrap_or_default();
+        cells.push(col_left(
+            vec![Span::styled(text, Style::default().fg(MUTED))],
+            w.branch,
+        ));
+    }
+    let mut out = Vec::new();
+    for (i, cell) in cells.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Span::raw(" ".repeat(COL_GAP)));
+        }
+        out.extend(cell);
+    }
     out
 }
 
-/// Compose a row: `left` spans, then the `right` metadata block padded so it
-/// sits flush against `width`. Narrow terminals fall back to inline layout.
-fn row_line<'a>(width: u16, left: Vec<Span<'a>>, right: Vec<Span<'a>>) -> Line<'a> {
+/// Compose a row: `left` (name/tree) padded to the shared `name_w` column, then
+/// the `right` metadata block left-aligned a `COL_GAP` further right, so the
+/// metadata sits just past the longest name instead of at the screen edge.
+fn row_line<'a>(left: Vec<Span<'a>>, right: Vec<Span<'a>>, name_w: usize) -> Line<'a> {
     if right.is_empty() {
         return Line::from(left);
     }
-    let left_w = spans_width(&left);
-    let right_w = spans_width(&right);
-    let avail = width as usize;
-    if left_w + right_w + COL_GAP > avail {
-        let mut spans = left;
-        spans.push(Span::raw("  "));
-        spans.extend(right);
-        return Line::from(spans);
-    }
+    let pad = name_w.saturating_sub(spans_width(&left)) + COL_GAP;
     let mut spans = left;
-    spans.push(Span::raw(" ".repeat(avail - left_w - right_w)));
+    spans.push(Span::raw(" ".repeat(pad)));
     spans.extend(right);
     Line::from(spans)
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<ListItem> = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
     let indicator_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
     let tree_style = Style::default().fg(TREE);
 
     for (i, item) in app.items.iter().enumerate() {
         let is_selected = i == app.selected;
 
-        if matches!(item, app::ListItem::Project { .. }) && !lines.is_empty() {
-            lines.push(ListItem::new(Line::raw("")));
+        if matches!(item, app::ListItem::Project { .. }) && !rows.is_empty() {
+            rows.push(Row::Spacer);
         }
 
         match item {
@@ -447,18 +496,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 }
 
                 // Current branch, aligned in the right-hand branch column.
-                let right = match app.project_branches.get(&project.name) {
-                    Some(branch) => col_right(
-                        vec![Span::styled(
-                            truncate_ellipsis(branch, COL_BRANCH),
-                            Style::default().fg(MUTED),
-                        )],
-                        RIGHT_W,
-                    ),
-                    None => Vec::new(),
-                };
-
-                lines.push(ListItem::new(row_line(area.width, left, right)));
+                let branch = app.project_branches.get(&project.name).cloned();
+                rows.push(Row::Cols {
+                    left,
+                    churn: Vec::new(),
+                    badge: Vec::new(),
+                    branch,
+                });
             }
             app::ListItem::Task {
                 project_name, task, ..
@@ -530,11 +574,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     } else {
                         vec![Span::styled("\u{2446}", Style::default().fg(MUTED))]
                     }
-                } else if app.pr_urls.contains_key(&task.branch) {
-                    vec![Span::styled(
-                        "\u{e728}",
-                        Style::default().fg(Color::Magenta),
-                    )]
+                } else if let Some(url) = app.pr_urls.get(&task.branch) {
+                    // Show "#<number>" instead of a bare icon; fall back to "PR"
+                    // when the URL has no numeric id.
+                    let label = pr_number(url)
+                        .map(|n| format!("#{n}"))
+                        .unwrap_or_else(|| "PR".to_string());
+                    vec![Span::styled(label, Style::default().fg(Color::Magenta))]
                 } else {
                     Vec::new()
                 };
@@ -546,13 +592,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     }
                     _ => task.branch.clone(),
                 };
-                let branch = vec![Span::styled(
-                    truncate_ellipsis(&branch_label, COL_BRANCH),
-                    Style::default().fg(MUTED),
-                )];
 
-                let right = meta_columns(churn_spans(added, removed), badge, branch);
-                lines.push(ListItem::new(row_line(area.width, left, right)));
+                rows.push(Row::Cols {
+                    left,
+                    churn: churn_spans(added, removed),
+                    badge,
+                    branch: Some(branch_label),
+                });
 
                 // Stacked task: render its PRs as a vertical chain beneath the row
                 // (top of stack first → base at the bottom), unless collapsed.
@@ -584,7 +630,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                                 title.clone(),
                                 Style::default().fg(Color::White),
                             ));
-                            lines.push(ListItem::new(Line::from(sub)));
+                            rows.push(Row::Plain(Line::from(sub)));
                         }
                     }
                 }
@@ -616,7 +662,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Green),
                     ));
                 }
-                lines.push(ListItem::new(Line::from(spans)));
+                rows.push(Row::Plain(Line::from(spans)));
             }
             app::ListItem::AdhocSession {
                 project_name,
@@ -661,7 +707,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("⌂ ", Style::default().fg(ACCENT)),
                     Span::styled(&session.session_name, style),
                 ];
-                lines.push(ListItem::new(Line::from(spans)));
+                rows.push(Row::Plain(Line::from(spans)));
             }
             app::ListItem::Session {
                 project_name,
@@ -713,28 +759,60 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 }
                 left.push(Span::styled(&session.session_name, style));
 
-                // --- right-hand metadata columns: churn | merged badge ---
-                let merged = app
-                    .merged_sessions
-                    .get(&session.name)
-                    .copied()
-                    .unwrap_or(false);
-                let badge = if merged {
-                    vec![Span::styled("\u{2713} merged", Style::default().fg(ACCENT))]
-                } else {
-                    Vec::new()
-                };
+                // --- right-hand metadata columns: churn | branch ---
                 let churn = app
                     .diff_stats
                     .get(&session.name)
                     .filter(|s| !s.is_empty())
                     .map(|s| churn_spans(s.added, s.removed))
                     .unwrap_or_default();
-                let right = meta_columns(churn, badge, Vec::new());
-                lines.push(ListItem::new(row_line(area.width, left, right)));
+                let branch = app.session_branches.get(&session.name).cloned();
+                rows.push(Row::Cols {
+                    left,
+                    churn,
+                    badge: Vec::new(),
+                    branch,
+                });
             }
         }
     }
+
+    // Pass 2: size each metadata column to its widest cell, then emit.
+    let mut widths = ColWidths::default();
+    for row in &rows {
+        if let Row::Cols {
+            left,
+            churn,
+            badge,
+            branch,
+        } = row
+        {
+            widths.name = widths.name.max(spans_width(left));
+            widths.churn = widths.churn.max(spans_width(churn));
+            widths.badge = widths.badge.max(spans_width(badge));
+            if let Some(b) = branch {
+                widths.branch = widths.branch.max(b.chars().count());
+            }
+        }
+    }
+    widths.branch = widths.branch.min(BRANCH_MAX);
+
+    let lines: Vec<ListItem> = rows
+        .into_iter()
+        .map(|row| match row {
+            Row::Spacer => ListItem::new(Line::raw("")),
+            Row::Plain(line) => ListItem::new(line),
+            Row::Cols {
+                left,
+                churn,
+                badge,
+                branch,
+            } => {
+                let right = meta_block(churn, badge, branch, &widths);
+                ListItem::new(row_line(left, right, widths.name))
+            }
+        })
+        .collect();
 
     let list = List::new(lines).block(Block::default().borders(Borders::NONE));
     f.render_widget(list, area);
@@ -1647,33 +1725,51 @@ mod tests {
     }
 
     #[test]
-    fn meta_columns_is_always_right_w_wide() {
-        // Fully populated and fully empty rows must both span exactly RIGHT_W,
-        // otherwise columns would drift between rows.
-        let full = meta_columns(
+    fn meta_block_pads_every_column_to_its_width() {
+        // A fully populated and a fully empty row must span the same width, so
+        // columns line up vertically regardless of which cells a row fills.
+        let w = ColWidths {
+            churn: 10,
+            badge: 4,
+            branch: 9,
+            ..Default::default()
+        };
+        let full = meta_block(
             churn_spans(1234, 567),
             vec![Span::raw("PR")],
-            vec![Span::raw(truncate_ellipsis("feat/auth", COL_BRANCH))],
+            Some("feat/auth".to_string()),
+            &w,
         );
-        let empty = meta_columns(Vec::new(), Vec::new(), Vec::new());
-        assert_eq!(spans_width(&full), RIGHT_W);
-        assert_eq!(spans_width(&empty), RIGHT_W);
+        let empty = meta_block(Vec::new(), Vec::new(), None, &w);
+        let expected = w.churn + COL_GAP + w.badge + COL_GAP + w.branch;
+        assert_eq!(spans_width(&full), expected);
+        assert_eq!(spans_width(&empty), expected);
     }
 
     #[test]
-    fn row_line_fills_available_width() {
+    fn meta_block_omits_zero_width_columns() {
+        // Columns no row populates collapse away (no stray gaps).
+        let w = ColWidths {
+            churn: 8,
+            ..Default::default()
+        };
+        let only_churn = meta_block(churn_spans(10, 2), Vec::new(), None, &w);
+        assert_eq!(spans_width(&only_churn), w.churn);
+    }
+
+    #[test]
+    fn row_line_left_aligns_metadata_after_name_column() {
+        let left = vec![Span::raw("  ├─ my-task")]; // 12 cols wide
+        let right = vec![Span::raw("+10 -2")]; // 6 cols
+        let line = row_line(left, right, 20); // name column padded to 20
+        // name_w (20) + COL_GAP + right (6); independent of terminal width.
+        assert_eq!(line.width(), 20 + COL_GAP + 6);
+    }
+
+    #[test]
+    fn row_line_without_metadata_is_just_the_name() {
         let left = vec![Span::raw("  ├─ my-task")];
-        let right = meta_columns(churn_spans(10, 2), Vec::new(), Vec::new());
-        let line = row_line(80, left, right);
-        assert_eq!(line.width(), 80);
-    }
-
-    #[test]
-    fn row_line_falls_back_inline_when_too_narrow() {
-        let left = vec![Span::raw("a very long task name that eats the row")];
-        let right = meta_columns(churn_spans(10, 2), Vec::new(), Vec::new());
-        // 20 cols cannot fit left + RIGHT_W; should not panic and stays readable.
-        let line = row_line(20, left, right);
-        assert!(line.width() >= 20);
+        let line = row_line(left, Vec::new(), 40);
+        assert_eq!(line.width(), spans_width(&[Span::raw("  ├─ my-task")]));
     }
 }

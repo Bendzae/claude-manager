@@ -57,8 +57,8 @@ pub struct WorkerUpdate {
     pub task_context_content: Option<String>,
     /// Keyed by branch name.
     pub task_diff_stats: HashMap<String, DiffStats>,
-    /// Sessions whose branch is fully merged into the task branch.
-    pub merged_sessions: HashMap<String, bool>,
+    /// Branch checked out in each session's worktree, keyed by session tmux name.
+    pub session_branches: HashMap<String, String>,
     /// Keyed by session tmux name.
     pub terminal_counts: HashMap<String, usize>,
     /// PR URLs keyed by branch name.
@@ -98,7 +98,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
     let mut content_hashes: HashMap<String, u64> = HashMap::new();
     let mut stable_ticks: HashMap<String, u32> = HashMap::new();
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
-    let mut merged_sessions: HashMap<String, bool> = HashMap::new();
+    let mut session_branches: HashMap<String, String> = HashMap::new();
     let mut terminal_counts: HashMap<String, usize> = HashMap::new();
     let mut pr_urls: HashMap<String, String> = HashMap::new();
     let mut stack_prs: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -156,15 +156,15 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
         if tick % 4 == 0 {
             let session_names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
             diff_stats.retain(|k, _| session_names.contains(k));
-            merged_sessions.retain(|k, _| session_names.contains(k));
+            session_branches.retain(|k, _| session_names.contains(k));
             terminal_counts.retain(|k, _| session_names.contains(k));
 
             for session in &sessions {
                 if let Some(stats) = tmux::get_diff_stats(&session.name) {
                     diff_stats.insert(session.name.clone(), stats);
                 }
-                if let Some(merged) = tmux::is_session_merged(&session.name) {
-                    merged_sessions.insert(session.name.clone(), merged);
+                if let Some(branch) = tmux::get_session_branch(&session.name) {
+                    session_branches.insert(session.name.clone(), branch);
                 }
                 let count = tmux::count_terminal_windows(&session.name);
                 terminal_counts.insert(session.name.clone(), count);
@@ -274,7 +274,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             sessions,
             statuses,
             diff_stats: diff_stats.clone(),
-            merged_sessions: merged_sessions.clone(),
+            session_branches: session_branches.clone(),
             preview_content,
             task_diff,
             task_context_content,
