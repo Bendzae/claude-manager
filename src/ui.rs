@@ -26,6 +26,7 @@ const SESSION_COLOR: Color = Color::Green;
 const PAD_LEFT: u16 = 1;
 const PAD_TOP: u16 = 1;
 
+#[allow(dead_code)] // used only by the parked diff/preview panels (see below)
 fn md_skin() -> MadSkin {
     use termimad::crossterm::style::{Attribute, Color as CtColor};
 
@@ -69,26 +70,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     ])
     .split(outer);
 
-    let show_panel = matches!(
-        app.selected_item(),
-        Some(
-            app::ListItem::Session { .. }
-                | app::ListItem::Task { .. }
-                | app::ListItem::AdhocSession { .. }
-        )
-    );
-    if show_panel {
-        let columns = Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-            .split(chunks[1]);
-
-        draw_list(f, app, columns[0]);
-        match app.selected_item() {
-            Some(app::ListItem::Task { .. }) => draw_task_diff_panel(f, app, columns[1]),
-            _ => draw_preview_panel(f, app, columns[1]),
-        }
-    } else {
-        draw_list(f, app, chunks[1]);
-    }
+    // The preview/diff column was removed; the list now spans the full width.
+    // The panel renderers (draw_preview_panel / draw_task_diff_panel) and their
+    // backing state are retained for upcoming dedicated fullscreen views.
+    draw_list(f, app, chunks[1]);
 
     draw_help(f, app, chunks[2]);
     draw_status(f, app, chunks[3]);
@@ -683,6 +668,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+// The preview/diff panel renderers below are no longer wired into the main
+// layout (the side column was removed) but are retained — along with their
+// backing state and keybindings — for upcoming dedicated fullscreen views.
+#[allow(dead_code)]
 fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -831,6 +820,7 @@ fn draw_preview_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+#[allow(dead_code)]
 fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -935,6 +925,7 @@ fn draw_task_diff_panel(f: &mut Frame, app: &App, area: Rect) {
 
 const LOADING_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+#[allow(dead_code)]
 fn render_loading(f: &mut Frame, app: &App, area: Rect) {
     let frame = LOADING_SPINNER[app.tick % LOADING_SPINNER.len()];
     let loading = Paragraph::new(Line::from(vec![
@@ -945,6 +936,7 @@ fn render_loading(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// One visual row of the rendered diff.
+#[allow(dead_code)] // fields read only by the parked panel renderers
 pub enum DiffRow<'a> {
     FileHeader { file: String },
     Hunk { raw: &'a str },
@@ -1050,12 +1042,14 @@ pub fn parse_diff_rows<'a>(content: &'a str, comments: &[DiffComment]) -> Vec<Di
     rows
 }
 
+#[allow(dead_code)]
 fn has_comment_for(comments: &[DiffComment], loc: &DiffLineLoc) -> bool {
     comments
         .iter()
         .any(|c| c.file == loc.file && c.line == loc.line && c.side == loc.side)
 }
 
+#[allow(dead_code)]
 fn style_diff_lines<'a>(
     content: &'a str,
     width: usize,
@@ -1169,6 +1163,7 @@ fn style_diff_lines<'a>(
     lines
 }
 
+#[allow(dead_code)]
 fn render_diff_content(
     f: &mut Frame,
     content: &str,
@@ -1188,6 +1183,7 @@ fn render_diff_content(
     f.render_widget(paragraph, area);
 }
 
+#[allow(dead_code)]
 fn render_diff_with_stats(
     f: &mut Frame,
     content: &str,
@@ -1415,42 +1411,22 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "attach"
             };
-            if app.diff_focused() {
-                let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
-                help_bar(&[
-                    (&nav_keys, "line"),
-                    ("c", "comment"),
-                    ("x", "delete"),
-                    ("s", "send"),
-                    ("S-s", "send+submit"),
-                    ("⇥", "switch"),
-                    (&key_display(kb.quit), "quit"),
-                ])
-            } else {
-                let scroll_keys = format!(
-                    "{}/{}",
-                    key_display(kb.scroll_preview_down),
-                    key_display(kb.scroll_preview_up)
-                );
-                help_bar(&[
-                    ("⏎", enter_label),
-                    (&key_display(kb.toggle_collapse), "collapse"),
-                    (&key_display(kb.context_menu), "actions"),
-                    ("⇥", "switch"),
-                    (&scroll_keys, "scroll"),
-                    (&key_display(kb.search), "filter"),
-                    (
-                        &key_display(kb.toggle_archive_view),
-                        if app.view_archived {
-                            "active"
-                        } else {
-                            "archived"
-                        },
-                    ),
-                    (&key_display(kb.add_project), "project"),
-                    (&key_display(kb.quit), "quit"),
-                ])
-            }
+            help_bar(&[
+                ("⏎", enter_label),
+                (&key_display(kb.toggle_collapse), "collapse"),
+                (&key_display(kb.context_menu), "actions"),
+                (&key_display(kb.search), "filter"),
+                (
+                    &key_display(kb.toggle_archive_view),
+                    if app.view_archived {
+                        "active"
+                    } else {
+                        "archived"
+                    },
+                ),
+                (&key_display(kb.add_project), "project"),
+                (&key_display(kb.quit), "quit"),
+            ])
         }
         InputMode::ContextMenu => {
             let kb = &app.keybindings;
