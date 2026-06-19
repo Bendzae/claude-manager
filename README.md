@@ -2,7 +2,7 @@
 
 A terminal UI (TUI) for managing multiple Claude Code sessions organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
 
-Claude Manager uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, preview diffs, and attach/detach freely.
+Claude Manager uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, review diffs, and attach/detach freely.
 
 ## Prerequisites
 
@@ -49,12 +49,13 @@ All keybindings are customizable via `~/.claude-manager/keybindings.toml`. The t
 | Key | Action | Config key |
 |-----|--------|------------|
 | `j/k` or `Up/Down` | Navigate | `move_down` / `move_up` |
-| `Enter` | Attach to session / expand item | — |
+| `Enter` | Attach to session, or edit a task's context file in `$EDITOR` | — |
 | `Space` | Collapse/expand project or task | `toggle_collapse` |
 | `a` | Open context menu | `context_menu` |
 | `p` | Add project | `add_project` |
-| `Tab` | Toggle preview mode (diff/context) | — |
-| `J/K` | Scroll preview pane | `scroll_preview_down` / `scroll_preview_up` |
+| `/` | Filter projects/tasks/sessions | `search` |
+| `Z` | Toggle archived view | `toggle_archive_view` |
+| `t` | Cycle color theme | `cycle_theme` |
 | `q` | Quit | `quit` |
 
 #### Context Menu (press `a` to open)
@@ -75,11 +76,14 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 |-----|--------|------------|
 | `n` | New session (with worktree) | `new_session` |
 | `N` | New session (without worktree) | `new_session_no_worktree` |
+| `r` | Review branch-vs-base diff in difit | `review` |
 | `u` | Update/rebase branch onto main | `update` |
+| `B` | Set base branch | `set_base_branch` |
 | `P` | Push branch | `push` |
 | `b` | Checkout branch in project dir | `checkout` |
 | `o` | Open/create PR (publishes the stack when stacked) | `open_pr` |
 | `s` | Toggle stacked-PR mode | `toggle_stacked` |
+| `A` | Archive | `archive` |
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
 
@@ -99,10 +103,10 @@ A running TUI picks up config/flag changes on its next idle refresh, and the pub
 
 | Key | Action | Config key |
 |-----|--------|------------|
+| `r` | Review uncommitted changes in difit | `review` |
 | `m` | Merge into task branch | `merge` |
 | `u` | Update/rebase onto task branch | `update` |
-| `c` | Create terminal window | `create_terminal` |
-| `k` | Kill terminal window | `kill_terminal` |
+| `t` | Open/attach a terminal in the worktree | `terminal` |
 | `y` | Copy worktree path to clipboard | `copy_path` |
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
