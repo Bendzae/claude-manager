@@ -1111,9 +1111,13 @@ impl App {
                 let session = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
                     .first()
                     .map(|s| s.name.clone());
+                // `difit <target> <base>`: the SECOND positional is the base
+                // (old side). `--merge-base` resolves it to merge-base(branch,
+                // base) so we see only the branch's changes — the GitHub PR diff,
+                // excluding main's commits since the fork point.
                 (
                     project_path,
-                    vec![base_ref, task.branch.clone(), "--merge-base".to_string()],
+                    vec![task.branch.clone(), base_ref, "--merge-base".to_string()],
                     session,
                     format!("{} vs {base}", task.branch),
                 )
