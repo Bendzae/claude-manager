@@ -489,14 +489,22 @@ fn card_top<'a>(
     meta: Vec<Span<'a>>,
     branch: Option<String>,
     selected: bool,
+    rounded: bool,
 ) -> ListItem<'a> {
     let border = Style::default().fg(if selected {
         current().accent
     } else {
         current().border
     });
+    // Rounded corners open a box (project with content); a flat line is just a
+    // header (collapsed/empty project).
+    let (lead, tail) = if rounded {
+        ("╭─ ", "─╮")
+    } else {
+        ("── ", "──")
+    };
     let mut left = vec![
-        Span::styled("╭─ ", border),
+        Span::styled(lead, border),
         Span::styled(chevron.to_string(), Style::default().fg(current().muted)),
         name,
     ];
@@ -505,9 +513,9 @@ fn card_top<'a>(
     let right = match branch {
         Some(b) => vec![
             Span::styled(format!("({b})"), Style::default().fg(current().muted)),
-            Span::styled(" ─╮", border),
+            Span::styled(format!(" {tail}"), border),
         ],
-        None => vec![Span::styled("─╮", border)],
+        None => vec![Span::styled(tail.to_string(), border)],
     };
     let fill = (width as usize).saturating_sub(spans_width(&left) + spans_width(&right));
     let mut spans = left;
@@ -948,13 +956,17 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut lines: Vec<ListItem> = vec![header_line(&widths)];
-    // A card only gets a closing bottom border once it has body content; empty
-    // and collapsed projects render as just the top border line.
+    // A card has content (→ full rounded box) when a body row follows it;
+    // otherwise it's a collapsed/empty project rendered as a flat header line.
+    let has_body: Vec<bool> = (0..rows.len())
+        .map(|i| matches!(rows.get(i + 1), Some(Row::Body { .. })))
+        .collect();
+
     let mut card_open = false;
     let mut card_has_body = false;
     let mut seen_card = false;
     let mut sel_row = 0u16;
-    for row in rows {
+    for (i, row) in rows.into_iter().enumerate() {
         match row {
             Row::CardTop {
                 chevron,
@@ -976,7 +988,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 if selected {
                     sel_row = lines.len() as u16;
                 }
-                lines.push(card_top(area.width, chevron, name, meta, branch, selected));
+                let rounded = has_body[i];
+                lines.push(card_top(
+                    area.width, chevron, name, meta, branch, selected, rounded,
+                ));
                 if !collapsed {
                     card_open = true;
                 }
