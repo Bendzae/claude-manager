@@ -647,14 +647,6 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     ));
                 }
 
-                // Show auto-context indicator (nerd font: nf-md-file_document_edit \uf0dc8)
-                if task.auto_context {
-                    left.push(Span::styled(
-                        "  \u{f0dc8}",
-                        Style::default().fg(current().cyan),
-                    ));
-                }
-
                 // Show active session count when task is collapsed
                 if app
                     .collapsed

@@ -216,7 +216,6 @@ pub fn create_session(
     copy_patterns: &[String],
     setup_commands: &[String],
     initial_prompt: Option<&str>,
-    auto_context: bool,
     startup_skills: &[String],
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
@@ -284,11 +283,6 @@ pub fn create_session(
 
     // Always install the claude-manager plugin (skills + plugin enable)
     install_claude_manager_plugin(&work_dir);
-
-    // Set up stop hook if auto_context is enabled
-    if auto_context {
-        setup_task_context(&work_dir, task_name, task_branch, &context_path);
-    }
 
     let session_branch = if use_worktree {
         let branch = format!("{task_branch}-{}", sanitize(session_name));
@@ -459,11 +453,7 @@ pub fn recreate_adhoc_session(
 /// Reuses the existing worktree if present; does NOT send an initial prompt.
 /// `tmux_name` is the expected session name (which may differ from what
 /// build_tmux_name would produce if the session was renamed).
-pub fn recreate_session(
-    tmux_name: &str,
-    record: &crate::config::SessionRecord,
-    auto_context: bool,
-) -> Result<String> {
+pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) -> Result<String> {
     let work_dir = if record.use_worktree {
         let wt_path = worktree_dir(
             &record.project_name,
@@ -488,16 +478,6 @@ pub fn recreate_session(
 
     // Always install plugin
     install_claude_manager_plugin(&work_dir);
-
-    // Re-apply stop hook if auto_context is on
-    if auto_context {
-        setup_task_context(
-            &work_dir,
-            &record.task_name,
-            &record.task_branch,
-            &context_path,
-        );
-    }
 
     let session_branch = if record.use_worktree {
         Some(format!(
@@ -824,13 +804,6 @@ fn copy_patterns_to_worktree(project_path: &str, worktree_path: &str, patterns: 
         .output();
 }
 
-/// Get the working directory for a tmux session (worktree or project path).
-pub fn get_session_work_dir(session_name: &str) -> Option<String> {
-    get_session_env(session_name, "CM_WORKTREE_PATH")
-        .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))
-}
-
-/// Remove auto-context hooks from a work directory's .claude/settings.local.json.
 pub fn remove_task_context_hooks(work_dir: &str) {
     let settings_path = Path::new(work_dir).join(".claude/settings.local.json");
     let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
@@ -1009,122 +982,6 @@ fn install_claude_manager_plugin(work_dir: &str) {
             let _ = fs::write(&exclude_path, content);
         }
     }
-}
-
-/// Set up shared task context for a session (stop hook only, when auto_context is enabled).
-/// Creates the context file if it doesn't exist and writes the stop hook into settings.
-pub fn setup_task_context(work_dir: &str, task_name: &str, task_branch: &str, context_path: &Path) {
-    let context_path_str = context_path.to_string_lossy().to_string();
-
-    // Create context file with initial content if it doesn't exist
-    if !context_path.exists() {
-        if let Some(parent) = context_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let initial = format!("# {task_name}\nBranch: {task_branch}\n");
-        let _ = fs::write(context_path, initial);
-    }
-
-    // Write .claude/settings.local.json with stop hook only
-    let claude_dir = Path::new(work_dir).join(".claude");
-    let _ = fs::create_dir_all(&claude_dir);
-
-    // Stop hook: runs claude -p in the background to update context file asynchronously
-    let hook_dir = context_path.parent().unwrap_or(context_path);
-    let hook_script_path = hook_dir.join("stop-hook.sh");
-    let stop_script = format!(
-        r#"#!/bin/bash
-CONTEXT_FILE='{context}'
-INPUT=$(cat)
-MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // empty')
-SUMMARY=$(echo "$INPUT" | jq -r '.transcript_summary // empty')
-[ -z "$MSG" ] && exit 0
-
-# Run context update in the background so the user isn't blocked
-(
-TMPFILE=$(mktemp)
-CURRENT=$(cat "$CONTEXT_FILE" 2>/dev/null || echo '(empty)')
-cat > "$TMPFILE" <<PROMPT_END
-You are a file writer. You read context and produce updated file content. You NEVER produce commentary, explanations, or meta-text. Your entire output is written directly to a file.
-
-Current file:
-<current>
-$CURRENT
-</current>
-
-Conversation summary:
-<summary>
-$SUMMARY
-</summary>
-
-Latest message:
-<message>
-$MSG
-</message>
-
-Rules:
-- Output the updated file content and NOTHING else
-- The first line MUST be a markdown heading (starting with the hash symbol and a space)
-- Do NOT output any commentary, explanations, or meta-text
-- If nothing changed, output the current file content exactly as-is
-- Maintain a clear summary of the task goal, what has been done, and what is known
-- Include anything useful for other agents picking up this task
-- Remove outdated info, keep it concise
-PROMPT_END
-
-unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR CLAUDE_PROJECT_DIR
-cd /tmp
-OUTFILE="$CONTEXT_FILE.tmp"
-claude -p --model sonnet < "$TMPFILE" > "$OUTFILE" 2>/dev/null
-
-# Validate output: must be non-empty and start with a markdown heading
-if [ -s "$OUTFILE" ] && head -1 "$OUTFILE" | grep -q '^#'; then
-    mv "$OUTFILE" "$CONTEXT_FILE"
-else
-    rm -f "$OUTFILE"
-fi
-
-rm -f "$TMPFILE"
-) &
-disown
-exit 0"#,
-        context = context_path_str
-    );
-    let _ = fs::write(&hook_script_path, &stop_script);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&hook_script_path, fs::Permissions::from_mode(0o755));
-    }
-    let hook_script_str = hook_script_path.to_string_lossy().to_string();
-
-    let settings = serde_json::json!({
-        "hooks": {
-            "Stop": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": hook_script_str
-                }]
-            }]
-        }
-    });
-
-    let settings_path = claude_dir.join("settings.local.json");
-
-    // Merge with existing settings if present
-    let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    if let Some(obj) = existing.as_object_mut() {
-        obj.insert("hooks".to_string(), settings["hooks"].clone());
-    }
-
-    let _ = fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&existing).unwrap_or_default(),
-    );
 }
 
 /// Check if a worktree has uncommitted changes.

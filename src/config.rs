@@ -43,9 +43,6 @@ fn cm_new_session_no_worktree() -> char {
 fn cm_new_adhoc_session() -> char {
     'A'
 }
-fn cm_toggle_auto_context() -> char {
-    'x'
-}
 fn cm_update() -> char {
     'u'
 }
@@ -118,9 +115,6 @@ pub struct ContextMenuKeyBindings {
     /// New adhoc session on project (default: A)
     #[serde(default = "cm_new_adhoc_session")]
     pub new_adhoc_session: char,
-    /// Toggle auto-context (default: x)
-    #[serde(default = "cm_toggle_auto_context")]
-    pub toggle_auto_context: char,
     /// Update branch (default: u)
     #[serde(default = "cm_update")]
     pub update: char,
@@ -169,7 +163,6 @@ impl Default for ContextMenuKeyBindings {
             new_session: cm_new_session(),
             new_session_no_worktree: cm_new_session_no_worktree(),
             new_adhoc_session: cm_new_adhoc_session(),
-            toggle_auto_context: cm_toggle_auto_context(),
             update: cm_update(),
             push: cm_push(),
             checkout: cm_checkout(),
@@ -263,8 +256,6 @@ impl KeyBindings {
 pub struct Task {
     pub name: String,
     pub branch: String,
-    #[serde(default)]
-    pub auto_context: bool,
     /// Base branch for `update` (rebase target) and diff stats.
     /// `None` means default to "main".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -623,7 +614,6 @@ impl Config {
                 project.tasks.push(Task {
                     name: task_name,
                     branch,
-                    auto_context: false,
                     base_branch: None,
                     archived: false,
                     stacked: false,
@@ -690,16 +680,6 @@ impl Config {
             }
         }
         false
-    }
-
-    pub fn toggle_auto_context(&mut self, project_name: &str, task_name: &str) -> Option<bool> {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
-            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
-                task.auto_context = !task.auto_context;
-                return Some(task.auto_context);
-            }
-        }
-        None
     }
 
     /// Set stacked-PR mode for the task identified by `project_path` + `branch`

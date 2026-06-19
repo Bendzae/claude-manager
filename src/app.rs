@@ -81,7 +81,6 @@ pub enum ContextAction {
     Push,
     OpenPr,
     Checkout,
-    ToggleAutoContext,
     CopyWorktreePath,
     SetBaseBranch,
     Archive,
@@ -218,8 +217,8 @@ impl App {
                 // Task-scoped session: match by branch (+ project path), which
                 // is stable across renames, unlike the display-name fields.
                 match config.find_task_by_branch(&record.project_path, &record.task_branch) {
-                    Some(task) => {
-                        if tmux::recreate_session(tmux_name, record, task.auto_context).is_err() {
+                    Some(_) => {
+                        if tmux::recreate_session(tmux_name, record).is_err() {
                             // Could not recreate (e.g. worktree gone) — remove stale record
                             config::remove_session_record(tmux_name);
                         }
@@ -679,11 +678,6 @@ impl App {
                         },
                     ]
                 } else {
-                    let ctx_label = if task.auto_context {
-                        "Disable auto-context"
-                    } else {
-                        "Enable auto-context"
-                    };
                     let stacked_label = if task.stacked {
                         "Disable stacked PRs"
                     } else {
@@ -704,11 +698,6 @@ impl App {
                             key: cm.review,
                             label: "Review diff (difit)",
                             action: ContextAction::Review,
-                        },
-                        ContextMenuItem {
-                            key: cm.toggle_auto_context,
-                            label: ctx_label,
-                            action: ContextAction::ToggleAutoContext,
                         },
                         ContextMenuItem {
                             key: cm.toggle_stacked,
@@ -819,7 +808,6 @@ impl App {
             ContextAction::Push => self.push_task_branch(),
             ContextAction::OpenPr => self.open_pr(),
             ContextAction::Checkout => self.checkout_task_branch(),
-            ContextAction::ToggleAutoContext => self.toggle_auto_context(),
             ContextAction::ToggleStacked => self.toggle_stacked(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
             ContextAction::SetBaseBranch => self.start_set_base_branch(),
@@ -870,13 +858,8 @@ impl App {
     }
 
     pub fn unarchive_task(&mut self) {
-        let (project_name, task_name, task_branch, auto_context) = match self.selected_task_info() {
-            Some((pn, _, t)) => (
-                pn.to_string(),
-                t.name.clone(),
-                t.branch.clone(),
-                t.auto_context,
-            ),
+        let (project_name, task_name, task_branch) = match self.selected_task_info() {
+            Some((pn, _, t)) => (pn.to_string(), t.name.clone(), t.branch.clone()),
             None => {
                 self.status_message = Some("Select a task to unarchive".into());
                 return;
@@ -901,7 +884,7 @@ impl App {
             let mut failed = 0;
             for (tmux_name, record) in &records {
                 if record.project_name == project_name && record.task_name == task_name {
-                    match tmux::recreate_session(tmux_name, record, auto_context) {
+                    match tmux::recreate_session(tmux_name, record) {
                         Ok(_) => recreated += 1,
                         Err(_) => {
                             failed += 1;
@@ -1170,40 +1153,6 @@ impl App {
         }
     }
 
-    pub fn toggle_auto_context(&mut self) {
-        let (project_name, task_name, task_branch) = match self.selected_task_info() {
-            Some((pn, _, t)) => (pn.to_string(), t.name.clone(), t.branch.clone()),
-            None => return,
-        };
-
-        self.config.reload();
-        if let Some(new_state) = self.config.toggle_auto_context(&project_name, &task_name) {
-            let _ = self.config.save();
-
-            // Update hooks for all existing sessions of this task
-            let task_sessions = tmux::sessions_for_task(&project_name, &task_name, &self.sessions);
-            for session in &task_sessions {
-                if let Some(work_dir) = tmux::get_session_work_dir(&session.name) {
-                    if new_state {
-                        let context_path = config::task_context_path(&project_name, &task_branch);
-                        tmux::setup_task_context(
-                            &work_dir,
-                            &task_name,
-                            &task_branch,
-                            &context_path,
-                        );
-                    } else {
-                        tmux::remove_task_context_hooks(&work_dir);
-                    }
-                }
-            }
-
-            let label = if new_state { "enabled" } else { "disabled" };
-            self.status_message = Some(format!("Auto-context {label} for '{task_name}'"));
-            self.rebuild_items();
-        }
-    }
-
     pub fn toggle_stacked(&mut self) {
         let (project_name, task_name) = match self.selected_task_info() {
             Some((pn, _, t)) => (pn.to_string(), t.name.clone()),
@@ -1375,26 +1324,19 @@ impl App {
             let task_name_for_modify = task_name.clone();
             let branch_for_modify = branch.clone();
             let project_name_for_modify = project_name.clone();
-            let config = match Config::modify(move |c| {
+            if let Err(e) = Config::modify(move |c| {
                 c.add_task(
                     &project_name_for_modify,
                     task_name_for_modify,
                     branch_for_modify,
                 );
             }) {
-                Ok(c) => c,
-                Err(e) => {
-                    return OpResult {
-                        message: format!("Error saving config: {e}"),
-                        rebuild: false,
-                        reload_config: false,
-                    };
-                }
-            };
-
-            let auto_context = config
-                .find_task(&project_name, &task_name)
-                .map_or(true, |t| t.auto_context);
+                return OpResult {
+                    message: format!("Error saving config: {e}"),
+                    rebuild: false,
+                    reload_config: false,
+                };
+            }
 
             let session_name =
                 tmux::next_session_number(&project_name, &task_name, &sessions).to_string();
@@ -1409,7 +1351,6 @@ impl App {
                 &copy_patterns,
                 &setup_commands,
                 prompt.as_deref(),
-                auto_context,
                 &startup_skills,
             ) {
                 Ok(tmux_name) => {
@@ -1593,7 +1534,6 @@ impl App {
         let use_worktree = self.use_worktree;
         let task_name = task.name.clone();
         let task_branch = task.branch.clone();
-        let auto_context = task.auto_context;
         let project = self.config.projects.iter().find(|p| p.name == project_name);
         let copy_patterns = project.map(|p| p.copy_patterns.clone()).unwrap_or_default();
         let setup_commands = project
@@ -1614,7 +1554,6 @@ impl App {
                 &copy_patterns,
                 &setup_commands,
                 prompt.as_deref(),
-                auto_context,
                 &startup_skills,
             ) {
                 Ok(tmux_name) => {
