@@ -739,7 +739,6 @@ impl Config {
         self.projects.iter().any(|p| p.path == project_path)
     }
 
-    #[allow(dead_code)]
     pub fn remove_project(&mut self, path: &str) {
         self.projects.retain(|p| p.path != path);
     }
