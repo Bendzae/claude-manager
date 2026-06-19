@@ -379,17 +379,6 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.width()).sum()
 }
 
-/// Right-align `spans` within a `width`-column field (left-padded with spaces).
-fn col_right<'a>(spans: Vec<Span<'a>>, width: usize) -> Vec<Span<'a>> {
-    let pad = width.saturating_sub(spans_width(&spans));
-    let mut out = Vec::with_capacity(spans.len() + 1);
-    if pad > 0 {
-        out.push(Span::raw(" ".repeat(pad)));
-    }
-    out.extend(spans);
-    out
-}
-
 /// Left-align `spans` within a `width`-column field (right-padded with spaces).
 fn col_left<'a>(spans: Vec<Span<'a>>, width: usize) -> Vec<Span<'a>> {
     let pad = width.saturating_sub(spans_width(&spans));
@@ -460,7 +449,7 @@ enum Row<'a> {
     },
 }
 
-/// Build the right-hand metadata block: churn | badge | branch, each right-
+/// Build the right-hand metadata block: churn | badge | branch, each left-
 /// aligned within its autoscaled column. Columns nothing populates (width 0)
 /// are dropped along with their gap.
 fn meta_block<'a>(
@@ -471,7 +460,7 @@ fn meta_block<'a>(
 ) -> Vec<Span<'a>> {
     let mut cells: Vec<Vec<Span<'a>>> = Vec::new();
     if w.churn > 0 {
-        cells.push(col_right(churn, w.churn));
+        cells.push(col_left(churn, w.churn));
     }
     if w.badge > 0 {
         cells.push(col_left(badge, w.badge));
