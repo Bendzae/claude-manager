@@ -9,8 +9,6 @@ move_down       = "j"
 toggle_collapse = " "
 context_menu    = "a"
 add_project     = "p"
-scroll_preview_down = "J"
-scroll_preview_up   = "K"
 
 # Context menu action keybindings
 [context_menu_keys]
@@ -26,7 +24,5 @@ open_pr                 = "o"
 rename                  = "R"
 delete                  = "d"
 merge                   = "m"
-create_terminal         = "c"
-kill_terminal           = "k"
 copy_path               = "y"
 review                  = "r"

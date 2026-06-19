@@ -29,12 +29,6 @@ fn kb_context_menu() -> char {
 fn kb_add_project() -> char {
     'p'
 }
-fn kb_scroll_preview_down() -> char {
-    'J'
-}
-fn kb_scroll_preview_up() -> char {
-    'K'
-}
 
 // Context menu action key defaults
 fn cm_add_task() -> char {
@@ -72,12 +66,6 @@ fn cm_delete() -> char {
 }
 fn cm_merge() -> char {
     'm'
-}
-fn cm_create_terminal() -> char {
-    'c'
-}
-fn cm_kill_terminal() -> char {
-    'k'
 }
 fn cm_copy_path() -> char {
     'y'
@@ -150,12 +138,6 @@ pub struct ContextMenuKeyBindings {
     /// Merge session (default: m)
     #[serde(default = "cm_merge")]
     pub merge: char,
-    /// Create terminal window (default: c)
-    #[serde(default = "cm_create_terminal")]
-    pub create_terminal: char,
-    /// Kill terminal window (default: k)
-    #[serde(default = "cm_kill_terminal")]
-    pub kill_terminal: char,
     /// Copy session worktree path to clipboard (default: y)
     #[serde(default = "cm_copy_path")]
     pub copy_path: char,
@@ -188,8 +170,6 @@ impl Default for ContextMenuKeyBindings {
             rename: cm_rename(),
             delete: cm_delete(),
             merge: cm_merge(),
-            create_terminal: cm_create_terminal(),
-            kill_terminal: cm_kill_terminal(),
             copy_path: cm_copy_path(),
             set_base_branch: cm_set_base_branch(),
             archive: cm_archive(),
@@ -222,12 +202,6 @@ pub struct KeyBindings {
     /// Add project from current directory (default: p)
     #[serde(default = "kb_add_project")]
     pub add_project: char,
-    /// Scroll preview pane down (default: J)
-    #[serde(default = "kb_scroll_preview_down")]
-    pub scroll_preview_down: char,
-    /// Scroll preview pane up (default: K)
-    #[serde(default = "kb_scroll_preview_up")]
-    pub scroll_preview_up: char,
     /// Toggle archived task view (default: Z)
     #[serde(default = "kb_toggle_archive_view")]
     pub toggle_archive_view: char,
@@ -251,8 +225,6 @@ impl Default for KeyBindings {
             toggle_collapse: kb_toggle_collapse(),
             context_menu: kb_context_menu(),
             add_project: kb_add_project(),
-            scroll_preview_down: kb_scroll_preview_down(),
-            scroll_preview_up: kb_scroll_preview_up(),
             toggle_archive_view: kb_toggle_archive_view(),
             search: kb_search(),
             cycle_theme: kb_cycle_theme(),

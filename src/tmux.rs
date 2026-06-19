@@ -1608,117 +1608,10 @@ fn find_worktree_for_branch(project_path: &str, branch: &str) -> Option<String> 
     None
 }
 
-pub fn capture_pane(session_name: &str) -> Option<String> {
-    let output = Command::new("tmux")
-        .args(["capture-pane", "-t", session_name, "-p", "-e"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    Some(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Count the number of terminal windows (non-claude windows) in a session.
-/// Window 0 is always claude; terminals are windows 1+.
-pub fn count_terminal_windows(session_name: &str) -> usize {
-    let output = Command::new("tmux")
-        .args(["list-windows", "-t", session_name, "-F", "#{window_index}"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            // Count windows with index > 0
-            stdout
-                .lines()
-                .filter(|line| line.trim().parse::<usize>().is_ok_and(|i| i > 0))
-                .count()
-        }
-        _ => 0,
-    }
-}
-
-/// Create a new terminal window in the session. Returns the window index.
-pub fn create_terminal_window(session_name: &str) -> Result<usize> {
-    // Get the working directory from window 0 (claude)
-    let dir_output = Command::new("tmux")
-        .args([
-            "display-message",
-            "-t",
-            &format!("{session_name}:0"),
-            "-p",
-            "#{pane_current_path}",
-        ])
-        .output()?;
-    let work_dir = String::from_utf8_lossy(&dir_output.stdout)
-        .trim()
-        .to_string();
-
-    let output = Command::new("tmux")
-        .args([
-            "new-window",
-            "-t",
-            session_name,
-            "-c",
-            &work_dir,
-            "-P",
-            "-F",
-            "#{window_index}",
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        bail!("Failed to create terminal window");
-    }
-
-    let idx = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(1);
-    Ok(idx)
-}
-
-/// Kill a terminal window by its 0-indexed terminal number (window index = terminal_idx + 1).
-pub fn kill_terminal_window(session_name: &str, terminal_idx: usize) -> Result<()> {
-    let window_idx = terminal_idx + 1;
-    let output = Command::new("tmux")
-        .args(["kill-window", "-t", &format!("{session_name}:{window_idx}")])
-        .output()?;
-
-    if !output.status.success() {
-        bail!("Failed to kill terminal window");
-    }
-    Ok(())
-}
-
-/// Attach to a specific window in a session.
-pub fn attach_session_window(session_name: &str, window_idx: usize) -> Result<()> {
-    // Select the window first, then attach
-    let _ = Command::new("tmux")
-        .args([
-            "select-window",
-            "-t",
-            &format!("{session_name}:{window_idx}"),
-        ])
-        .output();
-
-    let status = Command::new("tmux")
-        .args(["attach-session", "-t", session_name])
-        .status()?;
-
-    if !status.success() {
-        bail!("Failed to attach to tmux session");
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct DiffStats {
     pub added: usize,
     pub removed: usize,
-    pub diff_output: String,
 }
 
 impl DiffStats {
@@ -1727,7 +1620,6 @@ impl DiffStats {
     }
 }
 
-/// Check if a session's worktree has no differences from its task branch.
 /// The branch currently checked out in the session's worktree (or the project
 /// directory for no-worktree sessions).
 pub fn get_session_branch(session_name: &str) -> Option<String> {
@@ -1776,11 +1668,7 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
         }
     }
 
-    Some(DiffStats {
-        added,
-        removed,
-        diff_output,
-    })
+    Some(DiffStats { added, removed })
 }
 
 /// Compute diff stats for a task branch against its base branch.
@@ -1848,11 +1736,7 @@ pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> O
         }
     }
 
-    Some(DiffStats {
-        added,
-        removed,
-        diff_output,
-    })
+    Some(DiffStats { added, removed })
 }
 
 /// Raw signals from a tmux session for status detection.
@@ -2414,7 +2298,6 @@ https://github.com/o/r/pull/12 : Add model
         let stats = DiffStats {
             added: 0,
             removed: 0,
-            diff_output: String::new(),
         };
         assert!(stats.is_empty());
     }
@@ -2424,7 +2307,6 @@ https://github.com/o/r/pull/12 : Add model
         let stats = DiffStats {
             added: 5,
             removed: 3,
-            diff_output: "some diff".into(),
         };
         assert!(!stats.is_empty());
     }

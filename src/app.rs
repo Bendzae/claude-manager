@@ -9,7 +9,7 @@ use anyhow::Result;
 
 use crate::config::{self, Config, KeyBindings, Project, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
-use crate::worker::{self, Selection, TaskInfo, Worker};
+use crate::worker::{TaskInfo, Worker};
 
 #[derive(Debug, Clone)]
 pub enum ListItem {
@@ -39,8 +39,6 @@ pub enum ListItem {
     },
 }
 
-pub use worker::PreviewMode;
-
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum InputMode {
     Normal,
@@ -59,42 +57,8 @@ pub enum InputMode {
     RenameAdhocSession,
     MergeCommitMessage,
     ConfirmCreatePr,
-    AddDiffComment,
-    SelectSubmitSession,
     SetBaseBranch,
     Search,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DiffSide {
-    Added,
-    Removed,
-    Context,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiffComment {
-    pub file: String,
-    pub line: usize,
-    pub side: DiffSide,
-    pub text: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingComment {
-    pub target_key: String,
-    pub file: String,
-    pub line: usize,
-    pub side: DiffSide,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingSubmit {
-    pub storage_key: String,
-    pub sessions: Vec<TmuxSession>,
-    pub selected: usize,
-    pub submit: bool,
-    pub comments: Vec<DiffComment>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,8 +81,6 @@ pub enum ContextAction {
     Push,
     OpenPr,
     Checkout,
-    CreateTerminal,
-    KillTerminal,
     ToggleAutoContext,
     CopyWorktreePath,
     SetBaseBranch,
@@ -150,24 +112,16 @@ pub struct App {
     pub status_message: Option<String>,
     pub should_quit: bool,
     pub should_attach: Option<String>,
-    pub should_attach_window: Option<(String, usize)>,
     pub should_open_editor: Option<PathBuf>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
     pub pending_task_branch: Option<String>,
     pub pending_session_name: Option<String>,
-    pub preview_content: Option<String>,
-    pub preview_mode: PreviewMode,
-    pub task_diff: Option<DiffStats>,
-    pub task_context_content: Option<String>,
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
     pub session_branches: HashMap<String, String>,
     pub task_diff_stats: HashMap<String, DiffStats>,
-    pub preview_scroll: usize,
-    /// Number of terminal windows per session (keyed by session tmux name)
-    pub terminal_counts: HashMap<String, usize>,
     /// PR URLs keyed by branch name
     pub pr_urls: HashMap<String, String>,
     /// Stacked tasks' PRs (bottom→top `(url, title)`), keyed by branch name
@@ -186,15 +140,6 @@ pub struct App {
     pub worker: Worker,
     pub context_menu_items: Vec<ContextMenuItem>,
     pub context_menu_selected: usize,
-    /// Diff comments keyed by storage key (session tmux name for sessions,
-    /// `task:{project}:{branch}` for tasks).
-    pub diff_comments: HashMap<String, Vec<DiffComment>>,
-    /// Diff cursor row (index into rendered diff content lines, excluding sticky header).
-    pub diff_cursor: usize,
-    /// In-flight comment location during AddDiffComment input mode.
-    pub pending_comment: Option<PendingComment>,
-    /// In-flight submission target selection for task-level diff comments.
-    pub pending_submit: Option<PendingSubmit>,
     /// When true, the task list shows only archived tasks instead of active ones.
     pub view_archived: bool,
     /// Active filter substring; tasks/projects/sessions are matched case-insensitively.
@@ -230,10 +175,6 @@ fn task_key(project: &str, task: &str) -> String {
 
 fn adhoc_group_key(project: &str) -> String {
     format!("a:{project}")
-}
-
-pub fn task_diff_key(project: &str, branch: &str) -> String {
-    format!("task:{project}:{branch}")
 }
 
 impl App {
@@ -306,23 +247,16 @@ impl App {
             status_message: None,
             should_quit: false,
             should_attach: None,
-            should_attach_window: None,
             should_open_editor: None,
             pending_project_path: None,
             pending_task_name: None,
             pending_task_branch: None,
             pending_session_name: None,
-            preview_content: None,
-            preview_mode: PreviewMode::Output,
-            task_diff: None,
-            task_context_content: None,
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
             session_branches: HashMap::new(),
             task_diff_stats: HashMap::new(),
-            preview_scroll: 0,
-            terminal_counts: HashMap::new(),
             pr_urls: HashMap::new(),
             stack_prs: HashMap::new(),
             project_branches: HashMap::new(),
@@ -334,10 +268,6 @@ impl App {
             worker: Worker::spawn(),
             context_menu_items: vec![],
             context_menu_selected: 0,
-            diff_comments: HashMap::new(),
-            diff_cursor: 0,
-            pending_comment: None,
-            pending_submit: None,
             view_archived: false,
             search_query: String::new(),
             theme_index: config::load_theme()
@@ -378,11 +308,6 @@ impl App {
             if !update.session_branches.is_empty() {
                 self.session_branches = update.session_branches;
             }
-            self.preview_content = update.preview_content;
-            if update.task_diff.is_some() {
-                self.task_diff = update.task_diff;
-            }
-            self.task_context_content = update.task_context_content;
             if !update.task_diff_stats.is_empty() {
                 self.task_diff_stats = update.task_diff_stats;
             }
@@ -394,31 +319,6 @@ impl App {
             }
             if !update.project_branches.is_empty() {
                 self.project_branches = update.project_branches;
-            }
-            if !update.terminal_counts.is_empty() {
-                // Merge by taking the max of local and worker counts to avoid
-                // stale worker data reverting a freshly created terminal.
-                for (name, count) in &update.terminal_counts {
-                    let local = self.terminal_counts.get(name).copied().unwrap_or(0);
-                    self.terminal_counts
-                        .insert(name.clone(), (*count).max(local));
-                }
-                // Remove sessions that the worker no longer knows about
-                self.terminal_counts
-                    .retain(|k, _| update.terminal_counts.contains_key(k));
-                // If viewing a terminal that no longer exists, fall back
-                if let PreviewMode::Terminal(idx) = self.preview_mode {
-                    let count = self.selected_terminal_count();
-                    if idx >= count {
-                        self.preview_mode = if count > 0 {
-                            PreviewMode::Terminal(count - 1)
-                        } else {
-                            PreviewMode::Output
-                        };
-                        self.preview_content = None;
-                        self.sync_worker_hints();
-                    }
-                }
             }
             self.rebuild_items();
         }
@@ -485,28 +385,6 @@ impl App {
 
     /// Tell the worker what is selected.
     pub fn sync_worker_hints(&self) {
-        let selection = match self.selected_item() {
-            Some(ListItem::Session { session, .. }) => Selection::Session {
-                name: session.name.clone(),
-                preview_mode: self.preview_mode,
-            },
-            Some(ListItem::AdhocSession { session, .. }) => Selection::Session {
-                name: session.name.clone(),
-                preview_mode: PreviewMode::Output,
-            },
-            Some(ListItem::Task {
-                project_name,
-                project_path,
-                task,
-                ..
-            }) => Selection::Task {
-                project_name: project_name.clone(),
-                project_path: project_path.clone(),
-                branch: task.branch.clone(),
-                base_branch: task.base_branch().to_string(),
-            },
-            _ => Selection::None,
-        };
         let tasks: Vec<TaskInfo> = self
             .config
             .projects
@@ -530,7 +408,6 @@ impl App {
             .collect();
 
         if let Ok(mut hints) = self.worker.hints.lock() {
-            hints.selection = selection;
             hints.tasks = tasks;
             hints.project_paths = project_paths;
         }
@@ -686,19 +563,6 @@ impl App {
     }
 
     fn on_selection_changed(&mut self) {
-        self.preview_content = None;
-        self.task_diff = None;
-        self.preview_scroll = 0;
-        self.diff_cursor = 0;
-        // Default to Context for tasks, Output for sessions
-        if matches!(self.selected_item(), Some(ListItem::Task { .. })) {
-            self.preview_mode = PreviewMode::Context;
-        } else if matches!(
-            self.selected_item(),
-            Some(ListItem::Session { .. } | ListItem::AdhocSession { .. })
-        ) {
-            self.preview_mode = PreviewMode::Output;
-        }
         self.sync_worker_hints();
     }
 
@@ -732,26 +596,20 @@ impl App {
     }
 
     pub fn enter_selected(&mut self) {
-        if let Some(ListItem::Task {
-            project_name, task, ..
-        }) = self.selected_item()
-        {
-            if self.preview_mode == PreviewMode::Context {
+        match self.selected_item() {
+            // Enter on a task opens its shared context file in $EDITOR.
+            Some(ListItem::Task {
+                project_name, task, ..
+            }) => {
                 let ctx_path = crate::config::task_context_path(&project_name, &task.branch);
                 self.should_open_editor = Some(ctx_path);
-                return;
             }
-        }
-        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
-            if let PreviewMode::Terminal(idx) = self.preview_mode {
-                // Attach to specific terminal window
-                self.should_attach_window = Some((session.name.clone(), idx + 1));
-            } else {
+            // Enter on a session attaches to it.
+            Some(ListItem::Session { session, .. })
+            | Some(ListItem::AdhocSession { session, .. }) => {
                 self.should_attach = Some(session.name.clone());
             }
-        }
-        if let Some(ListItem::AdhocSession { session, .. }) = self.selected_item() {
-            self.should_attach = Some(session.name.clone());
+            _ => {}
         }
     }
 
@@ -913,19 +771,7 @@ impl App {
                         label: "Update",
                         action: ContextAction::Update,
                     },
-                    ContextMenuItem {
-                        key: cm.create_terminal,
-                        label: "Create terminal",
-                        action: ContextAction::CreateTerminal,
-                    },
                 ];
-                if let PreviewMode::Terminal(_) = self.preview_mode {
-                    items.push(ContextMenuItem {
-                        key: cm.kill_terminal,
-                        label: "Kill terminal",
-                        action: ContextAction::KillTerminal,
-                    });
-                }
                 items.push(ContextMenuItem {
                     key: cm.copy_path,
                     label: "Copy worktree path",
@@ -964,8 +810,6 @@ impl App {
             ContextAction::Push => self.push_task_branch(),
             ContextAction::OpenPr => self.open_pr(),
             ContextAction::Checkout => self.checkout_task_branch(),
-            ContextAction::CreateTerminal => self.create_terminal(),
-            ContextAction::KillTerminal => self.kill_terminal(),
             ContextAction::ToggleAutoContext => self.toggle_auto_context(),
             ContextAction::ToggleStacked => self.toggle_stacked(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
@@ -2479,449 +2323,7 @@ impl App {
         self.pending_task_name = None;
         self.pending_task_branch = None;
         self.pending_session_name = None;
-        self.pending_comment = None;
-        self.pending_submit = None;
     }
-
-    pub fn toggle_preview_mode(&mut self) {
-        // Adhoc sessions only have the agent tab — nothing to cycle through.
-        if matches!(self.selected_item(), Some(ListItem::AdhocSession { .. })) {
-            return;
-        }
-        let is_task = matches!(self.selected_item(), Some(ListItem::Task { .. }));
-        if is_task {
-            self.preview_mode = match self.preview_mode {
-                PreviewMode::Context => PreviewMode::Diff,
-                _ => PreviewMode::Context,
-            };
-        } else {
-            let term_count = self.selected_terminal_count();
-            self.preview_mode = match self.preview_mode {
-                PreviewMode::Output => PreviewMode::Diff,
-                PreviewMode::Diff => {
-                    if term_count > 0 {
-                        PreviewMode::Terminal(0)
-                    } else {
-                        PreviewMode::Output
-                    }
-                }
-                PreviewMode::Context => PreviewMode::Output,
-                PreviewMode::Terminal(idx) => {
-                    if idx + 1 < term_count {
-                        PreviewMode::Terminal(idx + 1)
-                    } else {
-                        PreviewMode::Output
-                    }
-                }
-            };
-        }
-        self.preview_content = None;
-        self.preview_scroll = 0;
-        self.diff_cursor = 0;
-        self.sync_worker_hints();
-    }
-
-    fn selected_terminal_count(&self) -> usize {
-        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
-            self.terminal_counts
-                .get(&session.name)
-                .copied()
-                .unwrap_or(0)
-        } else {
-            0
-        }
-    }
-
-    pub fn create_terminal(&mut self) {
-        if let Some(ListItem::Session { session, .. }) = self.selected_item() {
-            let count = self.selected_terminal_count();
-            if count >= 4 {
-                self.status_message = Some("Maximum 4 terminals per session".into());
-                return;
-            }
-            let session_name = session.name.clone();
-            match tmux::create_terminal_window(&session_name) {
-                Ok(_) => {
-                    let new_count = tmux::count_terminal_windows(&session_name);
-                    self.terminal_counts.insert(session_name, new_count);
-                    // Switch to the new terminal tab
-                    self.preview_mode = PreviewMode::Terminal(new_count.saturating_sub(1));
-                    self.preview_content = None;
-                    self.preview_scroll = 0;
-                    self.sync_worker_hints();
-                    self.status_message = Some("Created terminal".into());
-                }
-                Err(e) => {
-                    self.status_message = Some(format!("Error: {e}"));
-                }
-            }
-        }
-    }
-
-    pub fn kill_terminal(&mut self) {
-        if let PreviewMode::Terminal(idx) = self.preview_mode {
-            if let Some(ListItem::Session { session, .. }) = self.selected_item() {
-                let session_name = session.name.clone();
-                match tmux::kill_terminal_window(&session_name, idx) {
-                    Ok(()) => {
-                        let new_count = tmux::count_terminal_windows(&session_name);
-                        self.terminal_counts.insert(session_name, new_count);
-                        // Adjust preview mode
-                        if new_count == 0 {
-                            self.preview_mode = PreviewMode::Output;
-                        } else if idx >= new_count {
-                            self.preview_mode = PreviewMode::Terminal(new_count - 1);
-                        }
-                        self.preview_content = None;
-                        self.preview_scroll = 0;
-                        self.sync_worker_hints();
-                        self.status_message = Some("Killed terminal".into());
-                    }
-                    Err(e) => {
-                        self.status_message = Some(format!("Error: {e}"));
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn scroll_preview_down(&mut self) {
-        self.preview_scroll = self.preview_scroll.saturating_add(3);
-    }
-
-    pub fn scroll_preview_up(&mut self) {
-        self.preview_scroll = self.preview_scroll.saturating_sub(3);
-    }
-
-    /// True when the diff preview tab is active for a session or task.
-    pub fn diff_focused(&self) -> bool {
-        self.preview_mode == PreviewMode::Diff
-            && matches!(
-                self.selected_item(),
-                Some(ListItem::Session { .. }) | Some(ListItem::Task { .. })
-            )
-    }
-
-    /// Storage key for diff comments on the selected item.
-    pub fn diff_storage_key(&self) -> Option<String> {
-        match self.selected_item()? {
-            ListItem::Session { session, .. } => Some(session.name.clone()),
-            ListItem::Task {
-                project_name, task, ..
-            } if self.preview_mode == PreviewMode::Diff => {
-                Some(task_diff_key(project_name, &task.branch))
-            }
-            _ => None,
-        }
-    }
-
-    fn selected_diff_content(&self) -> Option<&str> {
-        match self.selected_item()? {
-            ListItem::Session { .. } => self.preview_content.as_deref(),
-            ListItem::Task { .. } if self.preview_mode == PreviewMode::Diff => {
-                self.task_diff.as_ref().map(|d| d.diff_output.as_str())
-            }
-            _ => None,
-        }
-    }
-
-    fn diff_rows_for_selected(&self) -> Vec<crate::ui::DiffRow<'_>> {
-        let key = match self.diff_storage_key() {
-            Some(k) => k,
-            None => return Vec::new(),
-        };
-        let content = match self.selected_diff_content() {
-            Some(c) => c,
-            None => return Vec::new(),
-        };
-        let comments = self.diff_comments.get(&key).cloned().unwrap_or_default();
-        crate::ui::parse_diff_rows(content, &comments)
-    }
-
-    fn code_row_indices(&self) -> Vec<usize> {
-        self.diff_rows_for_selected()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| {
-                if matches!(r, crate::ui::DiffRow::Code { .. }) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    pub fn move_diff_cursor_down(&mut self) {
-        let codes = self.code_row_indices();
-        if codes.is_empty() {
-            return;
-        }
-        // Find next code row strictly after current cursor.
-        let next = codes.iter().find(|&&i| i > self.diff_cursor).copied();
-        if let Some(n) = next {
-            self.diff_cursor = n;
-        } else {
-            self.diff_cursor = *codes.last().unwrap();
-        }
-        self.ensure_cursor_visible();
-    }
-
-    pub fn move_diff_cursor_up(&mut self) {
-        let codes = self.code_row_indices();
-        if codes.is_empty() {
-            return;
-        }
-        let prev = codes.iter().rev().find(|&&i| i < self.diff_cursor).copied();
-        if let Some(p) = prev {
-            self.diff_cursor = p;
-        } else {
-            self.diff_cursor = *codes.first().unwrap();
-        }
-        self.ensure_cursor_visible();
-    }
-
-    fn ensure_cursor_visible(&mut self) {
-        // Approximate: keep cursor within ~3 lines of scroll viewport top.
-        if self.diff_cursor < self.preview_scroll {
-            self.preview_scroll = self.diff_cursor.saturating_sub(2);
-        } else if self.diff_cursor > self.preview_scroll + 20 {
-            self.preview_scroll = self.diff_cursor.saturating_sub(20);
-        }
-    }
-
-    fn current_code_loc(&self) -> Option<crate::ui::DiffLineLoc> {
-        let rows = self.diff_rows_for_selected();
-        match rows.get(self.diff_cursor) {
-            Some(crate::ui::DiffRow::Code { loc, .. }) => Some(loc.clone()),
-            _ => {
-                // Fall back to first code row if cursor isn't on one
-                rows.iter().find_map(|r| match r {
-                    crate::ui::DiffRow::Code { loc, .. } => Some(loc.clone()),
-                    _ => None,
-                })
-            }
-        }
-    }
-
-    pub fn start_add_diff_comment(&mut self) {
-        let target_key = match self.diff_storage_key() {
-            Some(k) => k,
-            None => return,
-        };
-        let loc = match self.current_code_loc() {
-            Some(l) => l,
-            None => {
-                self.status_message = Some("No diff line under cursor".into());
-                return;
-            }
-        };
-        self.pending_comment = Some(PendingComment {
-            target_key,
-            file: loc.file.clone(),
-            line: loc.line,
-            side: loc.side,
-        });
-        self.input_buffer.clear();
-        self.input_mode = InputMode::AddDiffComment;
-        let side_label = match loc.side {
-            DiffSide::Added => "+",
-            DiffSide::Removed => "-",
-            DiffSide::Context => " ",
-        };
-        self.status_message = Some(format!(
-            "Comment on {}:{} ({}): ",
-            loc.file, loc.line, side_label
-        ));
-    }
-
-    pub fn confirm_add_diff_comment(&mut self) {
-        let pending = match self.pending_comment.take() {
-            Some(p) => p,
-            None => {
-                self.cancel_input();
-                return;
-            }
-        };
-        let text = self.input_buffer.trim().to_string();
-        if text.is_empty() {
-            self.cancel_input();
-            return;
-        }
-        let entry = self.diff_comments.entry(pending.target_key).or_default();
-        entry.push(DiffComment {
-            file: pending.file,
-            line: pending.line,
-            side: pending.side,
-            text,
-        });
-        self.input_buffer.clear();
-        self.input_mode = InputMode::Normal;
-        self.status_message = Some("Comment added".into());
-    }
-
-    pub fn delete_diff_comment(&mut self) {
-        let key = match self.diff_storage_key() {
-            Some(k) => k,
-            None => return,
-        };
-        let loc = match self.current_code_loc() {
-            Some(l) => l,
-            None => return,
-        };
-        if let Some(list) = self.diff_comments.get_mut(&key) {
-            let before = list.len();
-            list.retain(|c| !(c.file == loc.file && c.line == loc.line && c.side == loc.side));
-            if list.len() < before {
-                self.status_message = Some("Comment removed".into());
-            }
-            if list.is_empty() {
-                self.diff_comments.remove(&key);
-            }
-        }
-    }
-
-    pub fn submit_diff_comments(&mut self, submit: bool) {
-        let key = match self.diff_storage_key() {
-            Some(k) => k,
-            None => return,
-        };
-        let comments = match self.diff_comments.get(&key) {
-            Some(c) if !c.is_empty() => c.clone(),
-            _ => {
-                self.status_message = Some("No comments to submit".into());
-                return;
-            }
-        };
-
-        match self.selected_item().cloned() {
-            Some(ListItem::Session { session, .. }) => {
-                self.send_comments_to_session(&session.name, &key, &comments, submit);
-            }
-            Some(ListItem::Task {
-                project_name, task, ..
-            }) => {
-                let task_sessions =
-                    tmux::sessions_for_task(&project_name, &task.name, &self.sessions);
-                match task_sessions.len() {
-                    0 => {
-                        self.status_message = Some("No sessions on this task to submit to".into());
-                    }
-                    1 => {
-                        let target = task_sessions[0].name.clone();
-                        self.send_comments_to_session(&target, &key, &comments, submit);
-                    }
-                    _ => {
-                        self.pending_submit = Some(PendingSubmit {
-                            storage_key: key,
-                            sessions: task_sessions,
-                            selected: 0,
-                            submit,
-                            comments,
-                        });
-                        self.input_mode = InputMode::SelectSubmitSession;
-                        self.status_message = Some(if submit {
-                            "Select session to send + submit comments to".into()
-                        } else {
-                            "Select session to paste comments into".into()
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub fn move_submit_session_up(&mut self) {
-        if let Some(p) = self.pending_submit.as_mut() {
-            if p.selected > 0 {
-                p.selected -= 1;
-            }
-        }
-    }
-
-    pub fn move_submit_session_down(&mut self) {
-        if let Some(p) = self.pending_submit.as_mut() {
-            if p.selected + 1 < p.sessions.len() {
-                p.selected += 1;
-            }
-        }
-    }
-
-    pub fn confirm_submit_session(&mut self) {
-        let pending = match self.pending_submit.take() {
-            Some(p) => p,
-            None => {
-                self.input_mode = InputMode::Normal;
-                return;
-            }
-        };
-        let target = match pending.sessions.get(pending.selected) {
-            Some(s) => s.name.clone(),
-            None => {
-                self.input_mode = InputMode::Normal;
-                return;
-            }
-        };
-        self.input_mode = InputMode::Normal;
-        self.send_comments_to_session(
-            &target,
-            &pending.storage_key,
-            &pending.comments,
-            pending.submit,
-        );
-    }
-
-    fn send_comments_to_session(
-        &mut self,
-        session_name: &str,
-        storage_key: &str,
-        comments: &[DiffComment],
-        submit: bool,
-    ) {
-        let prompt = build_comment_prompt(comments);
-        match tmux::send_text(session_name, &prompt, submit) {
-            Ok(()) => {
-                self.diff_comments.remove(storage_key);
-                self.status_message = Some(if submit {
-                    format!("Sent {} comment(s) to {session_name}", comments.len())
-                } else {
-                    format!(
-                        "Pasted {} comment(s) into {session_name} — review and submit",
-                        comments.len()
-                    )
-                });
-            }
-            Err(e) => {
-                self.status_message = Some(format!("Error sending comments: {e}"));
-            }
-        }
-    }
-}
-
-fn build_comment_prompt(comments: &[DiffComment]) -> String {
-    let mut s = String::from("Code review feedback on the current diff:\n\n");
-    let mut by_file: std::collections::BTreeMap<&str, Vec<&DiffComment>> =
-        std::collections::BTreeMap::new();
-    for c in comments {
-        by_file.entry(c.file.as_str()).or_default().push(c);
-    }
-    for (file, items) in by_file {
-        s.push_str(&format!("## {file}\n"));
-        let mut sorted = items;
-        sorted.sort_by_key(|c| c.line);
-        for c in sorted {
-            let side = match c.side {
-                DiffSide::Added => "added",
-                DiffSide::Removed => "removed",
-                DiffSide::Context => "context",
-            };
-            s.push_str(&format!("- L{} ({}): {}\n", c.line, side, c.text));
-        }
-        s.push('\n');
-    }
-    s.push_str("Please address each point.");
-    s
 }
 
 /// Copy `text` to the system clipboard. Tries `pbcopy` (macOS), `wl-copy`

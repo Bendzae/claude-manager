@@ -166,8 +166,6 @@ fn main() -> Result<()> {
 
         if let Some(session_name) = app.should_attach.take() {
             tmux::attach_session(&session_name)?;
-        } else if let Some((session_name, window_idx)) = app.should_attach_window.take() {
-            tmux::attach_session_window(&session_name, window_idx)?;
         } else if let Some(path) = app.should_open_editor.take() {
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
             std::process::Command::new(&editor).arg(&path).status()?;
@@ -220,40 +218,22 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         }
                         KeyCode::Up => app.move_up(),
                         KeyCode::Down => app.move_down(),
-                        KeyCode::Char(c) if c == kb.move_up && app.diff_focused() => {
-                            app.move_diff_cursor_up()
-                        }
-                        KeyCode::Char(c) if c == kb.move_down && app.diff_focused() => {
-                            app.move_diff_cursor_down()
-                        }
                         KeyCode::Char(c) if c == kb.move_up => app.move_up(),
                         KeyCode::Char(c) if c == kb.move_down => app.move_down(),
-                        KeyCode::Char('c') if app.diff_focused() => app.start_add_diff_comment(),
-                        KeyCode::Char('x') if app.diff_focused() => app.delete_diff_comment(),
-                        KeyCode::Char('s') if app.diff_focused() => app.submit_diff_comments(false),
-                        KeyCode::Char('S') if app.diff_focused() => app.submit_diff_comments(true),
                         KeyCode::Enter => {
                             app.enter_selected();
-                            if app.should_attach.is_some()
-                                || app.should_attach_window.is_some()
-                                || app.should_open_editor.is_some()
-                            {
+                            if app.should_attach.is_some() || app.should_open_editor.is_some() {
                                 return Ok(());
                             }
                         }
                         KeyCode::Char(c) if c == kb.toggle_collapse => app.toggle_collapse(),
                         KeyCode::Char(c) if c == kb.context_menu => app.open_context_menu(),
                         KeyCode::Char(c) if c == kb.add_project => app.start_add_project(),
-                        KeyCode::Char(c) if c == kb.scroll_preview_down => {
-                            app.scroll_preview_down()
-                        }
-                        KeyCode::Char(c) if c == kb.scroll_preview_up => app.scroll_preview_up(),
                         KeyCode::Char(c) if c == kb.toggle_archive_view => {
                             app.toggle_archive_view()
                         }
                         KeyCode::Char(c) if c == kb.search => app.start_search(),
                         KeyCode::Char(c) if c == kb.cycle_theme => app.cycle_theme(),
-                        KeyCode::Tab => app.toggle_preview_mode(),
                         _ => {}
                     },
                     InputMode::ContextMenu => match key.code {
@@ -404,27 +384,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.input_buffer.pop();
                         }
                         KeyCode::Char(c) => app.input_buffer.push(c),
-                        _ => {}
-                    },
-                    InputMode::AddDiffComment => match key.code {
-                        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
-                            app.input_buffer.push('\n');
-                        }
-                        KeyCode::Enter => app.confirm_add_diff_comment(),
-                        KeyCode::Esc => app.cancel_input(),
-                        KeyCode::Backspace => {
-                            app.input_buffer.pop();
-                        }
-                        KeyCode::Char(c) => app.input_buffer.push(c),
-                        _ => {}
-                    },
-                    InputMode::SelectSubmitSession => match key.code {
-                        KeyCode::Esc => app.cancel_input(),
-                        KeyCode::Up => app.move_submit_session_up(),
-                        KeyCode::Down => app.move_submit_session_down(),
-                        KeyCode::Char(c) if c == kb.move_up => app.move_submit_session_up(),
-                        KeyCode::Char(c) if c == kb.move_down => app.move_submit_session_down(),
-                        KeyCode::Enter => app.confirm_submit_session(),
                         _ => {}
                     },
                     InputMode::SetBaseBranch => match key.code {
