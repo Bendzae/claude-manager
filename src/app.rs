@@ -128,20 +128,6 @@ pub enum ContextAction {
     Review,
 }
 
-/// A request to launch the external `difit` diff viewer. Set on the app, run by
-/// the main loop after it suspends the TUI.
-#[derive(Debug, Clone)]
-pub struct DifitJob {
-    /// Directory to run difit in.
-    pub cwd: String,
-    /// difit CLI arguments (target/compare-with and flags).
-    pub args: Vec<String>,
-    /// Session to forward any review comments to (first session for a task).
-    pub session: Option<String>,
-    /// Human-readable description of what's being reviewed.
-    pub description: String,
-}
-
 /// Extract the review-comment block difit prints to stdout on exit. Returns
 /// `None` when the session left no comments (difit prints nothing).
 pub fn extract_difit_comments(stdout: &str) -> Option<String> {
@@ -219,8 +205,6 @@ pub struct App {
     /// during rendering so popups can anchor to it. Interior-mutable since draw
     /// only borrows `&App`.
     pub selected_row: std::cell::Cell<u16>,
-    /// Pending request to launch difit; handled by the main loop.
-    pub should_run_difit: Option<DifitJob>,
 }
 
 pub struct OpResult {
@@ -360,7 +344,6 @@ impl App {
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
             selected_row: std::cell::Cell::new(0),
-            should_run_difit: None,
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -1110,9 +1093,11 @@ impl App {
     }
 
     /// Launch difit to review a task (branch vs base) or a session (uncommitted
-    /// changes). Review comments are forwarded to the agent on exit.
+    /// changes). Runs in the background so the TUI stays interactive; on exit any
+    /// review comments are forwarded to the agent session as a new prompt.
     pub fn start_review(&mut self) {
-        let job = match self.selected_item().cloned() {
+        // (cwd, difit args, session to forward to, description)
+        let (cwd, args, session, description) = match self.selected_item().cloned() {
             Some(ListItem::Task {
                 project_name,
                 project_path,
@@ -1126,12 +1111,12 @@ impl App {
                 let session = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
                     .first()
                     .map(|s| s.name.clone());
-                DifitJob {
-                    cwd: project_path,
-                    args: vec![base_ref, task.branch.clone(), "--merge-base".to_string()],
+                (
+                    project_path,
+                    vec![base_ref, task.branch.clone(), "--merge-base".to_string()],
                     session,
-                    description: format!("{} vs {base}", task.branch),
-                }
+                    format!("{} vs {base}", task.branch),
+                )
             }
             Some(ListItem::Session {
                 project_path,
@@ -1142,19 +1127,54 @@ impl App {
                     .worktree_path()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or(project_path);
-                DifitJob {
+                (
                     cwd,
-                    args: vec![".".to_string(), "--include-untracked".to_string()],
-                    session: Some(session.name.clone()),
-                    description: format!("uncommitted changes in {}", session.session_name),
-                }
+                    vec![".".to_string(), "--include-untracked".to_string()],
+                    Some(session.name.clone()),
+                    format!("uncommitted changes in {}", session.session_name),
+                )
             }
             _ => {
                 self.status_message = Some("Select a task or session to review".into());
                 return;
             }
         };
-        self.should_run_difit = Some(job);
+
+        self.start_op(&format!("Reviewing {description} in difit…"), move || {
+            // `.output()` captures difit's stdout/stderr (keeping them off the
+            // TUI) and blocks this background thread until the browser closes.
+            let message = match std::process::Command::new("difit")
+                .args(&args)
+                .current_dir(&cwd)
+                .output()
+            {
+                Err(e) => format!("difit failed to launch: {e}"),
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    match extract_difit_comments(&stdout) {
+                        Some(comments) => match &session {
+                            Some(s) => {
+                                let prompt = format!(
+                                    "The following code review comments were left in difit. \
+                                     Please address them:\n\n{comments}"
+                                );
+                                match tmux::send_text(s, &prompt, true) {
+                                    Ok(()) => format!("Forwarded review comments to {s}"),
+                                    Err(e) => format!("Failed to forward comments: {e}"),
+                                }
+                            }
+                            None => "Review finished; no session to forward comments to".into(),
+                        },
+                        None => "Review closed with no comments".into(),
+                    }
+                }
+            };
+            OpResult {
+                message,
+                rebuild: false,
+                reload_config: false,
+            }
+        });
     }
 
     pub fn start_search(&mut self) {

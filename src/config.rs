@@ -93,7 +93,7 @@ fn cm_toggle_stacked() -> char {
 }
 
 fn cm_review() -> char {
-    'v'
+    'r'
 }
 fn kb_toggle_archive_view() -> char {
     'Z'
