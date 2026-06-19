@@ -83,6 +83,10 @@ fn cm_toggle_stacked() -> char {
 fn cm_review() -> char {
     'r'
 }
+
+fn cm_terminal() -> char {
+    't'
+}
 fn kb_toggle_archive_view() -> char {
     'Z'
 }
@@ -150,9 +154,12 @@ pub struct ContextMenuKeyBindings {
     /// Toggle stacked-PR mode for a task (default: s)
     #[serde(default = "cm_toggle_stacked")]
     pub toggle_stacked: char,
-    /// Review diff in difit (default: v)
+    /// Review diff in difit (default: r)
     #[serde(default = "cm_review")]
     pub review: char,
+    /// Open/attach a terminal in the session worktree (default: t)
+    #[serde(default = "cm_terminal")]
+    pub terminal: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -175,6 +182,7 @@ impl Default for ContextMenuKeyBindings {
             archive: cm_archive(),
             toggle_stacked: cm_toggle_stacked(),
             review: cm_review(),
+            terminal: cm_terminal(),
         }
     }
 }

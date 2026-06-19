@@ -634,6 +634,67 @@ pub fn attach_session(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Attach to a specific window of a session (selects it first).
+pub fn attach_session_window(session_name: &str, window_idx: usize) -> Result<()> {
+    let _ = Command::new("tmux")
+        .args([
+            "select-window",
+            "-t",
+            &format!("{session_name}:{window_idx}"),
+        ])
+        .output();
+
+    let status = Command::new("tmux")
+        .args(["attach-session", "-t", session_name])
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to attach to tmux session");
+    }
+    Ok(())
+}
+
+/// Number of terminal windows in a session (windows past index 0, the agent).
+pub fn count_terminal_windows(session_name: &str) -> usize {
+    let output = Command::new("tmux")
+        .args(["list-windows", "-t", session_name, "-F", "#{window_index}"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter(|line| line.trim().parse::<usize>().is_ok_and(|i| i > 0))
+            .count(),
+        _ => 0,
+    }
+}
+
+/// Create a terminal window in the session rooted at `work_dir`. Returns its
+/// window index.
+pub fn create_terminal_window(session_name: &str, work_dir: &str) -> Result<usize> {
+    let output = Command::new("tmux")
+        .args([
+            "new-window",
+            "-t",
+            session_name,
+            "-c",
+            work_dir,
+            "-P",
+            "-F",
+            "#{window_index}",
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Failed to create terminal window");
+    }
+
+    let idx = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(1);
+    Ok(idx)
+}
+
 fn get_session_env(session_name: &str, var: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["show-environment", "-t", session_name, var])

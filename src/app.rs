@@ -88,6 +88,7 @@ pub enum ContextAction {
     Unarchive,
     ToggleStacked,
     Review,
+    Terminal,
 }
 
 /// Extract the review-comment block difit prints to stdout on exit. Returns
@@ -112,6 +113,8 @@ pub struct App {
     pub status_message: Option<String>,
     pub should_quit: bool,
     pub should_attach: Option<String>,
+    /// Attach to a specific (session, window index) — used for terminals.
+    pub should_attach_window: Option<(String, usize)>,
     pub should_open_editor: Option<PathBuf>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
@@ -247,6 +250,7 @@ impl App {
             status_message: None,
             should_quit: false,
             should_attach: None,
+            should_attach_window: None,
             should_open_editor: None,
             pending_project_path: None,
             pending_task_name: None,
@@ -771,6 +775,11 @@ impl App {
                         label: "Update",
                         action: ContextAction::Update,
                     },
+                    ContextMenuItem {
+                        key: cm.terminal,
+                        label: "Terminal",
+                        action: ContextAction::Terminal,
+                    },
                 ];
                 items.push(ContextMenuItem {
                     key: cm.copy_path,
@@ -817,6 +826,7 @@ impl App {
             ContextAction::Archive => self.archive_task(),
             ContextAction::Unarchive => self.unarchive_task(),
             ContextAction::Review => self.start_review(),
+            ContextAction::Terminal => self.open_terminal(),
         }
     }
 
@@ -1023,6 +1033,41 @@ impl App {
                 reload_config: false,
             }
         });
+    }
+
+    /// Open a terminal in the session's worktree: create one if none exists,
+    /// then attach to it (attaches directly if one already exists).
+    pub fn open_terminal(&mut self) {
+        let (name, cwd) = match self.selected_item().cloned() {
+            Some(ListItem::Session {
+                project_path,
+                session,
+                ..
+            })
+            | Some(ListItem::AdhocSession {
+                project_path,
+                session,
+                ..
+            }) => {
+                let cwd = session
+                    .worktree_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(project_path);
+                (session.name.clone(), cwd)
+            }
+            _ => {
+                self.status_message = Some("Select a session to open a terminal".into());
+                return;
+            }
+        };
+        if tmux::count_terminal_windows(&name) == 0 {
+            if let Err(e) = tmux::create_terminal_window(&name, &cwd) {
+                self.status_message = Some(format!("Error: {e}"));
+                return;
+            }
+        }
+        // Window 0 is the agent; the first terminal is window 1.
+        self.should_attach_window = Some((name, 1));
     }
 
     pub fn start_search(&mut self) {
