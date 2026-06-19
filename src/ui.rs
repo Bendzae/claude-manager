@@ -117,7 +117,8 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
 fn is_text_input_mode(mode: InputMode) -> bool {
     matches!(
         mode,
-        InputMode::AddProjectName
+        InputMode::AddProjectPath
+            | InputMode::AddProjectName
             | InputMode::AddSessionName
             | InputMode::AddSessionPrompt
             | InputMode::AddAdhocSessionName
@@ -1136,6 +1137,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::SetBaseBranch => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
+        }
+        InputMode::AddProjectPath => {
+            help_bar(&[("⏎", "confirm"), ("⇥", "complete"), ("Esc", "cancel")])
         }
         InputMode::Search => help_bar(&[("⏎", "apply"), ("Esc", "clear")]),
     };

@@ -43,6 +43,7 @@ pub enum ListItem {
 pub enum InputMode {
     Normal,
     ContextMenu,
+    AddProjectPath,
     AddProjectName,
     AddTaskName,
     AddTaskBranch,
@@ -177,6 +178,68 @@ fn task_key(project: &str, task: &str) -> String {
 
 fn adhoc_group_key(project: &str) -> String {
     format!("a:{project}")
+}
+
+/// Expand a leading `~` to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix('~') {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.to_string_lossy(), rest);
+        }
+    }
+    path.to_string()
+}
+
+/// Longest common prefix shared by all strings.
+fn longest_common_prefix(items: &[String]) -> String {
+    let first = match items.first() {
+        Some(f) => f,
+        None => return String::new(),
+    };
+    let mut len = first.chars().count();
+    for item in &items[1..] {
+        len = first
+            .chars()
+            .zip(item.chars())
+            .take(len)
+            .take_while(|(a, b)| a == b)
+            .count();
+    }
+    first.chars().take(len).collect()
+}
+
+/// Tab-completion for a directory path: completes the final component to the
+/// longest common prefix of matching subdirectories, preserving the typed
+/// directory portion (including a leading `~`). Returns `None` if nothing matches.
+fn complete_dir_path(input: &str) -> Option<String> {
+    // Split the typed directory portion (kept verbatim) from the partial name.
+    let (typed_dir, partial) = match input.rfind('/') {
+        Some(i) => (&input[..=i], &input[i + 1..]),
+        None => ("", input),
+    };
+    let listing_dir = match expand_tilde(typed_dir).as_str() {
+        "" => ".".to_string(),
+        d => d.to_string(),
+    };
+
+    let mut names: Vec<String> = std::fs::read_dir(&listing_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(partial))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+
+    let mut completed = format!("{typed_dir}{}", longest_common_prefix(&names));
+    // A single unambiguous match is a directory — append a slash to descend.
+    if names.len() == 1 {
+        completed.push('/');
+    }
+    Some(completed)
 }
 
 impl App {
@@ -1169,30 +1232,51 @@ impl App {
     }
 
     pub fn start_add_project(&mut self) {
-        let cwd = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(_) => {
-                self.status_message = Some("Error: cannot determine current directory".into());
-                return;
-            }
-        };
-        let cwd_str = cwd.to_string_lossy().to_string();
+        // Prefill with the current directory as a convenient starting point; the
+        // user can edit it (Tab completes directory paths).
+        self.input_buffer = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.input_mode = InputMode::AddProjectPath;
+        self.status_message = Some("Project directory (⇥ to complete): ".into());
+    }
 
-        if !cwd.join(".git").is_dir() {
-            self.status_message = Some("Error: current directory is not a git repository".into());
+    /// Tab-complete the directory path currently in the input buffer.
+    pub fn complete_project_path(&mut self) {
+        if let Some(completed) = complete_dir_path(&self.input_buffer) {
+            self.input_buffer = completed;
+        }
+    }
+
+    /// Validate the entered project directory, then prompt for a name.
+    pub fn confirm_add_project_path(&mut self) {
+        let raw = self.input_buffer.trim();
+        if raw.is_empty() {
+            self.status_message = Some("Enter a directory path".into());
             return;
         }
-        if self.config.has_project_at(&cwd_str) {
+        let path = std::path::PathBuf::from(expand_tilde(raw));
+        if !path.is_dir() {
+            self.status_message = Some("Not a directory".into());
+            return;
+        }
+        let path = path.canonicalize().unwrap_or(path);
+        let path_str = path.to_string_lossy().to_string();
+        if !path.join(".git").is_dir() {
+            self.status_message = Some("Not a git repository".into());
+            return;
+        }
+        if self.config.has_project_at(&path_str) {
             self.status_message = Some("Project already registered".into());
             return;
         }
 
-        self.pending_project_path = Some(cwd_str);
-        self.input_mode = InputMode::AddProjectName;
-        let default_name = cwd
+        let default_name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
+        self.pending_project_path = Some(path_str);
+        self.input_mode = InputMode::AddProjectName;
         self.input_buffer.clear();
         self.status_message = Some(format!("Enter project name (default: {default_name}): "));
     }

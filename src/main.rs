@@ -281,6 +281,16 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         }
                         _ => {}
                     },
+                    InputMode::AddProjectPath => match key.code {
+                        KeyCode::Enter => app.confirm_add_project_path(),
+                        KeyCode::Tab => app.complete_project_path(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
                     InputMode::AddProjectName => match key.code {
                         KeyCode::Enter => app.confirm_add_project(),
                         KeyCode::Esc => app.cancel_input(),
