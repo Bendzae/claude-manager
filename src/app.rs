@@ -190,6 +190,10 @@ pub struct App {
     pub search_query: String,
     /// Index into `theme::THEMES` of the active color theme.
     pub theme_index: usize,
+    /// Screen row (relative to the list area top) of the selected item, recorded
+    /// during rendering so popups can anchor to it. Interior-mutable since draw
+    /// only borrows `&App`.
+    pub selected_row: std::cell::Cell<u16>,
 }
 
 pub struct OpResult {
@@ -328,6 +332,7 @@ impl App {
             theme_index: config::load_theme()
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
+            selected_row: std::cell::Cell::new(0),
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {

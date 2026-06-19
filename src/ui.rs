@@ -1012,6 +1012,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<ListItem> = vec![header_line(&widths)];
     let mut card_open = false;
     let mut seen_card = false;
+    let mut sel_row = 0u16;
     for row in rows {
         match row {
             Row::CardTop {
@@ -1030,6 +1031,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     lines.push(ListItem::new(Line::raw("")));
                 }
                 seen_card = true;
+                if selected {
+                    sel_row = lines.len() as u16;
+                }
                 lines.push(card_top(area.width, chevron, name, meta, branch, selected));
                 if collapsed {
                     lines.push(card_bottom(area.width));
@@ -1048,6 +1052,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
             } => {
                 let right = meta_block(churn, badge, branch, &widths);
                 let inner = row_line(left, right, widths.name);
+                if selected {
+                    sel_row = lines.len() as u16;
+                }
                 lines.push(wrap_body(area.width, rail, inner, selected));
             }
         }
@@ -1055,6 +1062,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     if card_open {
         lines.push(card_bottom(area.width));
     }
+    app.selected_row.set(sel_row);
 
     let list = List::new(lines).block(Block::default().borders(Borders::NONE));
     f.render_widget(list, area);
@@ -1655,13 +1663,15 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
     let menu_width = (max_label_width + 8).max(16) as u16;
     let menu_height = items.len() as u16 + 2; // +2 for border
 
-    // Position: left-aligned near the list, vertically centered on selected item
+    // Position: anchored to the selected item's row, nudged one row down so it
+    // drops from the item; clamped to stay within the list area.
     let x = area.x + 4;
-    let y = area.y + (area.height.saturating_sub(menu_height)) / 2;
+    let y = area.y + app.selected_row.get().saturating_add(1);
+    let max_y = (area.y + area.height).saturating_sub(menu_height);
 
     let menu_area = Rect {
         x: x.min(area.x + area.width - menu_width),
-        y: y.min(area.y + area.height - menu_height),
+        y: y.min(max_y),
         width: menu_width.min(area.width),
         height: menu_height.min(area.height),
     };
