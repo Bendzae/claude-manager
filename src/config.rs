@@ -84,6 +84,12 @@ fn cm_review() -> char {
 fn cm_terminal() -> char {
     't'
 }
+fn cm_fetch_pull() -> char {
+    'f'
+}
+fn cm_run() -> char {
+    'x'
+}
 fn kb_toggle_archive_view() -> char {
     'Z'
 }
@@ -154,6 +160,12 @@ pub struct ContextMenuKeyBindings {
     /// Open/attach a terminal in the session worktree (default: t)
     #[serde(default = "cm_terminal")]
     pub terminal: char,
+    /// Fetch & pull all branches for a project (default: f)
+    #[serde(default = "cm_fetch_pull")]
+    pub fetch_pull: char,
+    /// Run the project's configured run command (default: x)
+    #[serde(default = "cm_run")]
+    pub run: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -176,6 +188,8 @@ impl Default for ContextMenuKeyBindings {
             toggle_stacked: cm_toggle_stacked(),
             review: cm_review(),
             terminal: cm_terminal(),
+            fetch_pull: cm_fetch_pull(),
+            run: cm_run(),
         }
     }
 }
@@ -334,6 +348,11 @@ pub struct Project {
         serialize_with = "serialize_setup_commands"
     )]
     pub setup_commands: Vec<String>,
+    /// Command run by the "Run" action (e.g. "npm run dev"). Prompted for and
+    /// saved on first use; executed in a dedicated tmux session in the selected
+    /// item's working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_command: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -591,6 +610,7 @@ impl Config {
                 tasks: vec![],
                 copy_patterns: vec![],
                 setup_commands: vec![],
+                run_command: None,
             });
         }
     }
@@ -662,6 +682,31 @@ impl Config {
                     .filter(|b| !b.is_empty() && b != "main");
                 return true;
             }
+        }
+        false
+    }
+
+    /// The configured run command for a project, trimmed; `None` if unset/empty.
+    pub fn project_run_command(&self, project_name: &str) -> Option<&str> {
+        self.projects
+            .iter()
+            .find(|p| p.name == project_name)
+            .and_then(|p| p.run_command.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Set (or clear, when empty) the run command for a project. Returns true if
+    /// the project was found.
+    pub fn set_project_run_command(&mut self, project_name: &str, command: String) -> bool {
+        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
+            let trimmed = command.trim();
+            project.run_command = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            return true;
         }
         false
     }
@@ -923,6 +968,36 @@ mod tests {
         cfg.add_project("App".into(), "/tmp/app".into());
         cfg.remove_project("/tmp/app");
         assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn project_run_command_round_trip() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        assert_eq!(cfg.project_run_command("App"), None);
+
+        assert!(cfg.set_project_run_command("App", "  npm run dev  ".into()));
+        // Stored trimmed and read back.
+        assert_eq!(cfg.project_run_command("App"), Some("npm run dev"));
+
+        // Blank input clears it.
+        assert!(cfg.set_project_run_command("App", "   ".into()));
+        assert_eq!(cfg.project_run_command("App"), None);
+
+        // Unknown project is a no-op miss.
+        assert!(!cfg.set_project_run_command("Missing", "x".into()));
+        assert_eq!(cfg.project_run_command("Missing"), None);
+    }
+
+    #[test]
+    fn run_command_skipped_when_unset() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!s.contains("run_command"));
+        cfg.set_project_run_command("App", "make serve".into());
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(s.contains("run_command = \"make serve\""));
     }
 
     #[test]
