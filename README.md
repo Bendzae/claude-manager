@@ -11,6 +11,7 @@ Claude Manager uses tmux to run Claude Code sessions in the background, letting 
 - **Claude Code CLI** (`claude`) — must be installed and available in your PATH
 - **git** — for worktree and branch management
 - **gh** (optional) — GitHub CLI, for PR creation features
+- **difit** (optional) — for the diff review feature (`r`). Installed globally (`npm i -g difit`) it launches instantly; otherwise it runs via `npx` automatically (Node.js required), fetched on first use.
 
 ## Installation
 
@@ -67,8 +68,29 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 | Key | Action | Config key |
 |-----|--------|------------|
 | `t` | Add task | `add_task` |
+| `A` | New adhoc session | `new_adhoc_session` |
+| `x` | Run the project's configured run command | `run` |
+| `b` | Checkout branch (fuzzy-search the branch list) | `checkout` |
+| `f` | Fetch & pull all branches (`git fetch --all --prune` + ff-only pull) | `fetch_pull` |
+| `y` | Copy project path to clipboard | `copy_path` |
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
+
+The branch checkout picker opens a fuzzy finder over the project's local and remote branches — type to filter, `↑/↓` to navigate, `Enter` to check out (a remote-only branch is checked out as a new local tracking branch).
+
+**Run command** (`x`, available on projects, tasks, and sessions) launches a per-project command in a dedicated tmux session and attaches to it. The first time you run it for a project you're prompted for the command (e.g. `npm run dev`); it's saved to that project's `run_command` config and reused everywhere afterwards. It runs in the selected item's working directory: the session's worktree for a session, the task's first session worktree (or the project dir) for a task, and the project dir for a project.
+
+Each item shows a green run indicator while it has a live run session — an animated spinner (`⠙`) while the command is still executing, and a static `▷` once it finishes (the shell stays open so you can read its output). Detaching with `Ctrl-b d` leaves the command running in the background.
+
+Pressing Run (`x`) again on an item that **already has a live run session** opens a small menu instead of relaunching:
+
+| Key | Action |
+|-----|--------|
+| `a` | **Attach** — re-attach to the running session |
+| `r` | **Restart** — kill and relaunch the run command |
+| `k` | **Kill** — stop the run session |
+
+Run sessions are independent per item, so running on a different item starts a separate session. (Outside the TUI you can also list them with `tmux ls` and attach via `tmux attach -t cmrun-<name>`.)
 
 **Task actions:**
 
@@ -77,6 +99,7 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 | `n` | New session (with worktree) | `new_session` |
 | `N` | New session (without worktree) | `new_session_no_worktree` |
 | `r` | Review branch-vs-base diff in difit | `review` |
+| `x` | Run the project's configured run command | `run` |
 | `u` | Update/rebase branch onto main | `update` |
 | `B` | Set base branch | `set_base_branch` |
 | `P` | Push branch | `push` |
@@ -107,6 +130,7 @@ A running TUI picks up config/flag changes on its next idle refresh, and the pub
 | `m` | Merge into task branch | `merge` |
 | `u` | Update/rebase onto task branch | `update` |
 | `t` | Open/attach a terminal in the worktree | `terminal` |
+| `x` | Run the project's configured run command | `run` |
 | `y` | Copy worktree path to clipboard | `copy_path` |
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |

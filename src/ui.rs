@@ -13,6 +13,28 @@ const PAD_TOP: u16 = 1;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Inline "Run" indicator for a list item, when a run session is live: an
+/// animated green spinner while the command is executing, a static green marker
+/// once it has finished (shell still open). `None` when there's no run session.
+fn run_indicator(app: &App, item: &app::ListItem) -> Option<Span<'static>> {
+    match app.run_state_for(item) {
+        Some(true) => {
+            let frame = SPINNER[app.tick % SPINNER.len()];
+            Some(Span::styled(
+                format!("  {frame}"),
+                Style::default()
+                    .fg(current().green)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        }
+        Some(false) => Some(Span::styled(
+            "  ▷".to_string(),
+            Style::default().fg(current().green),
+        )),
+        None => None,
+    }
+}
+
 /// Status icon + colour for a session, used both inline and for the status rail.
 fn status_glyph(status: SessionStatus, tick: usize) -> (&'static str, Color) {
     match status {
@@ -51,12 +73,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_help(f, app, chunks[3]);
     draw_status(f, app, chunks[4]);
 
-    if app.input_mode == InputMode::ContextMenu {
+    if matches!(app.input_mode, InputMode::ContextMenu | InputMode::RunMenu) {
         draw_context_menu(f, app, list_area);
     }
 
     if is_text_input_mode(app.input_mode) {
         draw_floating_input(f, app, list_area);
+    }
+
+    if app.input_mode == InputMode::CheckoutBranch {
+        draw_branch_picker(f, app, list_area);
     }
 }
 
@@ -132,6 +158,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::MergeCommitMessage
             | InputMode::SetBaseBranch
             | InputMode::Search
+            | InputMode::RunCommand
     )
 }
 
@@ -617,6 +644,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     }
                 }
 
+                if let Some(ind) = run_indicator(app, item) {
+                    meta.push(ind);
+                }
+
                 let branch = app.project_branches.get(&project.name).cloned();
                 rows.push(Row::CardTop {
                     chevron,
@@ -676,6 +707,10 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                             Style::default().fg(current().green),
                         ));
                     }
+                }
+
+                if let Some(ind) = run_indicator(app, item) {
+                    left.push(ind);
                 }
 
                 // --- right-hand metadata columns: churn | badge | branch ---
@@ -838,7 +873,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 let continuation = if group_last { "   " } else { "│  " };
                 let branch_char = if session_last { "└─ " } else { "├─ " };
 
-                let spans = vec![
+                let mut spans = vec![
                     Span::styled(indicator, indicator_style),
                     Span::styled(continuation, tree_style),
                     Span::styled(branch_char, tree_style),
@@ -846,6 +881,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("⌂ ", Style::default().fg(current().accent)),
                     Span::styled(&session.session_name, style),
                 ];
+                if let Some(ind) = run_indicator(app, item) {
+                    spans.push(ind);
+                }
                 rows.push(Row::Body {
                     left: spans,
                     churn: Vec::new(),
@@ -899,6 +937,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     left.push(Span::styled("⌂ ", Style::default().fg(current().accent)));
                 }
                 left.push(Span::styled(&session.session_name, style));
+                if let Some(ind) = run_indicator(app, item) {
+                    left.push(ind);
+                }
 
                 // --- right-hand metadata columns: churn | branch ---
                 let churn = app
@@ -1100,6 +1141,112 @@ fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Floating fuzzy branch picker: a filter line plus a scrolling, highlighted
+/// list of matching branches. Centered within the list area.
+fn draw_branch_picker(f: &mut Frame, app: &App, area: Rect) {
+    let matches = app.filtered_branches();
+
+    let width = (area.width.saturating_mul(2) / 3).max(40).min(area.width);
+    // Reserve rows for: border (2) + filter line (1) + separator (1).
+    let max_list_rows = area.height.saturating_sub(6).max(1) as usize;
+    let list_rows = matches.len().clamp(1, max_list_rows);
+    let height = (list_rows as u16 + 4).min(area.height);
+
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(current().accent))
+        .title(Span::styled(
+            format!(" Checkout branch ({} matches) ", matches.len()),
+            Style::default()
+                .fg(current().accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Filter line at the top: "› <query>▌".
+    let filter_area = Rect {
+        x: inner.x + 1,
+        y: inner.y,
+        width: inner.width.saturating_sub(1),
+        height: 1,
+    };
+    let filter_line = Line::from(vec![
+        Span::styled("› ", Style::default().fg(current().muted)),
+        Span::styled(
+            app.input_buffer.clone(),
+            Style::default().fg(current().white),
+        ),
+        Span::styled("▌", Style::default().fg(current().accent)),
+    ]);
+    f.render_widget(Paragraph::new(filter_line), filter_area);
+
+    let list_top = inner.y + 1;
+    let visible = inner.height.saturating_sub(1) as usize;
+
+    if matches.is_empty() {
+        let none_area = Rect {
+            x: inner.x + 1,
+            y: list_top,
+            width: inner.width.saturating_sub(1),
+            height: 1,
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "no matching branches",
+                Style::default().fg(current().muted),
+            )),
+            none_area,
+        );
+        return;
+    }
+
+    // Scroll so the selection stays visible.
+    let selected = app.branch_picker_selected.min(matches.len() - 1);
+    let offset = if selected >= visible {
+        selected + 1 - visible
+    } else {
+        0
+    };
+
+    for (row, branch) in matches.iter().skip(offset).take(visible).enumerate() {
+        let idx = offset + row;
+        let is_selected = idx == selected;
+        let row_area = Rect {
+            x: inner.x,
+            y: list_top + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let (marker, style) = if is_selected {
+            (
+                "▌ ",
+                Style::default()
+                    .fg(current().accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("  ", Style::default().fg(current().white))
+        };
+        let line = Line::from(vec![
+            Span::styled(marker, Style::default().fg(current().accent)),
+            Span::styled((*branch).clone(), style),
+        ]);
+        f.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
 /// Format a keybinding char for display in hints (e.g. ' ' → "␣", uppercase → "S-x").
 fn key_display(c: char) -> String {
     match c {
@@ -1140,6 +1287,12 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             let nav_keys = format!("{}/{}", key_display(kb.move_down), key_display(kb.move_up));
             help_bar(&[("⏎", "select"), (&nav_keys, "navigate"), ("Esc", "close")])
         }
+        InputMode::RunMenu => help_bar(&[
+            ("a", "attach"),
+            ("r", "restart"),
+            ("k", "kill"),
+            ("Esc", "close"),
+        ]),
         InputMode::AddTaskPrompt | InputMode::AddSessionPrompt | InputMode::MergeCommitMessage => {
             help_bar(&[("⏎", "confirm"), ("⌥⏎", "newline"), ("Esc", "cancel")])
         }
@@ -1152,7 +1305,8 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::RenameTask
         | InputMode::RenameSession
         | InputMode::RenameAdhocSession
-        | InputMode::SetBaseBranch => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
+        | InputMode::SetBaseBranch
+        | InputMode::RunCommand => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
             help_bar(&[("y", "confirm"), ("n/Esc", "cancel")])
         }
@@ -1160,6 +1314,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             help_bar(&[("⏎", "confirm"), ("⇥", "complete"), ("Esc", "cancel")])
         }
         InputMode::Search => help_bar(&[("⏎", "apply"), ("Esc", "clear")]),
+        InputMode::CheckoutBranch => {
+            help_bar(&[("⏎", "checkout"), ("↑/↓", "navigate"), ("Esc", "cancel")])
+        }
     };
 
     let help = Paragraph::new(Line::from(help_spans));

@@ -37,6 +37,9 @@ pub struct WorkerUpdate {
     pub stack_prs: HashMap<String, Vec<(String, String)>>,
     /// Current git branch for each project, keyed by project name.
     pub project_branches: HashMap<String, String>,
+    /// Live "Run" sessions, keyed by tmux name (`cmrun-*`); value is true while
+    /// the command is still executing, false once it dropped to a shell.
+    pub run_sessions: HashMap<String, bool>,
 }
 
 pub struct Worker {
@@ -205,6 +208,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             pr_urls: pr_urls.clone(),
             stack_prs: stack_prs.clone(),
             project_branches,
+            run_sessions: tmux::list_run_sessions(),
         };
 
         *latest.lock().unwrap() = Some(update);

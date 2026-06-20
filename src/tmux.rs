@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -164,6 +165,87 @@ pub fn branch_exists(project_path: &str, branch: &str) -> bool {
         ])
         .output()
         .is_ok_and(|o| o.status.success())
+}
+
+/// List checkout-able branches for `project_path`: local branches first, then
+/// remote-tracking branches reduced to their short name (so `git checkout <name>`
+/// creates a local tracking branch). Remote duplicates of local branches and
+/// the symbolic `origin/HEAD` are skipped. Ordering otherwise follows git's
+/// most-recently-committed-first.
+pub fn list_branches(project_path: &str) -> Vec<String> {
+    let mut branches: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Local branches, most recent commit first.
+    if let Ok(out) = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/heads",
+        ])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let name = line.trim();
+            if !name.is_empty() && seen.insert(name.to_string()) {
+                branches.push(name.to_string());
+            }
+        }
+    }
+
+    // Remote branches, reduced to their short name (origin/foo -> foo).
+    if let Ok(out) = Command::new("git")
+        .args([
+            "-C",
+            project_path,
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/remotes",
+        ])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let full = line.trim();
+            // Skip symbolic refs like `origin/HEAD`.
+            if full.is_empty() || full.ends_with("/HEAD") {
+                continue;
+            }
+            let short = full.split_once('/').map(|(_, rest)| rest).unwrap_or(full);
+            if !short.is_empty() && seen.insert(short.to_string()) {
+                branches.push(short.to_string());
+            }
+        }
+    }
+
+    branches
+}
+
+/// Fetch every remote (pruning deleted branches), then fast-forward the
+/// currently checked-out branch. The fetch updates all remote-tracking refs;
+/// the pull is best-effort (a detached HEAD, missing upstream, or diverged
+/// branch leaves the fetch intact and is reported, not treated as failure).
+pub fn fetch_pull_all(project_path: &str) -> Result<String> {
+    let fetch = Command::new("git")
+        .args(["-C", project_path, "fetch", "--all", "--prune"])
+        .output()?;
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        bail!("Fetch failed: {}", stderr.trim());
+    }
+
+    let pull = Command::new("git")
+        .args(["-C", project_path, "pull", "--ff-only"])
+        .output();
+    match pull {
+        Ok(o) if o.status.success() => {
+            Ok("Fetched all remotes; fast-forwarded current branch".to_string())
+        }
+        _ => Ok("Fetched all remotes (current branch not fast-forwarded)".to_string()),
+    }
 }
 
 /// Pull latest main and create a task branch from it.
@@ -673,6 +755,88 @@ pub fn create_terminal_window(session_name: &str, work_dir: &str) -> Result<usiz
         .parse::<usize>()
         .unwrap_or(1);
     Ok(idx)
+}
+
+/// Launch `command` in a dedicated, detached tmux session rooted at `work_dir`
+/// and return its tmux session name. Any prior run session with the same name
+/// is replaced so "Run" always starts fresh. The shell stays alive after the
+/// command exits so its output (and any error) remains visible on attach. The
+/// `cmrun-` name prefix is deliberately unparseable by `from_tmux_name`, so run
+/// sessions never appear in the managed session list.
+/// tmux session name hosting the run command for `label`. Shared by the
+/// launcher and the UI so an item can find its own run session.
+pub fn run_session_name(label: &str) -> String {
+    format!("cmrun-{}", sanitize(label))
+}
+
+/// Live run sessions (`cmrun-*`) mapped to whether their command is still
+/// executing (`true`) versus having dropped to an interactive shell (`false`,
+/// i.e. the command finished). Uses one `list-panes` call across all sessions.
+pub fn list_run_sessions() -> HashMap<String, bool> {
+    let mut map = HashMap::new();
+    let output = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}\t#{pane_current_command}",
+        ])
+        .output();
+    if let Ok(o) = output
+        && o.status.success()
+    {
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            if let Some((name, cmd)) = line.split_once('\t')
+                && name.starts_with("cmrun-")
+            {
+                let active = !is_shell_command(cmd);
+                map.entry(name.to_string())
+                    .and_modify(|v| *v |= active)
+                    .or_insert(active);
+            }
+        }
+    }
+    map
+}
+
+/// Whether `cmd` (a tmux `pane_current_command`) is an interactive shell, i.e.
+/// the run command has finished and left the keep-alive shell in the foreground.
+fn is_shell_command(cmd: &str) -> bool {
+    matches!(
+        cmd.trim_start_matches('-'),
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh"
+    )
+}
+
+pub fn run_command_session(label: &str, work_dir: &str, command: &str) -> Result<String> {
+    let tmux_name = run_session_name(label);
+
+    // Replace any existing run session so re-running restarts the command.
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &tmux_name])
+        .output();
+
+    let shell_cmd = format!("{command}; exec \"${{SHELL:-/bin/sh}}\"");
+    let output = Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            &tmux_name,
+            "-c",
+            work_dir,
+            "sh",
+            "-c",
+            &shell_cmd,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Failed to start run session: {}", stderr.trim());
+    }
+
+    Ok(tmux_name)
 }
 
 fn get_session_env(session_name: &str, var: &str) -> Option<String> {
@@ -2038,6 +2202,25 @@ https://github.com/o/r/pull/12 : Add model
     fn sanitize_replaces_underscores_with_hyphens() {
         // Underscores are not alphanumeric or '-', so they become hyphens
         assert_eq!(sanitize("a__b"), "a-b");
+    }
+
+    // --- run sessions ---
+
+    #[test]
+    fn run_session_name_is_prefixed_and_sanitized() {
+        assert_eq!(run_session_name("My App"), "cmrun-My-App");
+        // The prefix is intentionally unparseable as a managed session.
+        assert!(TmuxSession::from_tmux_name(&run_session_name("App")).is_none());
+    }
+
+    #[test]
+    fn is_shell_command_detects_shells_and_processes() {
+        assert!(is_shell_command("zsh"));
+        assert!(is_shell_command("bash"));
+        assert!(is_shell_command("-zsh")); // login shell form
+        assert!(!is_shell_command("node"));
+        assert!(!is_shell_command("npm"));
+        assert!(!is_shell_command("cargo"));
     }
 
     // --- to_branch_name ---

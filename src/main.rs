@@ -136,6 +136,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::MergeCommitMessage
             | InputMode::SetBaseBranch
             | InputMode::Search
+            | InputMode::RunCommand
     )
 }
 
@@ -417,6 +418,65 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => {
                             app.input_buffer.push(c);
                             app.update_search();
+                        }
+                        _ => {}
+                    },
+                    InputMode::CheckoutBranch => match key.code {
+                        KeyCode::Enter => app.confirm_checkout_branch(),
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Up => app.branch_picker_move_up(),
+                        KeyCode::Down => app.branch_picker_move_down(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                            app.update_branch_filter();
+                        }
+                        KeyCode::Char(c) => {
+                            app.input_buffer.push(c);
+                            app.update_branch_filter();
+                        }
+                        _ => {}
+                    },
+                    InputMode::RunCommand => match key.code {
+                        KeyCode::Enter => {
+                            app.confirm_run_command();
+                            if app.should_attach.is_some() {
+                                return Ok(());
+                            }
+                        }
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => app.input_buffer.push(c),
+                        _ => {}
+                    },
+                    // Arrows-only navigation here (no j/k) so the `k` = Kill
+                    // hotkey is reachable.
+                    InputMode::RunMenu => match key.code {
+                        KeyCode::Esc => app.input_mode = InputMode::Normal,
+                        KeyCode::Up => {
+                            if app.context_menu_selected > 0 {
+                                app.context_menu_selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.context_menu_selected + 1 < app.context_menu_items.len() {
+                                app.context_menu_selected += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(item) =
+                                app.context_menu_items.get(app.context_menu_selected)
+                            {
+                                let action = item.action;
+                                app.execute_context_action(action);
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let Some(item) = app.context_menu_items.iter().find(|i| i.key == c) {
+                                let action = item.action;
+                                app.execute_context_action(action);
+                            }
                         }
                         _ => {}
                     },

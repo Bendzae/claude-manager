@@ -60,6 +60,12 @@ pub enum InputMode {
     ConfirmCreatePr,
     SetBaseBranch,
     Search,
+    /// Fuzzy branch picker for project-level checkout.
+    CheckoutBranch,
+    /// Prompt for a project's run command (first use) before running it.
+    RunCommand,
+    /// Attach / Restart / Kill menu shown when an item's run session is live.
+    RunMenu,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +95,69 @@ pub enum ContextAction {
     ToggleStacked,
     Review,
     Terminal,
+    /// Checkout a branch in the project dir via the fuzzy branch picker.
+    CheckoutBranch,
+    /// Copy the project's directory path to the clipboard.
+    CopyProjectPath,
+    /// Fetch all remotes and fast-forward the current branch for a project.
+    FetchPull,
+    /// Run the project's configured run command for the selected item.
+    Run,
+    /// Attach to the item's existing live run session.
+    RunAttach,
+    /// Restart the item's run session (kill + relaunch the run command).
+    RunRestart,
+    /// Kill the item's run session.
+    RunKill,
+}
+
+/// Where a "Run" action should execute: the owning project (whose `run_command`
+/// is read/saved), the working directory, and a label used to name the tmux run
+/// session.
+#[derive(Debug, Clone)]
+pub struct RunContext {
+    pub project_name: String,
+    pub cwd: String,
+    pub label: String,
+}
+
+/// Label identifying the run session for a list item (the basis of its tmux
+/// run-session name). `None` for items that can't be run (e.g. adhoc groups).
+/// Single source of truth so the launcher and the UI indicator agree.
+pub fn run_label(item: &ListItem) -> Option<String> {
+    match item {
+        ListItem::Project { project } => Some(project.name.clone()),
+        ListItem::Task {
+            project_name, task, ..
+        } => Some(format!("{project_name}-{}", task.name)),
+        ListItem::Session { session, .. } | ListItem::AdhocSession { session, .. } => {
+            Some(session.name.clone())
+        }
+        ListItem::AdhocGroup { .. } => None,
+    }
+}
+
+/// True when a `difit` executable is found on `PATH`.
+fn difit_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join("difit").is_file())
+}
+
+/// Build the command used to launch difit. Prefers a `difit` binary on `PATH`;
+/// otherwise falls back to `npx -y difit` so review works without a global
+/// install (npx fetches the package on first use).
+fn difit_command(args: &[String]) -> std::process::Command {
+    let mut cmd = if difit_on_path() {
+        std::process::Command::new("difit")
+    } else {
+        let mut c = std::process::Command::new("npx");
+        c.args(["-y", "difit"]);
+        c
+    };
+    cmd.args(args);
+    cmd
 }
 
 /// Extract the review-comment block difit prints to stdout on exit. Returns
@@ -147,6 +216,17 @@ pub struct App {
     pub view_archived: bool,
     /// Active filter substring; tasks/projects/sessions are matched case-insensitively.
     pub search_query: String,
+    /// Branches offered by the fuzzy checkout picker (project-level).
+    pub branch_picker_all: Vec<String>,
+    /// Project path the branch picker checks out into.
+    pub branch_picker_project: String,
+    /// Selected index into the *filtered* branch list.
+    pub branch_picker_selected: usize,
+    /// Context awaiting a run command entered via the `RunCommand` prompt.
+    pub pending_run: Option<RunContext>,
+    /// Live "Run" sessions keyed by tmux name; value true while the command is
+    /// still executing. Populated by the background worker.
+    pub run_sessions: HashMap<String, bool>,
     /// Index into `theme::THEMES` of the active color theme.
     pub theme_index: usize,
     /// Screen row (relative to the list area top) of the selected item, recorded
@@ -336,6 +416,11 @@ impl App {
             context_menu_selected: 0,
             view_archived: false,
             search_query: String::new(),
+            branch_picker_all: Vec::new(),
+            branch_picker_project: String::new(),
+            branch_picker_selected: 0,
+            pending_run: None,
+            run_sessions: HashMap::new(),
             theme_index: config::load_theme()
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
@@ -386,6 +471,7 @@ impl App {
             if !update.project_branches.is_empty() {
                 self.project_branches = update.project_branches;
             }
+            self.run_sessions = update.run_sessions;
             self.rebuild_items();
         }
     }
@@ -694,6 +780,26 @@ impl App {
                     action: ContextAction::NewAdhocSession,
                 },
                 ContextMenuItem {
+                    key: cm.run,
+                    label: "Run",
+                    action: ContextAction::Run,
+                },
+                ContextMenuItem {
+                    key: cm.checkout,
+                    label: "Checkout branch",
+                    action: ContextAction::CheckoutBranch,
+                },
+                ContextMenuItem {
+                    key: cm.fetch_pull,
+                    label: "Fetch & pull all branches",
+                    action: ContextAction::FetchPull,
+                },
+                ContextMenuItem {
+                    key: cm.copy_path,
+                    label: "Copy path",
+                    action: ContextAction::CopyProjectPath,
+                },
+                ContextMenuItem {
                     key: cm.rename,
                     label: "Rename",
                     action: ContextAction::Rename,
@@ -710,6 +816,11 @@ impl App {
                 action: ContextAction::NewAdhocSession,
             }],
             Some(ListItem::AdhocSession { .. }) => vec![
+                ContextMenuItem {
+                    key: cm.run,
+                    label: "Run",
+                    action: ContextAction::Run,
+                },
                 ContextMenuItem {
                     key: cm.rename,
                     label: "Rename",
@@ -761,6 +872,11 @@ impl App {
                             key: cm.review,
                             label: "Review diff (difit)",
                             action: ContextAction::Review,
+                        },
+                        ContextMenuItem {
+                            key: cm.run,
+                            label: "Run",
+                            action: ContextAction::Run,
                         },
                         ContextMenuItem {
                             key: cm.toggle_stacked,
@@ -832,6 +948,11 @@ impl App {
                         label: "Terminal",
                         action: ContextAction::Terminal,
                     },
+                    ContextMenuItem {
+                        key: cm.run,
+                        label: "Run",
+                        action: ContextAction::Run,
+                    },
                 ];
                 items.push(ContextMenuItem {
                     key: cm.copy_path,
@@ -878,6 +999,13 @@ impl App {
             ContextAction::Unarchive => self.unarchive_task(),
             ContextAction::Review => self.start_review(),
             ContextAction::Terminal => self.open_terminal(),
+            ContextAction::CheckoutBranch => self.start_checkout_branch(),
+            ContextAction::CopyProjectPath => self.copy_project_path(),
+            ContextAction::FetchPull => self.fetch_pull_all_branches(),
+            ContextAction::Run => self.start_run(),
+            ContextAction::RunAttach => self.run_attach(),
+            ContextAction::RunRestart => self.run_restart(),
+            ContextAction::RunKill => self.run_kill(),
         }
     }
 
@@ -1047,12 +1175,8 @@ impl App {
         self.start_op(&format!("Reviewing {description} in difit…"), move || {
             // `.output()` captures difit's stdout/stderr (keeping them off the
             // TUI) and blocks this background thread until the browser closes.
-            let message = match std::process::Command::new("difit")
-                .args(&args)
-                .current_dir(&cwd)
-                .output()
-            {
-                Err(e) => format!("difit failed to launch: {e}"),
+            let message = match difit_command(&args).current_dir(&cwd).output() {
+                Err(e) => format!("difit failed to launch (need difit or npx on PATH): {e}"),
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     match extract_difit_comments(&stdout) {
@@ -1079,6 +1203,202 @@ impl App {
                 reload_config: false,
             }
         });
+    }
+
+    /// Resolve the "Run" context for the selected item: the owning project plus
+    /// the working directory and a label for the tmux run session. Sets a status
+    /// message and returns `None` when the selection can't be run.
+    fn resolve_run_context(&mut self) -> Option<RunContext> {
+        let item = self.selected_item().cloned()?;
+        let Some(label) = run_label(&item) else {
+            self.status_message = Some("Select a project, task, or session to run".into());
+            return None;
+        };
+        let (project_name, cwd) = match item {
+            ListItem::Project { project } => (project.name, project.path),
+            ListItem::Task {
+                project_name,
+                project_path,
+                task,
+            } => {
+                // Prefer a session worktree so the command runs against the
+                // task's code; fall back to the project dir when none exists.
+                let cwd = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
+                    .first()
+                    .and_then(|s| s.worktree_path())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(project_path);
+                (project_name, cwd)
+            }
+            ListItem::Session {
+                project_name,
+                project_path,
+                session,
+                ..
+            }
+            | ListItem::AdhocSession {
+                project_name,
+                project_path,
+                session,
+                ..
+            } => {
+                let cwd = session
+                    .worktree_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or(project_path);
+                (project_name, cwd)
+            }
+            // run_label already returned None for any other variant.
+            ListItem::AdhocGroup { .. } => return None,
+        };
+        Some(RunContext {
+            project_name,
+            cwd,
+            label,
+        })
+    }
+
+    /// Run-session state for `item`: `Some(true)` while its command is executing,
+    /// `Some(false)` once it has finished (shell still open), `None` if no run
+    /// session exists.
+    pub fn run_state_for(&self, item: &ListItem) -> Option<bool> {
+        let label = run_label(item)?;
+        self.run_sessions
+            .get(&tmux::run_session_name(&label))
+            .copied()
+    }
+
+    /// Run the selected item. If a run session is already live for it, open the
+    /// Attach / Restart / Kill menu; otherwise launch the project's run command
+    /// (prompting for it on first use).
+    pub fn start_run(&mut self) {
+        let ctx = match self.resolve_run_context() {
+            Some(c) => c,
+            None => return,
+        };
+        if self
+            .run_sessions
+            .contains_key(&tmux::run_session_name(&ctx.label))
+        {
+            self.open_run_menu();
+        } else {
+            self.launch_or_prompt(ctx);
+        }
+    }
+
+    /// Launch `ctx`'s run command, or prompt for one (saving it) if the project
+    /// has none configured yet.
+    fn launch_or_prompt(&mut self, ctx: RunContext) {
+        self.config.reload();
+        match self.config.project_run_command(&ctx.project_name) {
+            Some(cmd) => {
+                let cmd = cmd.to_string();
+                self.launch_run(ctx, cmd);
+            }
+            None => {
+                self.pending_run = Some(ctx);
+                self.input_buffer.clear();
+                self.input_mode = InputMode::RunCommand;
+                self.status_message = Some("Run command (saved to project for reuse): ".into());
+            }
+        }
+    }
+
+    /// Populate and show the run-session menu (Attach / Restart / Kill).
+    fn open_run_menu(&mut self) {
+        self.context_menu_items = vec![
+            ContextMenuItem {
+                key: 'a',
+                label: "Attach",
+                action: ContextAction::RunAttach,
+            },
+            ContextMenuItem {
+                key: 'r',
+                label: "Restart",
+                action: ContextAction::RunRestart,
+            },
+            ContextMenuItem {
+                key: 'k',
+                label: "Kill",
+                action: ContextAction::RunKill,
+            },
+        ];
+        self.context_menu_selected = 0;
+        self.input_mode = InputMode::RunMenu;
+        self.status_message = Some("Run session is live — choose an action".into());
+    }
+
+    /// Attach to the selected item's live run session.
+    fn run_attach(&mut self) {
+        let Some(ctx) = self.resolve_run_context() else {
+            return;
+        };
+        let name = tmux::run_session_name(&ctx.label);
+        if self.run_sessions.contains_key(&name) {
+            self.should_attach = Some(name);
+        } else {
+            self.status_message = Some("Run session is no longer active".into());
+        }
+    }
+
+    /// Restart the selected item's run session (kill + relaunch).
+    fn run_restart(&mut self) {
+        let Some(ctx) = self.resolve_run_context() else {
+            return;
+        };
+        self.launch_or_prompt(ctx);
+    }
+
+    /// Kill the selected item's run session.
+    fn run_kill(&mut self) {
+        let Some(ctx) = self.resolve_run_context() else {
+            return;
+        };
+        let name = tmux::run_session_name(&ctx.label);
+        match tmux::kill_session_only(&name) {
+            Ok(()) => {
+                self.run_sessions.remove(&name);
+                self.status_message = Some("Run session killed".into());
+            }
+            Err(e) => self.status_message = Some(format!("Failed to kill run session: {e}")),
+        }
+    }
+
+    /// Save the entered run command on its project and run it.
+    pub fn confirm_run_command(&mut self) {
+        let command = self.input_buffer.trim().to_string();
+        let ctx = match self.pending_run.take() {
+            Some(c) => c,
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+        self.input_mode = InputMode::Normal;
+        self.input_buffer.clear();
+        if command.is_empty() {
+            self.status_message = Some("Run cancelled (no command entered)".into());
+            return;
+        }
+        self.config.reload();
+        if self
+            .config
+            .set_project_run_command(&ctx.project_name, command.clone())
+        {
+            let _ = self.config.save();
+        }
+        self.launch_run(ctx, command);
+    }
+
+    /// Launch `command` in a dedicated tmux run session for `ctx` and attach.
+    fn launch_run(&mut self, ctx: RunContext, command: String) {
+        match tmux::run_command_session(&ctx.label, &ctx.cwd, &command) {
+            Ok(tmux_name) => {
+                self.status_message = Some(format!("Running: {command}"));
+                self.should_attach = Some(tmux_name);
+            }
+            Err(e) => self.status_message = Some(format!("Run failed: {e}")),
+        }
     }
 
     /// Open a terminal in the session's worktree: create one if none exists,
@@ -2223,6 +2543,131 @@ impl App {
         });
     }
 
+    /// Open the fuzzy branch picker for the selected project.
+    pub fn start_checkout_branch(&mut self) {
+        let project_path = match self.selected_item() {
+            Some(ListItem::Project { project }) => project.path.clone(),
+            _ => {
+                self.status_message = Some("Select a project to checkout a branch".into());
+                return;
+            }
+        };
+        let branches = tmux::list_branches(&project_path);
+        if branches.is_empty() {
+            self.status_message = Some("No branches found in this project".into());
+            return;
+        }
+        self.branch_picker_all = branches;
+        self.branch_picker_project = project_path;
+        self.branch_picker_selected = 0;
+        self.input_buffer.clear();
+        self.input_mode = InputMode::CheckoutBranch;
+        self.status_message = Some("Checkout branch (type to filter)".into());
+    }
+
+    /// Branches matching the current picker query, best match first. With an
+    /// empty query, returns every branch in list order.
+    pub fn filtered_branches(&self) -> Vec<&String> {
+        let query = self.input_buffer.trim();
+        let mut scored: Vec<(i64, usize, &String)> = self
+            .branch_picker_all
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| fuzzy_score(query, b).map(|s| (s, i, b)))
+            .collect();
+        // Sort by score, then original order to keep ranking stable.
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        scored.into_iter().map(|(_, _, b)| b).collect()
+    }
+
+    /// Re-clamp the picker selection after the filter changes.
+    pub fn update_branch_filter(&mut self) {
+        let len = self.filtered_branches().len();
+        if self.branch_picker_selected >= len {
+            self.branch_picker_selected = len.saturating_sub(1);
+        }
+    }
+
+    pub fn branch_picker_move_up(&mut self) {
+        if self.branch_picker_selected > 0 {
+            self.branch_picker_selected -= 1;
+        }
+    }
+
+    pub fn branch_picker_move_down(&mut self) {
+        let len = self.filtered_branches().len();
+        if self.branch_picker_selected + 1 < len {
+            self.branch_picker_selected += 1;
+        }
+    }
+
+    /// Check out the branch highlighted in the picker.
+    pub fn confirm_checkout_branch(&mut self) {
+        let branch = match self.filtered_branches().get(self.branch_picker_selected) {
+            Some(b) => (*b).clone(),
+            None => {
+                self.cancel_input();
+                return;
+            }
+        };
+        let project_path = self.branch_picker_project.clone();
+        self.input_mode = InputMode::Normal;
+        self.input_buffer.clear();
+        self.branch_picker_all.clear();
+        self.start_op(&format!("Checking out {branch}…"), move || {
+            let output = std::process::Command::new("git")
+                .args(["-C", &project_path, "checkout", &branch])
+                .output();
+            let message = match output {
+                Ok(o) if o.status.success() => format!("Checked out {branch}"),
+                Ok(o) => format!("Error: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                Err(e) => format!("Error: {e}"),
+            };
+            OpResult {
+                message,
+                rebuild: false,
+                reload_config: false,
+            }
+        });
+    }
+
+    /// Copy the selected project's directory path to the clipboard.
+    pub fn copy_project_path(&mut self) {
+        let path = match self.selected_item() {
+            Some(ListItem::Project { project }) => project.path.clone(),
+            _ => {
+                self.status_message = Some("Select a project to copy its path".into());
+                return;
+            }
+        };
+        match copy_to_clipboard(&path) {
+            Ok(()) => self.status_message = Some(format!("Copied to clipboard: {path}")),
+            Err(e) => self.status_message = Some(format!("Copy failed: {e}")),
+        }
+    }
+
+    /// Fetch all remotes and fast-forward the current branch for the selected project.
+    pub fn fetch_pull_all_branches(&mut self) {
+        let (name, path) = match self.selected_item() {
+            Some(ListItem::Project { project }) => (project.name.clone(), project.path.clone()),
+            _ => {
+                self.status_message = Some("Select a project to fetch".into());
+                return;
+            }
+        };
+        self.start_op(&format!("Fetching all branches for {name}…"), move || {
+            let message = match tmux::fetch_pull_all(&path) {
+                Ok(msg) => msg,
+                Err(e) => format!("{e}"),
+            };
+            OpResult {
+                message,
+                rebuild: false,
+                reload_config: false,
+            }
+        });
+    }
+
     pub fn checkout_task_branch(&mut self) {
         let (project_path, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
@@ -2391,7 +2836,49 @@ impl App {
         self.pending_task_name = None;
         self.pending_task_branch = None;
         self.pending_session_name = None;
+        self.pending_run = None;
     }
+}
+
+/// Case-insensitive subsequence fuzzy match used by the branch picker. Returns
+/// a score (lower = better) when every char of `query` appears in `candidate`
+/// in order, otherwise `None`. An empty query matches everything with score 0.
+/// Scoring favours an early first match, then tight (low-gap) matches, then
+/// shorter candidates.
+fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
+    let query = query.to_lowercase();
+    if query.is_empty() {
+        return Some(0);
+    }
+    let cand: Vec<char> = candidate.to_lowercase().chars().collect();
+    let mut ci = 0usize;
+    let mut first: Option<usize> = None;
+    let mut prev: Option<usize> = None;
+    let mut gaps: i64 = 0;
+    for qc in query.chars() {
+        let mut found = false;
+        while ci < cand.len() {
+            let matched = cand[ci] == qc;
+            ci += 1;
+            if matched {
+                let at = ci - 1;
+                if first.is_none() {
+                    first = Some(at);
+                }
+                if let Some(p) = prev {
+                    gaps += (at - p - 1) as i64;
+                }
+                prev = Some(at);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    let first = first.unwrap_or(0) as i64;
+    Some(first * 4 + gaps * 2 + candidate.chars().count() as i64 / 10)
 }
 
 /// Copy `text` to the system clipboard. Tries `pbcopy` (macOS), `wl-copy`
@@ -2429,4 +2916,48 @@ fn copy_to_clipboard(text: &str) -> std::result::Result<(), String> {
         }
     }
     Err(last_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fuzzy_empty_query_matches_everything() {
+        assert_eq!(fuzzy_score("", "any-branch"), Some(0));
+    }
+
+    #[test]
+    fn fuzzy_non_subsequence_does_not_match() {
+        assert_eq!(fuzzy_score("xyz", "feature/login"), None);
+        // Out-of-order chars are not a subsequence.
+        assert_eq!(fuzzy_score("ba", "abc"), None);
+    }
+
+    #[test]
+    fn fuzzy_matches_subsequence_case_insensitively() {
+        assert!(fuzzy_score("FL", "feature/login").is_some());
+        assert!(fuzzy_score("ftr", "feature").is_some());
+    }
+
+    #[test]
+    fn fuzzy_ranks_earlier_and_tighter_matches_better() {
+        // Contiguous prefix beats a scattered match.
+        let prefix = fuzzy_score("feat", "feature/x").unwrap();
+        let scattered = fuzzy_score("feat", "x-fix-east").unwrap();
+        assert!(prefix < scattered, "{prefix} should beat {scattered}");
+    }
+
+    #[test]
+    fn extract_difit_comments_returns_none_without_marker() {
+        assert_eq!(extract_difit_comments("server started\nbye"), None);
+    }
+
+    #[test]
+    fn extract_difit_comments_captures_from_marker() {
+        let out = "noise\nComments from review session:\n- fix this\n";
+        let got = extract_difit_comments(out).unwrap();
+        assert!(got.starts_with("Comments from review session:"));
+        assert!(got.contains("- fix this"));
+    }
 }
