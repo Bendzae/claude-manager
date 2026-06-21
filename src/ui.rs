@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
@@ -68,7 +68,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     // The preview/diff column was removed; the cards span the full width.
     // The panel renderers (draw_preview_panel / draw_task_diff_panel) and their
     // backing state are retained for upcoming dedicated fullscreen views.
-    draw_list(f, app, list_area);
+    if app.config.projects.is_empty() {
+        draw_empty_state(f, app, list_area);
+    } else {
+        draw_list(f, app, list_area);
+    }
 
     draw_help(f, app, chunks[3]);
     draw_status(f, app, chunks[4]);
@@ -583,6 +587,43 @@ fn wrap_body<'a>(width: u16, rail: Option<Color>, inner: Line<'a>, selected: boo
     spans.extend(mid);
     spans.push(Span::styled("│", border));
     ListItem::new(Line::from(spans))
+}
+
+/// Centered placeholder shown when no projects are configured yet.
+fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
+    let key = key_display(app.keybindings.add_project);
+    let lines = vec![
+        Line::from(Span::styled(
+            "No projects yet",
+            Style::default()
+                .fg(current().white)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ", Style::default().fg(current().muted)),
+            Span::styled(
+                key,
+                Style::default()
+                    .fg(current().accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to add your first project", Style::default().fg(current().muted)),
+        ]),
+    ];
+
+    // Vertically center the block within the available area.
+    let height = lines.len() as u16;
+    let top_pad = area.height.saturating_sub(height) / 2;
+    let target = Rect {
+        x: area.x,
+        y: area.y + top_pad,
+        width: area.width,
+        height: height.min(area.height),
+    };
+
+    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
+    f.render_widget(paragraph, target);
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
@@ -1278,7 +1319,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
                         "archived"
                     },
                 ),
-                (&key_display(kb.add_project), "project"),
+                (&key_display(kb.add_project), "add project"),
                 (&key_display(kb.quit), "quit"),
             ])
         }
