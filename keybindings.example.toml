@@ -1,14 +1,18 @@
 # Example keybindings configuration for claude-manager
 # Copy this file to ~/.claude-manager/keybindings.toml and customize as needed.
 # All fields are optional — omitted fields fall back to the defaults shown here.
+# (Arrow keys, Enter, Esc, and Tab are not configurable.)
 
 # Normal-mode keybindings
-quit            = "q"
-move_up         = "k"
-move_down       = "j"
-toggle_collapse = " "
-context_menu    = "a"
-add_project     = "p"
+quit                = "q"
+move_up             = "k"
+move_down           = "j"
+toggle_collapse     = " "
+context_menu        = "a"
+add_project         = "p"
+toggle_archive_view = "Z"
+search              = "/"
+cycle_theme         = "t"
 
 # Context menu action keybindings
 [context_menu_keys]
@@ -20,6 +24,9 @@ update                  = "u"
 push                    = "P"
 checkout                = "b"
 open_pr                 = "o"
+set_base_branch         = "B"
+archive                 = "A"
+toggle_stacked          = "s"
 rename                  = "R"
 delete                  = "d"
 merge                   = "m"

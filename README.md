@@ -38,8 +38,9 @@ Launch from any directory. Configuration is stored in `~/.claude-manager/config.
 ### Concepts
 
 - **Project** — A git repository you want to manage Claude sessions for. Added by its filesystem path.
-- **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple Claude sessions.
-- **Session** — A Claude Code instance running in a tmux session. Sessions can be created with an optional initial prompt.
+- **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple Claude sessions and a shared context file (edit it with `Enter`) that every session for the task can read.
+- **Session** — A Claude Code instance running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
+- **Adhoc session** — A project-scoped session that runs Claude directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
 
 ### Keybindings
 
@@ -58,6 +59,8 @@ All keybindings are customizable via `~/.claude-manager/keybindings.toml`. The t
 | `Z` | Toggle archived view | `toggle_archive_view` |
 | `t` | Cycle color theme | `cycle_theme` |
 | `q` | Quit | `quit` |
+
+`t` cycles through the built-in themes: **default**, **catppuccin**, **tokyo-night**, and **dracula**.
 
 #### Context Menu (press `a` to open)
 
@@ -135,6 +138,8 @@ A running TUI picks up config/flag changes on its next idle refresh, and the pub
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
 
+The **Review** action (`r`) launches difit on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Any comments you leave in the difit review session are captured on exit and forwarded back to the agent's Claude session as a new prompt, so you can review a diff and hand the feedback straight to the agent.
+
 ### Session Status Indicators
 
 Sessions display their current status:
@@ -147,13 +152,14 @@ Sessions display their current status:
 
 When creating a session with `n` (via the context menu on a task), Claude Manager creates a git worktree so each session works on an isolated copy of the codebase. Use `N` to skip worktree creation and work directly in the project directory.
 
-You can configure file patterns to copy into new worktrees (e.g. `.env` files) by adding `copy_patterns` to your project config:
+You can configure file patterns to copy into new worktrees (e.g. `.env` files) by adding `copy_patterns` to your project config. To run commands inside each freshly-created worktree (installing dependencies, configuring git hooks, etc.), add `setup_commands` (a single string or a list):
 
 ```toml
 [[projects]]
 name = "My App"
 path = "/path/to/my-app"
 copy_patterns = [".env", ".env.local"]
+setup_commands = ["npm install", "./scripts/configure-hooks.sh"]
 ```
 
 ### Configuration
@@ -161,19 +167,29 @@ copy_patterns = [".env", ".env.local"]
 The config file at `~/.claude-manager/config.toml` is managed automatically through the TUI, but can also be edited manually:
 
 ```toml
+# Global: skills/slash-commands run in every new session before the initial
+# prompt (a single string or a list). Useful for priming context.
+startup_skills = ["/prime"]
+
 [[projects]]
 name = "My App"
 path = "/home/user/my-app"
-copy_patterns = [".env"]
+copy_patterns = [".env"]               # files copied into each new worktree
+setup_commands = ["npm install"]       # commands run in each new worktree
+run_command = "npm run dev"            # command launched by the Run action (x)
 
 [[projects.tasks]]
 name = "fix-auth-bug"
 branch = "fix/auth-bug"
+base_branch = "develop"                # rebase/diff target (defaults to "main")
 
 [[projects.tasks]]
 name = "add-dark-mode"
 branch = "feature/dark-mode"
+stacked = true                         # publish commits as a stack of PRs
 ```
+
+Most of these fields are set for you through the TUI (`run_command` on first Run, `base_branch` via `B`, `stacked` via `s`), so manual editing is rarely necessary. A running TUI picks up external edits on its next idle refresh.
 
 #### Custom Keybindings
 
@@ -186,6 +202,16 @@ context_menu = "o"
 [context_menu_keys]
 delete = "x"
 ```
+
+## Claude Code plugin
+
+The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive its own Claude Manager task without leaving the worktree:
+
+- **`update-task-context`** — update the shared task context file with current progress, so parallel sessions on the task stay in sync.
+- **`commit-push-task`** — commit changes on the worktree branch, fast-forward merge into the task branch, and push the task branch.
+- **`stacked-pr`** — work on a task whose changes ship as a stack of dependent PRs (one PR per commit, via `git spr`), including the commit-shaping workflow. Pairs with the `set-stacked` / `stack-publish` / `stack-sync` CLI subcommands.
+
+Add the plugin to Claude Code and the skills become available as `/update-task-context`, `/commit-push-task`, and `/stacked-pr` inside any session.
 
 ## Development
 
