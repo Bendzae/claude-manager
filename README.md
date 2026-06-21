@@ -36,6 +36,8 @@ claude-manager
 
 Launch from any directory. Configuration is stored in `~/.claude-manager/config.toml`.
 
+> **Tip:** When you attach to a session (with `Enter`), you're inside a tmux session. To detach and get back to claude-manager, use your tmux detach binding — with the default prefix that's `Ctrl-b d`. The session keeps running in the background.
+
 ### Concepts
 
 - **Project** — A git repository you want to manage Claude sessions for. Added by its filesystem path.
