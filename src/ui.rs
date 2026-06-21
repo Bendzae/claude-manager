@@ -608,7 +608,10 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
                     .fg(current().accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" to add your first project", Style::default().fg(current().muted)),
+            Span::styled(
+                " to add your first project",
+                Style::default().fg(current().muted),
+            ),
         ]),
     ];
 
