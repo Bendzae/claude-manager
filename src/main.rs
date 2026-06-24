@@ -450,6 +450,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
+                    InputMode::ReviewSessionPicker => match key.code {
+                        KeyCode::Esc => app.cancel_review_picker(),
+                        KeyCode::Up => app.review_picker_move_up(),
+                        KeyCode::Down => app.review_picker_move_down(),
+                        KeyCode::Char(c) if c == kb.move_up => app.review_picker_move_up(),
+                        KeyCode::Char(c) if c == kb.move_down => app.review_picker_move_down(),
+                        KeyCode::Enter => app.confirm_review_session(),
+                        _ => {}
+                    },
                     // Arrows-only navigation here (no j/k) so the `k` = Kill
                     // hotkey is reachable.
                     InputMode::RunMenu => match key.code {
@@ -496,6 +505,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Apply background updates (non-blocking)
         app.apply_worker_updates();
         app.apply_op_results();
+        app.apply_review_requests();
         app.maybe_reload_config();
         app.tick = app.tick.wrapping_add(1);
 

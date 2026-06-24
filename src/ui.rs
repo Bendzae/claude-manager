@@ -88,6 +88,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.input_mode == InputMode::CheckoutBranch {
         draw_branch_picker(f, app, list_area);
     }
+
+    if app.input_mode == InputMode::ReviewSessionPicker {
+        draw_review_session_picker(f, app, list_area);
+    }
 }
 
 /// Top dashboard strip: app name + live counts of session states.
@@ -1291,6 +1295,88 @@ fn draw_branch_picker(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Floating picker for choosing which session a difit review's comments are
+/// forwarded to. Shown when a reviewed task has more than one session. Centered
+/// within the list area; modeled on the branch picker but without a filter line.
+fn draw_review_session_picker(f: &mut Frame, app: &App, area: Rect) {
+    let candidates = &app.review_candidates;
+    if candidates.is_empty() {
+        return;
+    }
+
+    let title = " Send review comments to ";
+    let widest_name = candidates
+        .iter()
+        .map(|(_, display)| display.len())
+        .max()
+        .unwrap_or(0);
+    // marker (2) + name + padding (2), at least wide enough for the title.
+    let width = ((widest_name + 6).max(title.len() + 2) as u16)
+        .max(28)
+        .min(area.width);
+
+    let max_list_rows = area.height.saturating_sub(2).max(1) as usize;
+    let list_rows = candidates.len().clamp(1, max_list_rows);
+    let height = (list_rows as u16 + 2).min(area.height);
+
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(current().accent))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(current().accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let visible = inner.height as usize;
+    let selected = app.review_selected.min(candidates.len() - 1);
+    let offset = if selected >= visible {
+        selected + 1 - visible
+    } else {
+        0
+    };
+
+    for (row, (_, display)) in candidates.iter().skip(offset).take(visible).enumerate() {
+        let idx = offset + row;
+        let is_selected = idx == selected;
+        let row_area = Rect {
+            x: inner.x,
+            y: inner.y + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let (marker, style) = if is_selected {
+            (
+                "▌ ",
+                Style::default()
+                    .fg(current().accent)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("  ", Style::default().fg(current().white))
+        };
+        let line = Line::from(vec![
+            Span::styled(marker, Style::default().fg(current().accent)),
+            Span::styled(display.clone(), style),
+        ]);
+        f.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
 /// Format a keybinding char for display in hints (e.g. ' ' → "␣", uppercase → "S-x").
 fn key_display(c: char) -> String {
     match c {
@@ -1360,6 +1446,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         InputMode::Search => help_bar(&[("⏎", "apply"), ("Esc", "clear")]),
         InputMode::CheckoutBranch => {
             help_bar(&[("⏎", "checkout"), ("↑/↓", "navigate"), ("Esc", "cancel")])
+        }
+        InputMode::ReviewSessionPicker => {
+            help_bar(&[("⏎", "send"), ("↑/↓", "navigate"), ("Esc", "cancel")])
         }
     };
 

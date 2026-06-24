@@ -66,6 +66,10 @@ pub enum InputMode {
     RunCommand,
     /// Attach / Restart / Kill menu shown when an item's run session is live.
     RunMenu,
+    /// Pick which of a task's sessions to forward difit review comments to,
+    /// shown after a task review closes with comments and more than one session
+    /// exists.
+    ReviewSessionPicker,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +212,16 @@ pub struct App {
     pub op_count: usize,
     pub op_receiver: mpsc::Receiver<OpResult>,
     pub op_sender: mpsc::Sender<OpResult>,
+    /// Channel carrying difit reviews that closed with comments and need the
+    /// user to choose a target session (more than one candidate).
+    pub review_receiver: mpsc::Receiver<PendingReview>,
+    pub review_sender: mpsc::Sender<PendingReview>,
+    /// Review comments awaiting forwarding once a session is picked.
+    pub pending_review_comments: Option<String>,
+    /// Candidate sessions shown in the picker as `(tmux name, display name)`.
+    pub review_candidates: Vec<(String, String)>,
+    /// Selected index into `review_candidates`.
+    pub review_selected: usize,
     pub tick: usize,
     pub worker: Worker,
     pub context_menu_items: Vec<ContextMenuItem>,
@@ -239,6 +253,24 @@ pub struct OpResult {
     pub message: String,
     pub rebuild: bool,
     pub reload_config: bool,
+}
+
+/// A difit review that closed with comments still needing to be routed to a
+/// session. Sent from the review background thread to the main thread when the
+/// reviewed task has more than one session, so the user can pick the target via
+/// a popup (the single-session case is forwarded directly off-thread).
+pub struct PendingReview {
+    pub comments: String,
+    /// Candidate sessions as `(tmux session name, display name)`.
+    pub candidates: Vec<(String, String)>,
+}
+
+/// The prompt forwarded to an agent session carrying difit review comments.
+fn review_prompt(comments: &str) -> String {
+    format!(
+        "The following code review comments were left in difit. \
+         Please address them:\n\n{comments}"
+    )
 }
 
 /// Modification time of config.toml, if it exists.
@@ -380,6 +412,7 @@ impl App {
             sessions = tmux::list_sessions().unwrap_or_default();
         }
         let (tx, rx) = mpsc::channel();
+        let (review_tx, review_rx) = mpsc::channel();
         let mut app = App {
             config,
             keybindings,
@@ -410,6 +443,11 @@ impl App {
             op_count: 0,
             op_receiver: rx,
             op_sender: tx,
+            review_receiver: review_rx,
+            review_sender: review_tx,
+            pending_review_comments: None,
+            review_candidates: Vec::new(),
+            review_selected: 0,
             tick: 0,
             worker: Worker::spawn(),
             context_menu_items: vec![],
@@ -489,6 +527,90 @@ impl App {
             if result.rebuild {
                 self.rebuild_items();
             }
+        }
+    }
+
+    /// Pick up difit reviews that closed with comments and need a target
+    /// session chosen. One is handled at a time; while the picker is open the
+    /// rest stay queued in the channel until it closes.
+    pub fn apply_review_requests(&mut self) {
+        if self.input_mode == InputMode::ReviewSessionPicker {
+            return;
+        }
+        if let Ok(req) = self.review_receiver.try_recv() {
+            self.open_review_session_picker(req);
+        }
+    }
+
+    /// Open the popup that asks which session a review's comments go to. The
+    /// background thread only sends here when there is more than one candidate,
+    /// but guard the degenerate cases too in case that ever changes.
+    fn open_review_session_picker(&mut self, req: PendingReview) {
+        match req.candidates.len() {
+            0 => {
+                self.status_message =
+                    Some("Review finished; no session to forward comments to".into());
+            }
+            1 => {
+                let (tmux_name, display) = req.candidates[0].clone();
+                self.forward_review_comments(&req.comments, &tmux_name, &display);
+            }
+            _ => {
+                self.pending_review_comments = Some(req.comments);
+                self.review_candidates = req.candidates;
+                self.review_selected = 0;
+                self.input_mode = InputMode::ReviewSessionPicker;
+            }
+        }
+    }
+
+    /// Send the held review comments to the picked session, then close the
+    /// picker. A no-op (closes the picker) if state is missing.
+    pub fn confirm_review_session(&mut self) {
+        let comments = self.pending_review_comments.take();
+        let target = self.review_candidates.get(self.review_selected).cloned();
+        self.reset_review_picker();
+        match (comments, target) {
+            (Some(comments), Some((tmux_name, display))) => {
+                self.forward_review_comments(&comments, &tmux_name, &display);
+            }
+            _ => self.status_message = Some("No session to forward comments to".into()),
+        }
+    }
+
+    /// Forward review comments to a session as a new prompt, reporting the
+    /// outcome in the status bar.
+    fn forward_review_comments(&mut self, comments: &str, tmux_name: &str, display: &str) {
+        self.status_message = Some(
+            match tmux::send_text(tmux_name, &review_prompt(comments), true) {
+                Ok(()) => format!("Forwarded review comments to {display}"),
+                Err(e) => format!("Failed to forward comments: {e}"),
+            },
+        );
+    }
+
+    pub fn cancel_review_picker(&mut self) {
+        self.reset_review_picker();
+        self.status_message = Some("Review comments discarded".into());
+    }
+
+    /// Clear picker state and return to Normal mode without touching the status.
+    fn reset_review_picker(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.pending_review_comments = None;
+        self.review_candidates.clear();
+        self.review_selected = 0;
+    }
+
+    pub fn review_picker_move_up(&mut self) {
+        if self.review_selected > 0 {
+            self.review_selected -= 1;
+        }
+    }
+
+    pub fn review_picker_move_down(&mut self) {
+        if self.review_selected + 1 < self.review_candidates.len() {
+            self.review_selected += 1;
         }
     }
 
@@ -1124,8 +1246,9 @@ impl App {
     /// changes). Runs in the background so the TUI stays interactive; on exit any
     /// review comments are forwarded to the agent session as a new prompt.
     pub fn start_review(&mut self) {
-        // (cwd, difit args, session to forward to, description)
-        let (cwd, args, session, description) = match self.selected_item().cloned() {
+        // (cwd, difit args, candidate sessions, description). Each candidate is
+        // `(tmux session name, display name)`; comments are forwarded to it.
+        let (cwd, args, candidates, description) = match self.selected_item().cloned() {
             Some(ListItem::Task {
                 project_name,
                 project_path,
@@ -1136,9 +1259,12 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| "main".to_string());
                 let base_ref = tmux::resolve_base_ref(&project_path, &base);
-                let session = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
-                    .first()
-                    .map(|s| s.name.clone());
+                // All of the task's sessions are candidates: a lone one is
+                // forwarded to directly, several trigger the picker popup.
+                let candidates = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
+                    .into_iter()
+                    .map(|s| (s.name, s.session_name))
+                    .collect();
                 // `difit <target> <base>`: the SECOND positional is the base
                 // (old side). `--merge-base` resolves it to merge-base(branch,
                 // base) so we see only the branch's changes — the GitHub PR diff,
@@ -1146,7 +1272,7 @@ impl App {
                 (
                     project_path,
                     vec![task.branch.clone(), base_ref, "--merge-base".to_string()],
-                    session,
+                    candidates,
                     format!("{} vs {base}", task.branch),
                 )
             }
@@ -1162,7 +1288,7 @@ impl App {
                 (
                     cwd,
                     vec![".".to_string(), "--include-untracked".to_string()],
-                    Some(session.name.clone()),
+                    vec![(session.name.clone(), session.session_name.clone())],
                     format!("uncommitted changes in {}", session.session_name),
                 )
             }
@@ -1172,6 +1298,7 @@ impl App {
             }
         };
 
+        let review_tx = self.review_sender.clone();
         self.start_op(&format!("Reviewing {description} in difit…"), move || {
             // `.output()` captures difit's stdout/stderr (keeping them off the
             // TUI) and blocks this background thread until the browser closes.
@@ -1180,18 +1307,25 @@ impl App {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     match extract_difit_comments(&stdout) {
-                        Some(comments) => match &session {
-                            Some(s) => {
-                                let prompt = format!(
-                                    "The following code review comments were left in difit. \
-                                     Please address them:\n\n{comments}"
-                                );
-                                match tmux::send_text(s, &prompt, true) {
-                                    Ok(()) => format!("Forwarded review comments to {s}"),
+                        Some(comments) => match candidates.len() {
+                            0 => "Review finished; no session to forward comments to".into(),
+                            // Exactly one candidate: forward straight away.
+                            1 => {
+                                let (tmux_name, display) = &candidates[0];
+                                match tmux::send_text(tmux_name, &review_prompt(&comments), true) {
+                                    Ok(()) => format!("Forwarded review comments to {display}"),
                                     Err(e) => format!("Failed to forward comments: {e}"),
                                 }
                             }
-                            None => "Review finished; no session to forward comments to".into(),
+                            // Several candidates: hand off to the main thread so
+                            // the user can pick the target via a popup.
+                            _ => {
+                                let _ = review_tx.send(PendingReview {
+                                    comments,
+                                    candidates,
+                                });
+                                "Review closed; select a session to forward comments to".into()
+                            }
                         },
                         None => "Review closed with no comments".into(),
                     }
@@ -2959,5 +3093,13 @@ mod tests {
         let got = extract_difit_comments(out).unwrap();
         assert!(got.starts_with("Comments from review session:"));
         assert!(got.contains("- fix this"));
+    }
+
+    #[test]
+    fn review_prompt_embeds_the_comments() {
+        let prompt = review_prompt("- rename foo\n- drop bar");
+        assert!(prompt.contains("- rename foo"));
+        assert!(prompt.contains("- drop bar"));
+        assert!(prompt.contains("Please address them"));
     }
 }
