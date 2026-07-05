@@ -134,6 +134,11 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
                 .fg(current().accent)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(" "),
+        Span::styled(
+            format!("@{}", app.hostname),
+            Style::default().fg(current().muted),
+        ),
         Span::raw(if compact { "  " } else { "   " }),
         Span::styled(
             label("\u{25c6}", projects, "proj"),

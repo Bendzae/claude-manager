@@ -247,6 +247,9 @@ pub struct App {
     /// during rendering so popups can anchor to it. Interior-mutable since draw
     /// only borrows `&App`.
     pub selected_row: std::cell::Cell<u16>,
+    /// Hostname of the machine cm is actually running on (resolved over SSH too).
+    /// Shown in the dashboard header so it's clear which box a session lives on.
+    pub hostname: String,
     /// First list row (absolute index into the rendered rows) currently scrolled
     /// into view. Persisted across frames so scrolling feels stable in both
     /// directions; updated during rendering to keep the selection visible.
@@ -282,6 +285,22 @@ fn config_file_mtime() -> Option<std::time::SystemTime> {
     std::fs::metadata(Config::config_path())
         .ok()
         .and_then(|m| m.modified().ok())
+}
+
+/// Resolve the hostname of the machine cm is actually running on. When cm is
+/// launched over SSH this is the remote box, not the user's laptop. Runs
+/// `hostname` once at startup and falls back to the `HOSTNAME` env var, then to
+/// "unknown". The short form (first dot-separated label) keeps the header tidy.
+fn detect_hostname() -> String {
+    let raw = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    raw.split('.').next().unwrap_or(&raw).to_string()
 }
 
 fn project_key(name: &str) -> String {
@@ -467,6 +486,7 @@ impl App {
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
             selected_row: std::cell::Cell::new(0),
+            hostname: detect_hostname(),
             list_offset: std::cell::Cell::new(0),
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
