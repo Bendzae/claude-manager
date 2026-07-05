@@ -247,6 +247,10 @@ pub struct App {
     /// during rendering so popups can anchor to it. Interior-mutable since draw
     /// only borrows `&App`.
     pub selected_row: std::cell::Cell<u16>,
+    /// First list row (absolute index into the rendered rows) currently scrolled
+    /// into view. Persisted across frames so scrolling feels stable in both
+    /// directions; updated during rendering to keep the selection visible.
+    pub list_offset: std::cell::Cell<u16>,
 }
 
 pub struct OpResult {
@@ -463,6 +467,7 @@ impl App {
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
             selected_row: std::cell::Cell::new(0),
+            list_offset: std::cell::Cell::new(0),
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {

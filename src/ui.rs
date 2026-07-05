@@ -2,7 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 
 use crate::app::{self, App, InputMode};
 use crate::theme::current;
@@ -109,39 +111,55 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     }
     let projects = app.config.projects.len();
 
+    // Narrow terminals get a tighter strip: short title, thin separators, and
+    // icon-only counts (colour + glyph carry the meaning, words are dropped).
+    let compact = area.width < COMPACT_WIDTH;
+    let (title, sep_str) = if compact {
+        ("cm", " · ")
+    } else {
+        ("claude-manager", "   ·   ")
+    };
+    let label = |glyph: &str, n: usize, word: &str| {
+        if compact {
+            format!("{glyph} {n}")
+        } else {
+            format!("{glyph} {n} {word}")
+        }
+    };
+
     let mut spans = vec![
         Span::styled(
-            "claude-manager",
+            title,
             Style::default()
                 .fg(current().accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("   "),
+        Span::raw(if compact { "  " } else { "   " }),
         Span::styled(
-            format!("\u{25c6} {projects} proj"),
+            label("\u{25c6}", projects, "proj"),
             Style::default().fg(current().muted),
         ),
     ];
     let sep = Style::default().fg(current().border);
     if waiting > 0 {
-        spans.push(Span::styled("   ·   ", sep));
+        spans.push(Span::styled(sep_str, sep));
         spans.push(Span::styled(
-            format!("● {waiting} waiting"),
+            label("●", waiting, "waiting"),
             Style::default().fg(current().green),
         ));
     }
     if perm > 0 {
-        spans.push(Span::styled("   ·   ", sep));
+        spans.push(Span::styled(sep_str, sep));
         spans.push(Span::styled(
-            format!("! {perm} needs you"),
+            label("!", perm, "needs you"),
             Style::default().fg(current().magenta),
         ));
     }
     if running > 0 {
         let frame = SPINNER[app.tick % SPINNER.len()];
-        spans.push(Span::styled("   ·   ", sep));
+        spans.push(Span::styled(sep_str, sep));
         spans.push(Span::styled(
-            format!("{frame} {running} running"),
+            label(frame, running, "running"),
             Style::default().fg(current().yellow),
         ));
     }
@@ -366,6 +384,12 @@ const COL_GAP: usize = 2;
 // Branch column is autoscaled to the widest branch in view, but capped here so
 // a single long branch can't crowd the name column off the screen.
 const BRANCH_MAX: usize = 80;
+
+// Responsive breakpoint. At or below this list width (roughly a phone terminal
+// in portrait, e.g. Terminus on an iPhone) the UI drops secondary metadata so
+// item names get the full width and nothing runs off-screen. Recomputed every
+// frame from the actual area, so it adapts live to rotating/resizing.
+const COMPACT_WIDTH: u16 = 60;
 
 fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.width()).sum()
@@ -633,7 +657,28 @@ fn draw_empty_state(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, target);
 }
 
+/// Compute the first visible row so the selection stays on screen. `prev` is
+/// last frame's offset (for stability), `sel` the selected row, `total` the row
+/// count, `height` the viewport height. Rows are one terminal line each. The
+/// offset only moves when the selection would fall outside the viewport, so the
+/// view is stable while navigating within the visible window and scrolls just
+/// enough — down (selection pinned to the bottom) or up (pinned to the top) —
+/// when it wouldn't be.
+fn scroll_offset(prev: usize, sel: usize, total: usize, height: usize) -> usize {
+    let max_offset = total.saturating_sub(height);
+    let mut offset = prev.min(max_offset);
+    if sel < offset {
+        offset = sel;
+    } else if height > 0 && sel >= offset + height {
+        offset = sel + 1 - height;
+    }
+    offset
+}
+
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
+    // Narrow (phone) terminals drop the right-hand metadata columns and card
+    // branch labels so names get the full width. See COMPACT_WIDTH.
+    let compact = area.width < COMPACT_WIDTH;
     let mut rows: Vec<Row> = Vec::new();
     let indicator_style = Style::default()
         .fg(current().accent)
@@ -1034,6 +1079,13 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     widths.branch = widths.branch.min(BRANCH_MAX);
+    if compact {
+        // Zero-width columns are dropped (with their header labels) by
+        // meta_block / header_line, collapsing every card to just its names.
+        widths.churn = 0;
+        widths.badge = 0;
+        widths.branch = 0;
+    }
     if widths.churn > 0 {
         widths.churn = widths.churn.max("CHANGES".len());
     }
@@ -1078,6 +1130,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     sel_row = lines.len() as u16;
                 }
                 let rounded = has_body[i];
+                let branch = if compact { None } else { branch };
                 lines.push(card_top(
                     area.width, chevron, name, meta, branch, selected, rounded,
                 ));
@@ -1107,10 +1160,24 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     if card_open && card_has_body {
         lines.push(card_bottom(area.width));
     }
-    app.selected_row.set(sel_row);
+    // Scroll so the selected row stays visible. Each ListItem is exactly one
+    // terminal row, so `sel_row` and offsets are line indices. The offset is
+    // persisted across frames (App::list_offset) so scrolling feels stable in
+    // both directions: it only moves when the selection would leave the viewport.
+    let offset = scroll_offset(
+        app.list_offset.get() as usize,
+        sel_row as usize,
+        lines.len(),
+        area.height as usize,
+    );
+    app.list_offset.set(offset as u16);
+    // Record the selection's on-screen row (relative to the list area top) so
+    // popups anchor to it even when the list is scrolled.
+    app.selected_row.set(sel_row.saturating_sub(offset as u16));
 
     let list = List::new(lines).block(Block::default().borders(Borders::NONE));
-    f.render_widget(list, area);
+    let mut state = ListState::default().with_offset(offset);
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_context_menu(f: &mut Frame, app: &App, area: Rect) {
@@ -1387,6 +1454,9 @@ fn key_display(c: char) -> String {
 }
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
+    // On narrow terminals the single-line help bar would overflow, so show only
+    // the essential hints (the rest stay reachable, just unlisted).
+    let compact = area.width < COMPACT_WIDTH;
     let help_spans = match app.input_mode {
         InputMode::Normal => {
             let kb = &app.keybindings;
@@ -1395,22 +1465,31 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "attach"
             };
-            help_bar(&[
-                ("⏎", enter_label),
-                (&key_display(kb.toggle_collapse), "collapse"),
-                (&key_display(kb.context_menu), "actions"),
-                (&key_display(kb.search), "filter"),
-                (
-                    &key_display(kb.toggle_archive_view),
-                    if app.view_archived {
-                        "active"
-                    } else {
-                        "archived"
-                    },
-                ),
-                (&key_display(kb.add_project), "add project"),
-                (&key_display(kb.quit), "quit"),
-            ])
+            if compact {
+                help_bar(&[
+                    ("⏎", enter_label),
+                    (&key_display(kb.context_menu), "actions"),
+                    (&key_display(kb.search), "filter"),
+                    (&key_display(kb.quit), "quit"),
+                ])
+            } else {
+                help_bar(&[
+                    ("⏎", enter_label),
+                    (&key_display(kb.toggle_collapse), "collapse"),
+                    (&key_display(kb.context_menu), "actions"),
+                    (&key_display(kb.search), "filter"),
+                    (
+                        &key_display(kb.toggle_archive_view),
+                        if app.view_archived {
+                            "active"
+                        } else {
+                            "archived"
+                        },
+                    ),
+                    (&key_display(kb.add_project), "add project"),
+                    (&key_display(kb.quit), "quit"),
+                ])
+            }
         }
         InputMode::ContextMenu => {
             let kb = &app.keybindings;
@@ -1557,6 +1636,35 @@ mod tests {
     #[test]
     fn truncate_ellipsis_keeps_short_strings() {
         assert_eq!(truncate_ellipsis("feat/auth", 24), "feat/auth");
+    }
+
+    #[test]
+    fn scroll_offset_no_scroll_when_everything_fits() {
+        // 5 rows, viewport of 10: never scrolls regardless of selection.
+        assert_eq!(scroll_offset(0, 0, 5, 10), 0);
+        assert_eq!(scroll_offset(0, 4, 5, 10), 0);
+    }
+
+    #[test]
+    fn scroll_offset_pins_selection_to_bottom_when_below_viewport() {
+        // 50 rows, viewport of 10. Selecting row 20 scrolls so it's the last visible.
+        assert_eq!(scroll_offset(0, 20, 50, 10), 11);
+        // Selection already visible in the current window: offset unchanged.
+        assert_eq!(scroll_offset(11, 15, 50, 10), 11);
+    }
+
+    #[test]
+    fn scroll_offset_pins_selection_to_top_when_above_viewport() {
+        // Scrolled down to offset 30, then select row 5 (above the window).
+        assert_eq!(scroll_offset(30, 5, 50, 10), 5);
+    }
+
+    #[test]
+    fn scroll_offset_clamps_stale_offset_when_list_shrinks() {
+        // Was scrolled to 30 but the list is now short enough to fit; snap back.
+        assert_eq!(scroll_offset(30, 2, 8, 10), 0);
+        // Near the end: offset never leaves a blank gap past the last row.
+        assert_eq!(scroll_offset(99, 49, 50, 10), 40);
     }
 
     #[test]
