@@ -2845,7 +2845,7 @@ impl App {
     pub fn open_pr(&mut self) {
         if let Some(ListItem::Task { task, .. }) = self.selected_item() {
             if let Some(url) = self.pr_urls.get(&task.branch) {
-                let _ = std::process::Command::new("open").arg(url).output();
+                open_url(url);
             } else {
                 self.input_mode = InputMode::ConfirmCreatePr;
                 self.status_message = Some("No PR found. Create one? (y/n)".into());
@@ -2871,7 +2871,7 @@ impl App {
                     config::write_stack_cache(&project_name, &branch, &prs);
                     if open_bottom {
                         if let Some((url, _)) = prs.first() {
-                            let _ = std::process::Command::new("open").arg(url).output();
+                            open_url(url);
                         }
                     }
                     OpResult {
@@ -2939,7 +2939,7 @@ impl App {
             match output {
                 Ok(o) if o.status.success() => {
                     let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    let _ = std::process::Command::new("open").arg(&url).output();
+                    open_url(&url);
                     OpResult {
                         message: format!("Created PR: {url}"),
                         rebuild: false,
@@ -3013,6 +3013,18 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
     }
     let first = first.unwrap_or(0) as i64;
     Some(first * 4 + gaps * 2 + candidate.chars().count() as i64 / 10)
+}
+
+/// Open `url` (or a file path) in the platform's default handler. Uses `open`
+/// on macOS and `xdg-open` on Linux/other Unixes. Errors are swallowed by
+/// callers, matching the previous best-effort behavior.
+fn open_url(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = Command::new(opener).arg(url).output();
 }
 
 /// Copy `text` to the system clipboard. Tries `pbcopy` (macOS), `wl-copy`
