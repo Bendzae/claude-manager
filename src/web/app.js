@@ -176,6 +176,7 @@ function openSession(tmuxName, title, status) {
   $("sv-title").textContent = title;
   setStatus(status);
   $("term").textContent = "";
+  lastRaw = null;
   $("session-view").hidden = false;
   refreshOutput(true);
   clearInterval(outputPoll);
@@ -200,6 +201,141 @@ function termPinnedToBottom() {
   return t.scrollHeight - t.scrollTop - t.clientHeight < 60;
 }
 
+// ---------- ANSI rendering ----------
+
+const TERM_FG = "#aeb8cf";
+const TERM_BG = "#0b0d12";
+
+const BASE16 = [
+  "#20242f", "#f26d78", "#7fd962", "#ffb454",
+  "#73a3f2", "#c792ea", "#5ccfe6", "#cdd5e8",
+  "#4a5370", "#ff8189", "#98e878", "#ffcc7b",
+  "#8fb8ff", "#ddb3f5", "#7ee0f0", "#eef1f8",
+];
+
+function color256(n) {
+  if (n < 16) return BASE16[n];
+  if (n < 232) {
+    const c = n - 16;
+    const steps = [0, 95, 135, 175, 215, 255];
+    return `rgb(${steps[Math.floor(c / 36)]},${steps[Math.floor(c / 6) % 6]},${steps[c % 6]})`;
+  }
+  const v = 8 + (n - 232) * 10;
+  return `rgb(${v},${v},${v})`;
+}
+
+function colorOf(c) {
+  if (c == null) return null;
+  return typeof c === "number" ? color256(c) : c;
+}
+
+function applySgr(s, params) {
+  const p = params.length ? params.split(/[;:]/).map((x) => Number(x) || 0) : [0];
+  for (let i = 0; i < p.length; i++) {
+    const n = p[i];
+    if (n === 0) {
+      s.fg = s.bg = null;
+      s.bold = s.dim = s.italic = s.underline = s.strike = s.reverse = false;
+    } else if (n === 1) s.bold = true;
+    else if (n === 2) s.dim = true;
+    else if (n === 3) s.italic = true;
+    else if (n === 4) s.underline = true;
+    else if (n === 7) s.reverse = true;
+    else if (n === 9) s.strike = true;
+    else if (n === 22) s.bold = s.dim = false;
+    else if (n === 23) s.italic = false;
+    else if (n === 24) s.underline = false;
+    else if (n === 27) s.reverse = false;
+    else if (n === 29) s.strike = false;
+    else if (n >= 30 && n <= 37) s.fg = n - 30;
+    else if (n === 39) s.fg = null;
+    else if (n >= 40 && n <= 47) s.bg = n - 40;
+    else if (n === 49) s.bg = null;
+    else if (n >= 90 && n <= 97) s.fg = n - 82;
+    else if (n >= 100 && n <= 107) s.bg = n - 92;
+    else if (n === 38 || n === 48) {
+      const set = (v) => (n === 38 ? (s.fg = v) : (s.bg = v));
+      if (p[i + 1] === 5) {
+        set(p[i + 2]);
+        i += 2;
+      } else if (p[i + 1] === 2) {
+        set(`rgb(${p[i + 2]},${p[i + 3]},${p[i + 4]})`);
+        i += 4;
+      }
+    }
+  }
+}
+
+function styleFor(s) {
+  let fg = s.fg;
+  if (s.bold && typeof fg === "number" && fg < 8) fg += 8;
+  let fgc = colorOf(fg);
+  let bgc = colorOf(s.bg);
+  if (s.reverse) {
+    const nf = bgc || TERM_BG;
+    bgc = fgc || TERM_FG;
+    fgc = nf;
+  }
+  let st = "";
+  if (fgc) st += `color:${fgc};`;
+  if (bgc) st += `background:${bgc};`;
+  if (s.bold) st += "font-weight:600;";
+  if (s.dim) st += "opacity:.55;";
+  if (s.italic) st += "font-style:italic;";
+  if (s.underline) st += "text-decoration:underline;";
+  else if (s.strike) st += "text-decoration:line-through;";
+  return st;
+}
+
+const ANSI_RE =
+  // SGR (captured) | other CSI | OSC | charset/keypad escapes
+  /\x1b\[([0-9;:]*)m|\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]/g;
+
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function ansiToHtml(raw) {
+  raw = raw.replace(/\r/g, "");
+  const s = {
+    fg: null, bg: null,
+    bold: false, dim: false, italic: false,
+    underline: false, strike: false, reverse: false,
+  };
+  let html = "";
+  let idx = 0;
+
+  const flush = (text) => {
+    if (!text) return;
+    const esc = escapeHtml(text);
+    const style = styleFor(s);
+    html += style ? `<span style="${style}">${esc}</span>` : esc;
+  };
+
+  ANSI_RE.lastIndex = 0;
+  let m;
+  while ((m = ANSI_RE.exec(raw))) {
+    flush(raw.slice(idx, m.index));
+    idx = m.index + m[0].length;
+    if (m[1] !== undefined) applySgr(s, m[1]);
+  }
+  flush(raw.slice(idx));
+  return html;
+}
+
+/// Scale the terminal font so `cols` columns fit the screen width
+/// (IBM Plex Mono advance width is 0.6em). Below the readable minimum we
+/// keep the minimum and allow horizontal scrolling.
+function fitTerm(cols) {
+  const t = $("term");
+  const avail = t.clientWidth - 20; // horizontal padding
+  const size = Math.min(13, Math.max(7, avail / (cols * 0.6)));
+  t.style.fontSize = `${size.toFixed(2)}px`;
+}
+
+let lastRaw = null;
+let lastCols = 80;
+
 async function refreshOutput(force) {
   if (!current) return;
   try {
@@ -208,15 +344,17 @@ async function refreshOutput(force) {
     );
     const t = $("term");
     const pinned = force || termPinnedToBottom();
-    const text = (data.text || "").replace(/\s+$/, "");
-    if (t.textContent !== text) {
-      t.textContent = text;
+    const raw = (data.text || "").replace(/\s+$/, "");
+    if (raw !== lastRaw) {
+      lastRaw = raw;
+      lastCols = data.width || 80;
+      t.innerHTML = ansiToHtml(raw);
+      fitTerm(lastCols);
       if (pinned) t.scrollTop = t.scrollHeight;
     }
   } catch (e) {
     // session likely gone
   }
-  // refresh status from list state occasionally is handled by state poll; keep simple
 }
 
 async function refreshSessionStatus() {
@@ -363,6 +501,10 @@ statePoll = setInterval(() => {
   if (current) refreshSessionStatus();
   else refreshState();
 }, 3000);
+
+window.addEventListener("resize", () => {
+  if (current) fitTerm(lastCols);
+});
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {

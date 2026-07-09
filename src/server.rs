@@ -224,12 +224,12 @@ async fn api_output(
     validate_session_name(&name)?;
     let lines = params.lines.unwrap_or(300).clamp(50, 5000);
 
-    let text = tokio::task::spawn_blocking(move || tmux::capture_output(&name, lines))
+    let (text, width) = tokio::task::spawn_blocking(move || tmux::capture_output(&name, lines))
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "session not found".to_string()))?;
 
-    Ok(axum::Json(json!({ "text": text })).into_response())
+    Ok(axum::Json(json!({ "text": text, "width": width })).into_response())
 }
 
 fn default_submit() -> bool {
@@ -454,8 +454,12 @@ fn create_session_for_task(
     Ok(tmux_name)
 }
 
-async fn index() -> Html<&'static str> {
-    Html(include_str!("web/index.html"))
+async fn index() -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-cache")],
+        Html(include_str!("web/index.html")),
+    )
+        .into_response()
 }
 
 async fn app_js() -> Response {
@@ -472,12 +476,22 @@ async fn manifest() -> Response {
 
 async fn icon() -> Response {
     (
-        [(header::CONTENT_TYPE, "image/png")],
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
         include_bytes!("web/icon.png").as_slice(),
     )
         .into_response()
 }
 
 fn static_file(content_type: &'static str, body: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, content_type)], body).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }

@@ -209,13 +209,12 @@ body::before {
 
 #term {
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 10px 12px 16px;
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
+  padding: 10px 10px 16px;
+  font-size: 9px; /* JS refits to the tmux pane width */
+  line-height: 1.35;
+  white-space: pre;
   color: #aeb8cf;
 }
 
