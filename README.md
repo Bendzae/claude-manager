@@ -12,7 +12,8 @@ Claude Manager uses tmux to run Claude Code sessions in the background, letting 
 - **Claude Code CLI** (`claude`) — must be installed and available in your PATH
 - **git** — for worktree and branch management
 - **gh** (optional) — GitHub CLI, for PR creation features
-- **difit** (optional) — for the diff review feature (`r`). Installed globally (`npm i -g difit`) it launches instantly; otherwise it runs via `npx` automatically (Node.js required), fetched on first use.
+- **difit** (optional) — the default diff review tool (`r`). Installed globally (`npm i -g difit`) it launches instantly; otherwise it runs via `npx` automatically (Node.js required), fetched on first use.
+- **hunk** (optional) — an alternative terminal-based diff review tool ([modem-dev/hunk](https://github.com/modem-dev/hunk)), used when `review_tool = "hunk"` is set in config. Installed globally (`npm i -g hunkdiff`) it launches instantly; otherwise it runs via `npx hunkdiff` automatically (Node.js required). Unlike difit it runs in your terminal (suspending the TUI); review comments are still forwarded back to the agent.
 
 ## Installation
 
@@ -104,7 +105,7 @@ Run sessions are independent per item, so running on a different item starts a s
 |-----|--------|------------|
 | `n` | New session (with worktree) | `new_session` |
 | `N` | New session (without worktree) | `new_session_no_worktree` |
-| `r` | Review branch-vs-base diff in difit | `review` |
+| `r` | Review branch-vs-base diff (difit or hunk) | `review` |
 | `x` | Run the project's configured run command | `run` |
 | `u` | Update/rebase branch onto main | `update` |
 | `B` | Set base branch | `set_base_branch` |
@@ -132,7 +133,7 @@ A running TUI picks up config/flag changes on its next idle refresh, and the pub
 
 | Key | Action | Config key |
 |-----|--------|------------|
-| `r` | Review uncommitted changes in difit | `review` |
+| `r` | Review uncommitted changes (difit or hunk) | `review` |
 | `m` | Merge into task branch | `merge` |
 | `u` | Update/rebase onto task branch | `update` |
 | `t` | Open/attach a terminal in the worktree | `terminal` |
@@ -141,7 +142,15 @@ A running TUI picks up config/flag changes on its next idle refresh, and the pub
 | `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
 
-The **Review** action (`r`) launches difit on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Any comments you leave in the difit review session are captured on exit and forwarded back to the agent's Claude session as a new prompt, so you can review a diff and hand the feedback straight to the agent.
+The **Review** action (`r`) launches the configured diff review tool on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Choose the tool with `review_tool` in `~/.claude-manager/config.toml` (`"difit"`, the default, or `"hunk"`):
+
+- **difit** (default) opens a browser-based viewer in the background, so the TUI stays interactive. Any comments you leave are captured on exit and forwarded back to the agent's Claude session as a new prompt, so you can review a diff and hand the feedback straight to the agent.
+- **hunk** ([modem-dev/hunk](https://github.com/modem-dev/hunk)) opens a terminal viewer in the foreground, suspending the TUI until you exit. Comments you leave are polled from hunk's live review session while it runs and forwarded to the agent on exit, the same as difit. (A comment added in the last fraction of a second before quitting may be missed, since hunk's session is gone once it closes.)
+
+```toml
+# ~/.claude-manager/config.toml
+review_tool = "hunk"   # or "difit" (default)
+```
 
 ### Session Status Indicators
 

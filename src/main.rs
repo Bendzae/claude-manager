@@ -172,6 +172,11 @@ fn main() -> Result<()> {
         } else if let Some(path) = app.should_open_editor.take() {
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
             std::process::Command::new(&editor).arg(&path).status()?;
+        } else if let Some((cwd, args, session)) = app.should_review_hunk.take() {
+            // hunk is a terminal TUI: run it on the real terminal (the TUI is
+            // suspended here), polling its live session so comments can be
+            // forwarded to the agent on exit.
+            app.run_hunk_review(cwd, args, session);
         }
     }
 
@@ -489,6 +494,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         if app.should_attach.is_some()
             || app.should_attach_window.is_some()
             || app.should_open_editor.is_some()
+            || app.should_review_hunk.is_some()
         {
             return Ok(());
         }
