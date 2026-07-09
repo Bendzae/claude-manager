@@ -154,7 +154,7 @@ pub struct ContextMenuKeyBindings {
     /// Toggle stacked-PR mode for a task (default: s)
     #[serde(default = "cm_toggle_stacked")]
     pub toggle_stacked: char,
-    /// Review diff in difit (default: r)
+    /// Review diff in the configured review tool (default: r)
     #[serde(default = "cm_review")]
     pub review: char,
     /// Open/attach a terminal in the session worktree (default: t)
@@ -355,8 +355,29 @@ pub struct Project {
     pub run_command: Option<String>,
 }
 
+/// Which diff review tool the review action launches.
+///
+/// - `Hunk` (default) — a terminal diff viewer ([modem-dev/hunk]) run in the
+///   foreground, suspending the TUI for the duration of the review.
+/// - `Difit` — a browser-based diff viewer run in the background; any comments
+///   left on exit are forwarded to the agent session.
+///
+/// [modem-dev/hunk]: https://github.com/modem-dev/hunk
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewTool {
+    #[default]
+    Hunk,
+    Difit,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// Diff review tool launched by the review action (default: hunk).
+    /// Declared first so it serializes before the `[[projects]]` tables (a
+    /// scalar emitted after a table would be invalid TOML).
+    #[serde(default)]
+    pub review_tool: ReviewTool,
     #[serde(default)]
     pub projects: Vec<Project>,
     /// Startup skills/commands to run before the initial prompt (e.g. ["/prime", "/caveman ultra"])
@@ -1024,6 +1045,39 @@ mod tests {
         cfg.set_task_archived("App", "t1", true);
         let s = toml::to_string_pretty(&cfg).unwrap();
         assert!(s.contains("archived = true"));
+    }
+
+    #[test]
+    fn review_tool_defaults_to_hunk() {
+        assert_eq!(Config::default().review_tool, ReviewTool::Hunk);
+        // An existing config without the key deserializes to the default.
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.review_tool, ReviewTool::Hunk);
+    }
+
+    #[test]
+    fn review_tool_parses_and_round_trips() {
+        let cfg: Config = toml::from_str("review_tool = \"difit\"\n").unwrap();
+        assert_eq!(cfg.review_tool, ReviewTool::Difit);
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(s.contains("review_tool = \"difit\""));
+        assert_eq!(
+            toml::from_str::<Config>(&s).unwrap().review_tool,
+            ReviewTool::Difit
+        );
+    }
+
+    #[test]
+    fn review_tool_serializes_before_project_tables() {
+        // `review_tool` is a scalar; if emitted after `[[projects]]` it would be
+        // invalid TOML and fail to re-parse. Guards the field ordering.
+        let mut cfg = empty_config();
+        cfg.review_tool = ReviewTool::Hunk;
+        cfg.add_project("App".into(), "/tmp/app".into());
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.review_tool, ReviewTool::Hunk);
+        assert_eq!(back.projects.len(), 1);
     }
 
     #[test]
