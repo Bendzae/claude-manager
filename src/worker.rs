@@ -73,6 +73,8 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
     let mut session_branches: HashMap<String, String> = HashMap::new();
     let mut pr_urls: HashMap<String, String> = HashMap::new();
     let mut stack_prs: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut task_diff_stats: HashMap<String, DiffStats> = HashMap::new();
+    let mut project_branches: HashMap<String, String> = HashMap::new();
     let mut tick: u64 = 0;
 
     loop {
@@ -123,6 +125,21 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             statuses.insert(session.name.clone(), status);
         }
 
+        // Publish statuses right away with the previously computed maps — the
+        // git work below can take many seconds on a cold start, and statuses
+        // are the most time-sensitive signal.
+        *latest.lock().unwrap() = Some(WorkerUpdate {
+            sessions: sessions.clone(),
+            statuses: statuses.clone(),
+            diff_stats: diff_stats.clone(),
+            session_branches: session_branches.clone(),
+            task_diff_stats: task_diff_stats.clone(),
+            pr_urls: pr_urls.clone(),
+            stack_prs: stack_prs.clone(),
+            project_branches: project_branches.clone(),
+            run_sessions: tmux::list_run_sessions(),
+        });
+
         // Refresh diff stats and terminal counts less frequently (~every 2 seconds)
         if tick % 4 == 0 {
             let session_names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
@@ -144,9 +161,10 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             (h.tasks.clone(), h.project_paths.clone())
         };
 
-        // Compute task branch diffs (less frequently)
-        let mut task_diff_stats: HashMap<String, DiffStats> = HashMap::new();
+        // Compute task branch diffs (less frequently). Values persist across
+        // ticks so consumers always see the latest computed stats.
         if tick % 4 == 0 {
+            task_diff_stats.retain(|k, _| tasks.iter().any(|t| t.branch == *k));
             for task in &tasks {
                 if let Some(stats) =
                     tmux::get_branch_diff(&task.project_path, &task.branch, &task.base_branch)
@@ -190,8 +208,8 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
         }
 
         // Compute current branch for each project (less frequently, ~every 2 seconds)
-        let mut project_branches: HashMap<String, String> = HashMap::new();
         if tick % 4 == 0 {
+            project_branches.retain(|k, _| project_paths.iter().any(|(n, _)| n == k));
             for (name, path) in &project_paths {
                 if let Some(branch) = get_current_branch(path) {
                     project_branches.insert(name.clone(), branch);
@@ -204,10 +222,10 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             statuses,
             diff_stats: diff_stats.clone(),
             session_branches: session_branches.clone(),
-            task_diff_stats,
+            task_diff_stats: task_diff_stats.clone(),
             pr_urls: pr_urls.clone(),
             stack_prs: stack_prs.clone(),
-            project_branches,
+            project_branches: project_branches.clone(),
             run_sessions: tmux::list_run_sessions(),
         };
 

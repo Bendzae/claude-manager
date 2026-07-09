@@ -4,8 +4,8 @@ const $ = (id) => document.getElementById(id);
 
 const STATUS_LABEL = {
   running: "running",
-  waiting_input: "needs input",
-  waiting_permission: "permission!",
+  waiting_input: "idle",
+  waiting_permission: "attention!",
   finished: "finished",
 };
 
@@ -62,6 +62,17 @@ function diffSpan(diff, className) {
 
 // ---------- list view ----------
 
+// Projects start collapsed; only explicitly expanded ones are remembered.
+const expanded = new Set(JSON.parse(localStorage.getItem("cm-expanded") || "[]"));
+let lastProjects = [];
+
+function toggleCollapse(name) {
+  if (expanded.has(name)) expanded.delete(name);
+  else expanded.add(name);
+  localStorage.setItem("cm-expanded", JSON.stringify([...expanded]));
+  renderProjects(lastProjects);
+}
+
 async function refreshState() {
   let state;
   try {
@@ -71,7 +82,8 @@ async function refreshState() {
     return;
   }
   $("host").textContent = `@${state.host || "?"}`;
-  renderProjects(state.projects || []);
+  lastProjects = state.projects || [];
+  renderProjects(lastProjects);
 }
 
 function renderProjects(projects) {
@@ -85,30 +97,58 @@ function renderProjects(projects) {
 
   for (const p of projects) {
     const proj = el("section", "project");
+    const isCollapsed = !expanded.has(p.name);
+    const tasks = (p.tasks || []).filter((t) => !t.archived);
+    const adhoc = p.adhoc_sessions || [];
 
     const header = el("div", "project-header");
-    const name = el("div", "project-name", p.name);
+    const toggle = el("button", "project-toggle");
+    toggle.append(el("span", "chevron", isCollapsed ? "▸" : "▾"));
+    const name = el("span", "project-name", p.name);
     if (p.branch) name.append(el("span", "project-branch", `⎇ ${p.branch}`));
+    toggle.append(name);
+    toggle.onclick = () => toggleCollapse(p.name);
     const addBtn = el("button", "new-task-btn", "+ task");
     addBtn.onclick = () => openSheet({ mode: "task", project: p.name });
-    header.append(name, addBtn);
+    header.append(toggle, addBtn);
     proj.append(header);
 
-    const tasks = (p.tasks || []).filter((t) => !t.archived);
+    if (isCollapsed) {
+      const sessions = [...tasks.flatMap((t) => t.sessions || []), ...adhoc];
+      const summary = el("button", "project-summary");
+      summary.append(el("span", `dot ${urgentStatus(sessions)}`));
+      summary.append(
+        el("span", "label", `${tasks.length} task${tasks.length === 1 ? "" : "s"} · ${sessions.length} session${sessions.length === 1 ? "" : "s"}`)
+      );
+      summary.onclick = () => toggleCollapse(p.name);
+      proj.append(summary);
+      root.append(proj);
+      continue;
+    }
+
     for (const t of tasks) proj.append(renderTask(p, t));
 
-    for (const s of p.adhoc_sessions || []) {
+    for (const s of adhoc) {
       const card = el("div", "task");
       card.append(sessionRow(s, `adhoc · ${s.name}`));
       proj.append(card);
     }
 
-    if (tasks.length === 0 && (p.adhoc_sessions || []).length === 0) {
+    if (tasks.length === 0 && adhoc.length === 0) {
       proj.append(el("div", "empty", "no tasks"));
     }
 
     root.append(proj);
   }
+}
+
+/// Most attention-worthy status across sessions, for the collapsed summary dot.
+function urgentStatus(sessions) {
+  const order = ["waiting_permission", "waiting_input", "running", "finished"];
+  for (const status of order) {
+    if (sessions.some((s) => s.status === status)) return status;
+  }
+  return "";
 }
 
 function renderTask(project, task) {
@@ -119,7 +159,16 @@ function renderTask(project, task) {
 
   const meta = el("div", "task-meta");
   if (task.stacked) meta.append(el("span", "stacked-badge", "≡"));
-  meta.append(diffSpan(task.diff));
+  const taskDiff = diffSpan(task.diff);
+  if (taskDiff.childNodes.length) {
+    taskDiff.classList.add("tappable");
+    taskDiff.onclick = () =>
+      openDiff(
+        `project=${encodeURIComponent(project.name)}&branch=${encodeURIComponent(task.branch)}`,
+        `${task.name} · vs ${task.base_branch}`
+      );
+  }
+  meta.append(taskDiff);
   if (task.pr_url) {
     const a = el("a", "pr-link", "PR ↗");
     a.href = task.pr_url;
@@ -430,6 +479,115 @@ async function killSession() {
   }
 }
 
+// ---------- diff view ----------
+
+let diffQuery = null;
+
+function openDiff(query, title) {
+  diffQuery = query;
+  $("dv-title").textContent = title;
+  $("dv-stats").textContent = "";
+  $("diff-body").textContent = "loading…";
+  $("diff-view").hidden = false;
+  loadDiff();
+}
+
+function closeDiff() {
+  diffQuery = null;
+  $("diff-view").hidden = true;
+}
+
+async function loadDiff() {
+  if (!diffQuery) return;
+  try {
+    const data = await api(`/api/diff?${diffQuery}`);
+    renderDiff(data.text || "");
+  } catch (e) {
+    $("diff-body").textContent = "";
+    $("diff-body").append(el("div", "empty", `no diff: ${e.message}`));
+  }
+}
+
+function renderDiff(text) {
+  const body = $("diff-body");
+  body.textContent = "";
+
+  const files = parseDiff(text);
+  let added = 0;
+  let removed = 0;
+  for (const f of files) {
+    added += f.added;
+    removed += f.removed;
+  }
+  const stats = $("dv-stats");
+  stats.textContent = "";
+  stats.append(
+    el("span", "diff-added", `+${added}`),
+    el("span", "", " "),
+    el("span", "diff-removed", `-${removed}`),
+    el("span", "", ` · ${files.length} file${files.length === 1 ? "" : "s"}`)
+  );
+
+  if (files.length === 0) {
+    body.append(el("div", "empty", "no changes"));
+    return;
+  }
+
+  for (const f of files) {
+    const card = el("div", "file-card");
+    const header = el("button", "file-header");
+    header.append(el("span", "file-path", f.path));
+    const meta = el("span", "task-meta");
+    meta.append(el("span", "diff-added", `+${f.added}`), el("span", "diff-removed", `-${f.removed}`));
+    header.append(meta);
+    const content = el("pre", "file-diff");
+    let html = "";
+    for (const line of f.lines) {
+      const esc = escapeHtml(line) || " ";
+      let cls = "dl";
+      if (line.startsWith("+")) cls += " d-add";
+      else if (line.startsWith("-")) cls += " d-del";
+      else if (line.startsWith("@@")) cls += " d-hunk";
+      html += `<span class="${cls}">${esc}</span>`;
+    }
+    content.innerHTML = html;
+    header.onclick = () => {
+      content.hidden = !content.hidden;
+    };
+    card.append(header, content);
+    body.append(card);
+  }
+}
+
+/// Split a unified diff into per-file chunks with counts; drops git metadata
+/// lines before the first hunk of each file.
+function parseDiff(text) {
+  const files = [];
+  let cur = null;
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const path = (line.match(/ b\/(.*)$/) || [])[1] || line.slice(11);
+      cur = { path, lines: [], added: 0, removed: 0 };
+      files.push(cur);
+      inHunk = false;
+      continue;
+    }
+    if (!cur) continue;
+    if (line.startsWith("@@")) inHunk = true;
+    if (!inHunk) {
+      if (line.startsWith("new file")) cur.lines.push(line);
+      else if (line.startsWith("deleted file")) cur.lines.push(line);
+      else if (line.startsWith("rename ")) cur.lines.push(line);
+      continue;
+    }
+    cur.lines.push(line);
+    if (line.startsWith("+") && !line.startsWith("+++")) cur.added++;
+    else if (line.startsWith("-") && !line.startsWith("---")) cur.removed++;
+  }
+  return files;
+}
+
 // ---------- new-task sheet ----------
 
 let sheetCtx = null;
@@ -479,6 +637,13 @@ async function createFromSheet() {
 
 $("back-btn").onclick = closeSession;
 $("kill-btn").onclick = killSession;
+$("sv-diff-btn").onclick = () => {
+  if (current) {
+    openDiff(`session=${encodeURIComponent(current.tmuxName)}`, `${current.title} · diff`);
+  }
+};
+$("diff-back-btn").onclick = closeDiff;
+$("diff-refresh-btn").onclick = loadDiff;
 $("send-btn").onclick = sendMessage;
 $("sheet-cancel").onclick = closeSheet;
 $("sheet-create").onclick = createFromSheet;

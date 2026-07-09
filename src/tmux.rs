@@ -7,10 +7,13 @@ use std::process::{Command, Stdio};
 use anyhow::{Result, bail};
 
 const SESSION_SEP: &str = "__";
+/// Markers for dialogs that need the user's attention: permission prompts and
+/// question dialogs (AskUserQuestion renders a "❯ 1." option selector).
 const PERMISSION_PROMPTS: &[&str] = &[
     "Do you want to",
     "Yes, allow all",
     "No, and tell Claude what to do differently",
+    "❯ 1.",
 ];
 
 /// Sentinel placed in the task slot of a tmux session name to mark an adhoc session.
@@ -1756,8 +1759,22 @@ pub fn get_session_branch(session_name: &str) -> Option<String> {
     current_branch(&path)
 }
 
-/// Compute diff stats for a session's worktree against its base commit.
-pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
+fn count_diff(diff: &str) -> DiffStats {
+    let mut added = 0;
+    let mut removed = 0;
+    for line in diff.lines() {
+        if line.starts_with('+') && !line.starts_with("+++") {
+            added += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            removed += 1;
+        }
+    }
+    DiffStats { added, removed }
+}
+
+/// Full unified diff of a session's worktree against its task branch
+/// (includes committed + uncommitted changes).
+pub fn get_session_diff_text(session_name: &str) -> Option<String> {
     let worktree_path = get_session_env(session_name, "CM_WORKTREE_PATH")
         .or_else(|| get_session_env(session_name, "CM_PROJECT_PATH"))?;
 
@@ -1774,7 +1791,6 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
         .args(["-C", &worktree_path, "add", "-N", "."])
         .output();
 
-    // Diff working tree against the task branch (includes committed + uncommitted changes)
     let output = Command::new("git")
         .args(["-C", &worktree_path, "--no-pager", "diff", &diff_target])
         .output()
@@ -1784,19 +1800,12 @@ pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
         return None;
     }
 
-    let diff_output = String::from_utf8_lossy(&output.stdout).to_string();
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
 
-    let mut added = 0;
-    let mut removed = 0;
-    for line in diff_output.lines() {
-        if line.starts_with('+') && !line.starts_with("+++") {
-            added += 1;
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            removed += 1;
-        }
-    }
-
-    Some(DiffStats { added, removed })
+/// Compute diff stats for a session's worktree against its base commit.
+pub fn get_diff_stats(session_name: &str) -> Option<DiffStats> {
+    Some(count_diff(&get_session_diff_text(session_name)?))
 }
 
 /// Compute diff stats for a task branch against its base branch.
@@ -1823,19 +1832,9 @@ pub fn resolve_base_ref(project_path: &str, base_branch: &str) -> String {
     }
 }
 
-pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> Option<DiffStats> {
-    // Try origin/<base> first, fall back to local <base>
-    let remote_ref = format!("origin/{base_branch}");
-    let base = if Command::new("git")
-        .args(["-C", project_path, "rev-parse", "--verify", &remote_ref])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        remote_ref
-    } else {
-        base_branch.to_string()
-    };
+/// Full unified diff of a task branch against its base branch.
+pub fn get_branch_diff_text(project_path: &str, branch: &str, base_branch: &str) -> Option<String> {
+    let base = resolve_base_ref(project_path, base_branch);
 
     let output = Command::new("git")
         .args([
@@ -1852,19 +1851,15 @@ pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> O
         return None;
     }
 
-    let diff_output = String::from_utf8_lossy(&output.stdout).to_string();
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
 
-    let mut added = 0;
-    let mut removed = 0;
-    for line in diff_output.lines() {
-        if line.starts_with('+') && !line.starts_with("+++") {
-            added += 1;
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            removed += 1;
-        }
-    }
-
-    Some(DiffStats { added, removed })
+pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> Option<DiffStats> {
+    Some(count_diff(&get_branch_diff_text(
+        project_path,
+        branch,
+        base_branch,
+    )?))
 }
 
 /// Raw signals from a tmux session for status detection.
@@ -1919,13 +1914,35 @@ pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
 
     let content = capture_pane_plain(&target).unwrap_or_default();
     let content_hash = hash_content(&content);
-    let has_permission_prompt = PERMISSION_PROMPTS.iter().any(|p| content.contains(p));
+    let has_permission_prompt = detect_attention_dialog(&content);
 
     Some(SessionProbe {
         claude_alive,
         content_hash,
         has_permission_prompt,
     })
+}
+
+/// Whether the pane shows an active dialog needing the user (permission
+/// prompt or question selector).
+///
+/// Two guards against false positives from dialog text merely echoed in the
+/// transcript: markers must appear near the bottom of the pane (active
+/// dialogs render there), and the pane must not currently show the regular
+/// input prompt — a bare `❯`/`>` line — which Claude Code replaces while a
+/// dialog is open.
+fn detect_attention_dialog(content: &str) -> bool {
+    let nonempty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    let at_input_prompt = nonempty[nonempty.len().saturating_sub(8)..]
+        .iter()
+        .any(|l| matches!(l.trim(), "❯" | ">"));
+    if at_input_prompt {
+        return false;
+    }
+
+    let tail = nonempty[nonempty.len().saturating_sub(12)..].join("\n");
+    PERMISSION_PROMPTS.iter().any(|p| tail.contains(p))
 }
 
 fn hash_content(s: &str) -> u64 {
@@ -2456,5 +2473,55 @@ https://github.com/o/r/pull/12 : Add model
             removed: 3,
         };
         assert!(!stats.is_empty());
+    }
+
+    // --- detect_attention_dialog ---
+
+    #[test]
+    fn attention_for_active_question_dialog() {
+        let pane = "⏺ Some earlier output\n\n\
+                    Which approach should we take?\n\
+                    ❯ 1. Option A\n  \
+                    2. Option B\n  \
+                    3. Option C\n\n  \
+                    Enter to confirm";
+        assert!(detect_attention_dialog(pane));
+    }
+
+    #[test]
+    fn attention_for_active_permission_prompt() {
+        let pane = "⏺ Bash(rm -rf build)\n\n\
+                    Do you want to proceed?\n\
+                    ❯ 1. Yes\n  \
+                    2. Yes, allow all edits during this session\n  \
+                    3. No, and tell Claude what to do differently";
+        assert!(detect_attention_dialog(pane));
+    }
+
+    #[test]
+    fn no_attention_when_idle_at_input_prompt() {
+        // Dialog-like text echoed in the transcript above an idle input box
+        // (bare ❯ line) must not count as an active dialog.
+        let pane = "⏺ Added \"❯ 1.\" to the marker list\n\n\
+                    Do you want to test this?\n\
+                    ────────────\n\
+                    ❯ \n\
+                    ────────────\n  \
+                    -- INSERT -- ⏵⏵ bypass permissions on";
+        assert!(!detect_attention_dialog(pane));
+    }
+
+    #[test]
+    fn no_attention_when_marker_scrolled_far_up() {
+        let mut pane = String::from("❯ 1. Old answered dialog\n");
+        for i in 0..20 {
+            pane.push_str(&format!("output line {i}\n"));
+        }
+        assert!(!detect_attention_dialog(&pane));
+    }
+
+    #[test]
+    fn no_attention_on_plain_output() {
+        assert!(!detect_attention_dialog("⏺ Done. All tests pass.\n"));
     }
 }
