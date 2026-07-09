@@ -19,11 +19,21 @@
 
 html, body { height: 100%; }
 
+/* Prevent mobile browsers from randomly inflating text in wide/scrollable
+   blocks (font boosting) — hits diff and terminal lines otherwise. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+/* The page itself never scrolls — each view is its own scroll container.
+   Otherwise iOS chains touch scrolls to the page when an inner scroller
+   hits its boundary. */
 body {
   font-family: var(--mono);
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
+  overflow: hidden;
+  height: 100vh;
+  height: 100dvh;
   overscroll-behavior: none;
 }
 
@@ -41,7 +51,10 @@ body::before {
 #list-view {
   position: relative;
   z-index: 1;
-  min-height: 100%;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding: env(safe-area-inset-top) 0 calc(24px + env(safe-area-inset-bottom));
 }
 
@@ -85,8 +98,38 @@ body::before {
   padding: 6px 4px;
 }
 
+.project-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  text-align: left;
+  padding: 4px 0;
+}
+.chevron { color: var(--faint); font-size: 11px; }
 .project-name { font-weight: 600; font-size: 14px; letter-spacing: 0.03em; }
 .project-branch { color: var(--faint); font-size: 11px; margin-left: 8px; font-weight: 400; }
+
+.project-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+  text-align: left;
+}
+.project-summary .label { flex: 1; }
 
 .new-task-btn {
   font-family: var(--mono);
@@ -157,19 +200,20 @@ body::before {
   flex-shrink: 0;
   background: var(--faint);
 }
-.dot.running { background: var(--green); animation: pulse 1.6s ease-in-out infinite; }
-.dot.waiting_input { background: var(--amber); }
+/* Mirrors the TUI: running = amber activity, idle-at-prompt = calm green,
+   attention (permission/question dialog) = red pulse. */
+.dot.running { background: var(--amber); animation: pulse 1.6s ease-in-out infinite; }
+.dot.waiting_input { background: var(--green); }
 .dot.waiting_permission { background: var(--red); animation: pulse 1s ease-in-out infinite; }
 .dot.finished { background: var(--faint); }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(127, 217, 98, 0.4); }
-  50% { opacity: 0.55; box-shadow: 0 0 0 4px rgba(127, 217, 98, 0); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .status-label { font-size: 11px; color: var(--dim); flex-shrink: 0; }
 .status-label.waiting_permission { color: var(--red); }
-.status-label.waiting_input { color: var(--amber); }
 
 /* ---------- session view ---------- */
 
@@ -211,6 +255,7 @@ body::before {
   flex: 1;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding: 10px 10px 16px;
   font-size: 9px; /* JS refits to the tmux pane width */
   line-height: 1.35;
@@ -269,6 +314,77 @@ body::before {
   padding: 11px 16px;
 }
 #send-btn:disabled { opacity: 0.4; }
+
+/* ---------- diff view ---------- */
+
+#diff-view {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+#diff-body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 10px 10px calc(16px + env(safe-area-inset-bottom));
+}
+
+.tappable { text-decoration: underline dotted var(--faint); }
+
+.file-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--panel-2);
+  border: none;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+}
+
+.file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* ellipsis on the left, filename stays visible */
+  text-align: left;
+}
+
+.file-diff {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: 8px 10px;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre;
+  color: var(--dim);
+}
+
+/* Every diff line is a block so lines always stack vertically (pre doesn't
+   wrap inline content); max-content + min-width keeps full-row backgrounds
+   under horizontal scroll. */
+.dl { display: block; width: max-content; min-width: 100%; }
+.d-add { color: var(--green); background: rgba(127, 217, 98, 0.08); }
+.d-del { color: var(--red); background: rgba(242, 109, 120, 0.08); }
+.d-hunk { color: var(--cyan); opacity: 0.7; }
 
 /* ---------- sheet ---------- */
 

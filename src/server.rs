@@ -50,6 +50,7 @@ pub fn run(bind: &str) -> Result<()> {
         .route("/icon.png", get(icon))
         .route("/api/state", get(api_state))
         .route("/api/sessions/{name}/output", get(api_output))
+        .route("/api/diff", get(api_diff))
         .route("/api/sessions/{name}/send", post(api_send))
         .route("/api/sessions/{name}/keys", post(api_keys))
         .route("/api/sessions/{name}/kill", post(api_kill))
@@ -230,6 +231,45 @@ async fn api_output(
         .ok_or((StatusCode::NOT_FOUND, "session not found".to_string()))?;
 
     Ok(axum::Json(json!({ "text": text, "width": width })).into_response())
+}
+
+#[derive(Deserialize)]
+struct DiffParams {
+    session: Option<String>,
+    project: Option<String>,
+    branch: Option<String>,
+}
+
+/// Unified diff, either for a session's worktree (vs its task branch) or for
+/// a task branch (vs its base branch).
+async fn api_diff(Query(params): Query<DiffParams>) -> Result<Response, ApiError> {
+    if let Some(name) = &params.session {
+        validate_session_name(name)?;
+    } else if params.project.is_none() || params.branch.is_none() {
+        return Err(bad_request("expected ?session= or ?project=&branch="));
+    }
+
+    let text = tokio::task::spawn_blocking(move || {
+        if let Some(name) = params.session {
+            tmux::get_session_diff_text(&name)
+        } else {
+            let (project_name, branch) = (params.project.unwrap(), params.branch.unwrap());
+            let cfg = Config::load().ok()?;
+            let project = cfg.projects.iter().find(|p| p.name == project_name)?;
+            let base = project
+                .tasks
+                .iter()
+                .find(|t| t.branch == branch)
+                .map(|t| t.base_branch().to_string())
+                .unwrap_or_else(|| "main".to_string());
+            tmux::get_branch_diff_text(&project.path, &branch, &base)
+        }
+    })
+    .await
+    .map_err(internal)?
+    .ok_or((StatusCode::NOT_FOUND, "diff unavailable".to_string()))?;
+
+    Ok(axum::Json(json!({ "text": text })).into_response())
 }
 
 fn default_submit() -> bool {

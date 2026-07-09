@@ -35,6 +35,7 @@
         <div class="session-name" id="sv-title"></div>
         <div class="session-sub"><span class="dot" id="sv-dot"></span><span id="sv-status"></span></div>
       </div>
+      <button class="icon-btn" id="sv-diff-btn">±</button>
       <button class="icon-btn danger" id="kill-btn">kill</button>
     </header>
     <pre id="term"></pre>
@@ -55,6 +56,18 @@
         <button id="send-btn" aria-label="send">▶</button>
       </div>
     </div>
+  </div>
+
+  <div id="diff-view" hidden>
+    <header class="session-header">
+      <button class="icon-btn" id="diff-back-btn" aria-label="back">‹</button>
+      <div class="session-title">
+        <div class="session-name" id="dv-title"></div>
+        <div class="session-sub" id="dv-stats"></div>
+      </div>
+      <button class="icon-btn" id="diff-refresh-btn">⟳</button>
+    </header>
+    <div id="diff-body"></div>
   </div>
 
   <div id="sheet-backdrop" hidden>
