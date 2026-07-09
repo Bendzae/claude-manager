@@ -68,6 +68,10 @@ pub enum InputMode {
     RunCommand,
     /// Attach / Restart / Kill menu shown when an item's run session is live.
     RunMenu,
+    /// Pick which of a task's sessions to forward difit review comments to,
+    /// shown after a task review closes with comments and more than one session
+    /// exists.
+    ReviewSessionPicker,
 }
 
 #[derive(Debug, Clone)]
@@ -229,26 +233,28 @@ fn query_hunk_user_comments(cwd: &str) -> Option<Vec<HunkComment>> {
         .map(|l| l.comments)
 }
 
-/// Format hunk review comments into a prompt for the agent, mirroring difit's.
+/// Format hunk review comments into a raw comment block (`- file:line — body`
+/// bullets). Wrapped by [`review_prompt`] before it's forwarded to the agent,
+/// the same way difit's extracted comment block is.
 fn format_hunk_comments(comments: &[HunkComment]) -> String {
-    let mut s = String::from(
-        "The following code review comments were left in hunk. Please address them:\n",
-    );
-    for c in comments {
-        let file = c.file_path.as_deref().unwrap_or("(unknown file)");
-        let line = c
-            .new_range
-            .as_ref()
-            .or(c.old_range.as_ref())
-            .and_then(|r| r.first())
-            .copied();
-        let body = c.body.as_deref().unwrap_or("").trim();
-        match line {
-            Some(l) => s.push_str(&format!("\n- {file}:{l} — {body}")),
-            None => s.push_str(&format!("\n- {file} — {body}")),
-        }
-    }
-    s
+    comments
+        .iter()
+        .map(|c| {
+            let file = c.file_path.as_deref().unwrap_or("(unknown file)");
+            let line = c
+                .new_range
+                .as_ref()
+                .or(c.old_range.as_ref())
+                .and_then(|r| r.first())
+                .copied();
+            let body = c.body.as_deref().unwrap_or("").trim();
+            match line {
+                Some(l) => format!("- {file}:{l} — {body}"),
+                None => format!("- {file} — {body}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Extract the review-comment block difit prints to stdout on exit. Returns
@@ -260,6 +266,10 @@ pub fn extract_difit_comments(stdout: &str) -> Option<String> {
     let line_start = stdout[..idx].rfind('\n').map(|n| n + 1).unwrap_or(0);
     Some(stdout[line_start..].trim_end().to_string())
 }
+
+/// A pending foreground hunk review: working dir, hunk CLI args, and the
+/// candidate sessions its comments forward to (`(tmux name, display name)`).
+type HunkReview = (String, Vec<String>, Vec<(String, String)>);
 
 pub struct App {
     pub config: Config,
@@ -276,14 +286,14 @@ pub struct App {
     /// Attach to a specific (session, window index) — used for terminals.
     pub should_attach_window: Option<(String, usize)>,
     pub should_open_editor: Option<PathBuf>,
-    /// Pending foreground hunk review: `(cwd, hunk args, agent session)`. Set by
-    /// the review action when the configured tool is `hunk`; the main loop
+    /// Pending foreground hunk review: `(cwd, hunk args, candidate sessions)`.
+    /// Set by the review action when the configured tool is `hunk`; the main loop
     /// suspends the TUI, runs hunk on the real terminal, then resumes. Unlike
     /// difit (browser, run in the background), hunk is a terminal TUI and needs
     /// the controlling terminal — so it can't run as a background op. While it
     /// runs, the review comments are polled from hunk's live session and, on
-    /// exit, forwarded to the agent session (the third field), as difit does.
-    pub should_review_hunk: Option<(String, Vec<String>, Option<String>)>,
+    /// exit, routed to the candidate sessions via the same picker difit uses.
+    pub should_review_hunk: Option<HunkReview>,
     pub pending_project_path: Option<String>,
     pub pending_task_name: Option<String>,
     pub pending_task_branch: Option<String>,
@@ -307,6 +317,16 @@ pub struct App {
     pub op_count: usize,
     pub op_receiver: mpsc::Receiver<OpResult>,
     pub op_sender: mpsc::Sender<OpResult>,
+    /// Channel carrying difit reviews that closed with comments and need the
+    /// user to choose a target session (more than one candidate).
+    pub review_receiver: mpsc::Receiver<PendingReview>,
+    pub review_sender: mpsc::Sender<PendingReview>,
+    /// Review comments awaiting forwarding once a session is picked.
+    pub pending_review_comments: Option<String>,
+    /// Candidate sessions shown in the picker as `(tmux name, display name)`.
+    pub review_candidates: Vec<(String, String)>,
+    /// Selected index into `review_candidates`.
+    pub review_selected: usize,
     pub tick: usize,
     pub worker: Worker,
     pub context_menu_items: Vec<ContextMenuItem>,
@@ -332,6 +352,13 @@ pub struct App {
     /// during rendering so popups can anchor to it. Interior-mutable since draw
     /// only borrows `&App`.
     pub selected_row: std::cell::Cell<u16>,
+    /// Hostname of the machine cm is actually running on (resolved over SSH too).
+    /// Shown in the dashboard header so it's clear which box a session lives on.
+    pub hostname: String,
+    /// First list row (absolute index into the rendered rows) currently scrolled
+    /// into view. Persisted across frames so scrolling feels stable in both
+    /// directions; updated during rendering to keep the selection visible.
+    pub list_offset: std::cell::Cell<u16>,
 }
 
 pub struct OpResult {
@@ -340,11 +367,47 @@ pub struct OpResult {
     pub reload_config: bool,
 }
 
+/// A review that closed with comments still needing to be routed to a session.
+/// Sent from the difit background thread to the main thread when the reviewed
+/// task has more than one session, so the user can pick the target via a popup
+/// (the single-session case is forwarded directly off-thread). hunk reuses the
+/// same picker via [`App::open_review_session_picker`] from the main thread.
+pub struct PendingReview {
+    pub comments: String,
+    /// Candidate sessions as `(tmux session name, display name)`.
+    pub candidates: Vec<(String, String)>,
+}
+
+/// The prompt forwarded to an agent session carrying review comments (difit or
+/// hunk); `comments` is the tool's raw comment block.
+fn review_prompt(comments: &str) -> String {
+    format!(
+        "The following code review comments were left during review. \
+         Please address them:\n\n{comments}"
+    )
+}
+
 /// Modification time of config.toml, if it exists.
 fn config_file_mtime() -> Option<std::time::SystemTime> {
     std::fs::metadata(Config::config_path())
         .ok()
         .and_then(|m| m.modified().ok())
+}
+
+/// Resolve the hostname of the machine cm is actually running on. When cm is
+/// launched over SSH this is the remote box, not the user's laptop. Runs
+/// `hostname` once at startup and falls back to the `HOSTNAME` env var, then to
+/// "unknown". The short form (first dot-separated label) keeps the header tidy.
+fn detect_hostname() -> String {
+    let raw = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    raw.split('.').next().unwrap_or(&raw).to_string()
 }
 
 fn project_key(name: &str) -> String {
@@ -479,6 +542,7 @@ impl App {
             sessions = tmux::list_sessions().unwrap_or_default();
         }
         let (tx, rx) = mpsc::channel();
+        let (review_tx, review_rx) = mpsc::channel();
         let mut app = App {
             config,
             keybindings,
@@ -510,6 +574,11 @@ impl App {
             op_count: 0,
             op_receiver: rx,
             op_sender: tx,
+            review_receiver: review_rx,
+            review_sender: review_tx,
+            pending_review_comments: None,
+            review_candidates: Vec::new(),
+            review_selected: 0,
             tick: 0,
             worker: Worker::spawn(),
             context_menu_items: vec![],
@@ -525,6 +594,8 @@ impl App {
                 .map(|n| crate::theme::by_name(&n))
                 .unwrap_or(0),
             selected_row: std::cell::Cell::new(0),
+            hostname: detect_hostname(),
+            list_offset: std::cell::Cell::new(0),
         };
         // Start with all tasks collapsed, and projects with no tasks collapsed
         for project in &app.config.projects {
@@ -589,6 +660,90 @@ impl App {
             if result.rebuild {
                 self.rebuild_items();
             }
+        }
+    }
+
+    /// Pick up difit reviews that closed with comments and need a target
+    /// session chosen. One is handled at a time; while the picker is open the
+    /// rest stay queued in the channel until it closes.
+    pub fn apply_review_requests(&mut self) {
+        if self.input_mode == InputMode::ReviewSessionPicker {
+            return;
+        }
+        if let Ok(req) = self.review_receiver.try_recv() {
+            self.open_review_session_picker(req);
+        }
+    }
+
+    /// Open the popup that asks which session a review's comments go to. The
+    /// background thread only sends here when there is more than one candidate,
+    /// but guard the degenerate cases too in case that ever changes.
+    fn open_review_session_picker(&mut self, req: PendingReview) {
+        match req.candidates.len() {
+            0 => {
+                self.status_message =
+                    Some("Review finished; no session to forward comments to".into());
+            }
+            1 => {
+                let (tmux_name, display) = req.candidates[0].clone();
+                self.forward_review_comments(&req.comments, &tmux_name, &display);
+            }
+            _ => {
+                self.pending_review_comments = Some(req.comments);
+                self.review_candidates = req.candidates;
+                self.review_selected = 0;
+                self.input_mode = InputMode::ReviewSessionPicker;
+            }
+        }
+    }
+
+    /// Send the held review comments to the picked session, then close the
+    /// picker. A no-op (closes the picker) if state is missing.
+    pub fn confirm_review_session(&mut self) {
+        let comments = self.pending_review_comments.take();
+        let target = self.review_candidates.get(self.review_selected).cloned();
+        self.reset_review_picker();
+        match (comments, target) {
+            (Some(comments), Some((tmux_name, display))) => {
+                self.forward_review_comments(&comments, &tmux_name, &display);
+            }
+            _ => self.status_message = Some("No session to forward comments to".into()),
+        }
+    }
+
+    /// Forward review comments to a session as a new prompt, reporting the
+    /// outcome in the status bar.
+    fn forward_review_comments(&mut self, comments: &str, tmux_name: &str, display: &str) {
+        self.status_message = Some(
+            match tmux::send_text(tmux_name, &review_prompt(comments), true) {
+                Ok(()) => format!("Forwarded review comments to {display}"),
+                Err(e) => format!("Failed to forward comments: {e}"),
+            },
+        );
+    }
+
+    pub fn cancel_review_picker(&mut self) {
+        self.reset_review_picker();
+        self.status_message = Some("Review comments discarded".into());
+    }
+
+    /// Clear picker state and return to Normal mode without touching the status.
+    fn reset_review_picker(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.pending_review_comments = None;
+        self.review_candidates.clear();
+        self.review_selected = 0;
+    }
+
+    pub fn review_picker_move_up(&mut self) {
+        if self.review_selected > 0 {
+            self.review_selected -= 1;
+        }
+    }
+
+    pub fn review_picker_move_down(&mut self) {
+        if self.review_selected + 1 < self.review_candidates.len() {
+            self.review_selected += 1;
         }
     }
 
@@ -1235,72 +1390,78 @@ impl App {
     /// which suspends the TUI and runs it on the real terminal. Both forward any
     /// review comments to the agent session on exit.
     pub fn start_review(&mut self) {
-        // (cwd, difit args, hunk args, session to forward to, description)
-        let (cwd, difit_args, hunk_args, session, description) = match self.selected_item().cloned()
-        {
-            Some(ListItem::Task {
-                project_name,
-                project_path,
-                task,
-            }) => {
-                let base = task
-                    .base_branch
-                    .clone()
-                    .unwrap_or_else(|| "main".to_string());
-                let base_ref = tmux::resolve_base_ref(&project_path, &base);
-                let session = tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
-                    .first()
-                    .map(|s| s.name.clone());
-                // difit: `difit <target> <base> --merge-base` resolves the base
-                // to merge-base(branch, base) so we see only the branch's changes
-                // — the GitHub PR diff, excluding main's commits since the fork
-                // point. hunk: the three-dot range `<base>...<branch>` is git's
-                // equivalent merge-base diff, passed straight through to git.
-                (
+        // (cwd, difit args, hunk args, candidate sessions, description). Each
+        // candidate is `(tmux session name, display name)`; comments forward to it.
+        let (cwd, difit_args, hunk_args, candidates, description) =
+            match self.selected_item().cloned() {
+                Some(ListItem::Task {
+                    project_name,
                     project_path,
-                    vec![
-                        task.branch.clone(),
-                        base_ref.clone(),
-                        "--merge-base".to_string(),
-                    ],
-                    vec!["diff".to_string(), format!("{base_ref}...{}", task.branch)],
+                    task,
+                }) => {
+                    let base = task
+                        .base_branch
+                        .clone()
+                        .unwrap_or_else(|| "main".to_string());
+                    let base_ref = tmux::resolve_base_ref(&project_path, &base);
+                    // All of the task's sessions are candidates: a lone one is
+                    // forwarded to directly, several trigger the picker popup.
+                    let candidates =
+                        tmux::sessions_for_task(&project_name, &task.name, &self.sessions)
+                            .into_iter()
+                            .map(|s| (s.name, s.session_name))
+                            .collect();
+                    // difit: `difit <target> <base> --merge-base` resolves the base
+                    // to merge-base(branch, base) so we see only the branch's changes
+                    // — the GitHub PR diff, excluding main's commits since the fork
+                    // point. hunk: the three-dot range `<base>...<branch>` is git's
+                    // equivalent merge-base diff, passed straight through to git.
+                    (
+                        project_path,
+                        vec![
+                            task.branch.clone(),
+                            base_ref.clone(),
+                            "--merge-base".to_string(),
+                        ],
+                        vec!["diff".to_string(), format!("{base_ref}...{}", task.branch)],
+                        candidates,
+                        format!("{} vs {base}", task.branch),
+                    )
+                }
+                Some(ListItem::Session {
+                    project_path,
                     session,
-                    format!("{} vs {base}", task.branch),
-                )
-            }
-            Some(ListItem::Session {
-                project_path,
-                session,
-                ..
-            }) => {
-                let cwd = session
-                    .worktree_path()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or(project_path);
-                // hunk's `diff` shows uncommitted working-tree changes and
-                // includes untracked files by default.
-                (
-                    cwd,
-                    vec![".".to_string(), "--include-untracked".to_string()],
-                    vec!["diff".to_string()],
-                    Some(session.name.clone()),
-                    format!("uncommitted changes in {}", session.session_name),
-                )
-            }
-            _ => {
-                self.status_message = Some("Select a task or session to review".into());
-                return;
-            }
-        };
+                    ..
+                }) => {
+                    let cwd = session
+                        .worktree_path()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or(project_path);
+                    // hunk's `diff` shows uncommitted working-tree changes and
+                    // includes untracked files by default.
+                    (
+                        cwd,
+                        vec![".".to_string(), "--include-untracked".to_string()],
+                        vec!["diff".to_string()],
+                        vec![(session.name.clone(), session.session_name.clone())],
+                        format!("uncommitted changes in {}", session.session_name),
+                    )
+                }
+                _ => {
+                    self.status_message = Some("Select a task or session to review".into());
+                    return;
+                }
+            };
 
         if let ReviewTool::Hunk = self.config.review_tool {
             // hunk needs the controlling terminal; hand it to the main loop,
-            // along with the session its comments should be forwarded to.
+            // along with the candidate sessions its comments forward to.
             self.status_message = Some(format!("Reviewing {description} in hunk…"));
-            self.should_review_hunk = Some((cwd, hunk_args, session));
+            self.should_review_hunk = Some((cwd, hunk_args, candidates));
             return;
         }
 
+        let review_tx = self.review_sender.clone();
         self.start_op(&format!("Reviewing {description} in difit…"), move || {
             // `.output()` captures difit's stdout/stderr (keeping them off the
             // TUI) and blocks this background thread until the browser closes.
@@ -1309,18 +1470,25 @@ impl App {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
                     match extract_difit_comments(&stdout) {
-                        Some(comments) => match &session {
-                            Some(s) => {
-                                let prompt = format!(
-                                    "The following code review comments were left in difit. \
-                                     Please address them:\n\n{comments}"
-                                );
-                                match tmux::send_text(s, &prompt, true) {
-                                    Ok(()) => format!("Forwarded review comments to {s}"),
+                        Some(comments) => match candidates.len() {
+                            0 => "Review finished; no session to forward comments to".into(),
+                            // Exactly one candidate: forward straight away.
+                            1 => {
+                                let (tmux_name, display) = &candidates[0];
+                                match tmux::send_text(tmux_name, &review_prompt(&comments), true) {
+                                    Ok(()) => format!("Forwarded review comments to {display}"),
                                     Err(e) => format!("Failed to forward comments: {e}"),
                                 }
                             }
-                            None => "Review finished; no session to forward comments to".into(),
+                            // Several candidates: hand off to the main thread so
+                            // the user can pick the target via a popup.
+                            _ => {
+                                let _ = review_tx.send(PendingReview {
+                                    comments,
+                                    candidates,
+                                });
+                                "Review closed; select a session to forward comments to".into()
+                            }
                         },
                         None => "Review closed with no comments".into(),
                     }
@@ -1335,7 +1503,9 @@ impl App {
     }
 
     /// Run hunk in the foreground (the TUI is already suspended by the main loop)
-    /// and forward the human's review comments to `session` on exit.
+    /// and route the human's review comments to a `candidates` session on exit,
+    /// reusing the same picker difit uses (direct forward for one candidate, a
+    /// popup for several).
     ///
     /// hunk's review session is live-only — its comments are queryable via the
     /// session daemon while it runs but vanish the instant it exits, and hunk has
@@ -1343,7 +1513,12 @@ impl App {
     /// live session and keeps the latest snapshot; once hunk exits we forward that
     /// snapshot. A comment added in the final fraction of a second before quitting
     /// may be missed — that's the best a poll-based capture can do.
-    pub fn run_hunk_review(&mut self, cwd: String, args: Vec<String>, session: Option<String>) {
+    pub fn run_hunk_review(
+        &mut self,
+        cwd: String,
+        args: Vec<String>,
+        candidates: Vec<(String, String)>,
+    ) {
         let stop = Arc::new(AtomicBool::new(false));
         let latest: Arc<Mutex<Vec<HunkComment>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -1371,23 +1546,27 @@ impl App {
         stop.store(true, Ordering::Relaxed);
         let _ = poller.join();
 
-        self.status_message = Some(match status {
-            Err(e) => format!("hunk failed to launch (need hunk or npx on PATH): {e}"),
+        match status {
+            Err(e) => {
+                self.status_message = Some(format!(
+                    "hunk failed to launch (need hunk or npx on PATH): {e}"
+                ));
+            }
             Ok(_) => {
                 let comments = latest.lock().unwrap().clone();
                 if comments.is_empty() {
-                    "Review closed with no comments".into()
-                } else if let Some(s) = &session {
-                    let prompt = format_hunk_comments(&comments);
-                    match tmux::send_text(s, &prompt, true) {
-                        Ok(()) => format!("Forwarded {} review comment(s) to {s}", comments.len()),
-                        Err(e) => format!("Failed to forward comments: {e}"),
-                    }
+                    self.status_message = Some("Review closed with no comments".into());
                 } else {
-                    "Review finished; no session to forward comments to".into()
+                    // Route through the shared picker: forwarded directly for a
+                    // lone candidate, popup for several (shown when the TUI
+                    // resumes), status message for none.
+                    self.open_review_session_picker(PendingReview {
+                        comments: format_hunk_comments(&comments),
+                        candidates,
+                    });
                 }
             }
-        });
+        }
     }
 
     /// Resolve the "Run" context for the selected item: the owning project plus
@@ -2896,7 +3075,7 @@ impl App {
     pub fn open_pr(&mut self) {
         if let Some(ListItem::Task { task, .. }) = self.selected_item() {
             if let Some(url) = self.pr_urls.get(&task.branch) {
-                let _ = std::process::Command::new("open").arg(url).output();
+                open_url(url);
             } else {
                 self.input_mode = InputMode::ConfirmCreatePr;
                 self.status_message = Some("No PR found. Create one? (y/n)".into());
@@ -2922,7 +3101,7 @@ impl App {
                     config::write_stack_cache(&project_name, &branch, &prs);
                     if open_bottom {
                         if let Some((url, _)) = prs.first() {
-                            let _ = std::process::Command::new("open").arg(url).output();
+                            open_url(url);
                         }
                     }
                     OpResult {
@@ -2990,7 +3169,7 @@ impl App {
             match output {
                 Ok(o) if o.status.success() => {
                     let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    let _ = std::process::Command::new("open").arg(&url).output();
+                    open_url(&url);
                     OpResult {
                         message: format!("Created PR: {url}"),
                         rebuild: false,
@@ -3064,6 +3243,18 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<i64> {
     }
     let first = first.unwrap_or(0) as i64;
     Some(first * 4 + gaps * 2 + candidate.chars().count() as i64 / 10)
+}
+
+/// Open `url` (or a file path) in the platform's default handler. Uses `open`
+/// on macOS and `xdg-open` on Linux/other Unixes. Errors are swallowed by
+/// callers, matching the previous best-effort behavior.
+fn open_url(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = Command::new(opener).arg(url).output();
 }
 
 /// Copy `text` to the system clipboard. Tries `pbcopy` (macOS), `wl-copy`
@@ -3147,7 +3338,7 @@ mod tests {
     }
 
     // Parse the exact shape `hunk session comment list --json` emits, then format
-    // it into the agent prompt. Guards both the serde field renames and the
+    // it into the comment block. Guards both the serde field renames and the
     // file:line rendering (incl. the oldRange-only / missing-line fallbacks).
     fn parse_hunk_comments(json: &str) -> Vec<HunkComment> {
         #[derive(serde::Deserialize)]
@@ -3167,10 +3358,11 @@ mod tests {
         ]}"#;
         let comments = parse_hunk_comments(json);
         let out = format_hunk_comments(&comments);
-        assert!(out.starts_with("The following code review comments were left in hunk"));
         assert!(out.contains("- src/f.txt:2 — Please rename this variable"));
         // Falls back to oldRange when newRange is absent.
         assert!(out.contains("- src/g.txt:10 — Removed too much"));
+        // Wrapped by the shared review prompt when forwarded.
+        assert!(review_prompt(&out).contains("Please address them"));
     }
 
     #[test]
@@ -3179,5 +3371,13 @@ mod tests {
         let comments = parse_hunk_comments(r#"{"comments":[{"body":"general note"}]}"#);
         let out = format_hunk_comments(&comments);
         assert!(out.contains("(unknown file) — general note"));
+    }
+
+    #[test]
+    fn review_prompt_embeds_the_comments() {
+        let prompt = review_prompt("- rename foo\n- drop bar");
+        assert!(prompt.contains("- rename foo"));
+        assert!(prompt.contains("- drop bar"));
+        assert!(prompt.contains("Please address them"));
     }
 }
