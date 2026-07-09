@@ -215,6 +215,23 @@ context_menu = "o"
 delete = "x"
 ```
 
+## Mobile web UI (`serve`)
+
+`claude-manager serve` starts an HTTP server with a phone-friendly web UI for managing sessions remotely — view session status, read live output, send messages and keys (permission prompts included), create tasks/sessions, and kill sessions.
+
+```sh
+claude-manager serve                          # default 127.0.0.1:7878
+claude-manager serve --bind 0.0.0.0:7878     # bind another interface
+```
+
+The server has no authentication — keep it on localhost and expose it through your tailnet:
+
+```sh
+tailscale serve --bg 7878
+```
+
+This gives you a valid-HTTPS URL reachable only from your own devices. Open it on your phone and use "Add to Home Screen" to install it as an app.
+
 ## Claude Code plugin
 
 The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive its own Claude Manager task without leaving the worktree:

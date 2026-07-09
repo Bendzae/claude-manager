@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod server;
 mod theme;
 mod tmux;
 mod ui;
@@ -37,6 +38,9 @@ fn run_cli(args: &[String]) -> Option<Result<()>> {
         // stacked-pr skill can drive them from a worktree.
         Some("stack-publish") => Some(cmd_stack(&args[1..], false)),
         Some("stack-sync") => Some(cmd_stack(&args[1..], true)),
+        // `claude-manager serve [--bind addr:port]` — HTTP server + mobile web UI
+        // for managing sessions remotely (e.g. from a phone over Tailscale).
+        Some("serve") => Some(cmd_serve(&args[1..])),
         Some("--help" | "-h" | "help") => {
             println!(
                 "claude-manager — TUI for managing Claude Code sessions\n\n\
@@ -47,7 +51,10 @@ fn run_cli(args: &[String]) -> Option<Result<()>> {
                  claude-manager stack-publish <project-path> <branch>\n  \
                  \t\tpublish/refresh the stack (git spr update) on the task branch\n  \
                  claude-manager stack-sync <project-path> <branch>\n  \
-                 \t\treconcile the stack after merges (git spr sync)"
+                 \t\treconcile the stack after merges (git spr sync)\n  \
+                 claude-manager serve [--bind <addr:port>]\n  \
+                 \t\tserve the mobile web UI (default 127.0.0.1:7878);\n  \
+                 \t\texpose over your tailnet with `tailscale serve --bg 7878`"
             );
             Some(Ok(()))
         }
@@ -90,6 +97,23 @@ fn cmd_stack(args: &[String], sync: bool) -> Result<()> {
         println!("  {url}  {title}");
     }
     Ok(())
+}
+
+fn cmd_serve(args: &[String]) -> Result<()> {
+    let mut bind = "127.0.0.1:7878".to_string();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--bind" => {
+                bind = it
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("--bind requires an address"))?;
+            }
+            other => anyhow::bail!("unknown argument '{other}' (usage: serve [--bind addr:port])"),
+        }
+    }
+    server::run(&bind)
 }
 
 fn cmd_set_stacked(args: &[String]) -> Result<()> {

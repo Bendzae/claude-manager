@@ -398,7 +398,7 @@ fn config_file_mtime() -> Option<std::time::SystemTime> {
 /// launched over SSH this is the remote box, not the user's laptop. Runs
 /// `hostname` once at startup and falls back to the `HOSTNAME` env var, then to
 /// "unknown". The short form (first dot-separated label) keeps the header tidy.
-fn detect_hostname() -> String {
+pub fn detect_hostname() -> String {
     let raw = std::process::Command::new("hostname")
         .output()
         .ok()

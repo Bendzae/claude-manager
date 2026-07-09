@@ -679,6 +679,52 @@ pub fn send_text(session_name: &str, text: &str, submit: bool) -> Result<()> {
     Ok(())
 }
 
+/// Capture the last `lines` lines (including scrollback) of a session's Claude
+/// pane (window 0) with ANSI escape sequences, plus the pane width in columns.
+pub fn capture_output(session_name: &str, lines: usize) -> Option<(String, usize)> {
+    let target = format!("{session_name}:0");
+    let output = Command::new("tmux")
+        .args([
+            "capture-pane",
+            "-p",
+            "-e",
+            "-t",
+            &target,
+            "-S",
+            &format!("-{lines}"),
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let width = Command::new("tmux")
+        .args(["display-message", "-p", "-t", &target, "#{pane_width}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(80);
+
+    Some((String::from_utf8_lossy(&output.stdout).to_string(), width))
+}
+
+/// Send a single tmux key name (e.g. "Enter", "Escape", "Up", "1") to the
+/// Claude pane.
+pub fn send_key(session_name: &str, key: &str) -> Result<()> {
+    let target = format!("{session_name}:0");
+    let out = Command::new("tmux")
+        .args(["send-keys", "-t", &target, key])
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("tmux send-keys failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 pub fn attach_session(name: &str) -> Result<()> {
     // Select window 0 (claude) before attaching
     let _ = Command::new("tmux")
