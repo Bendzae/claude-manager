@@ -414,32 +414,23 @@ pub fn save_theme(name: &str) {
     let _ = fs::write(theme_path(), name);
 }
 
-/// Path to the shared task context file for a given project/branch.
-pub fn task_context_path(project_name: &str, branch: &str) -> PathBuf {
+/// Directory holding cached per-task files (pr_url.txt, stack.json) for a project/branch.
+pub fn task_dir(project_name: &str, branch: &str) -> PathBuf {
     base_dir()
         .join("tasks")
         .join(crate::tmux::sanitize(project_name))
         .join(crate::tmux::sanitize(branch))
-        .join("TASK_CONTEXT.md")
 }
 
 /// Path to the cached PR URL file for a given project/branch.
 pub fn pr_url_path(project_name: &str, branch: &str) -> PathBuf {
-    base_dir()
-        .join("tasks")
-        .join(crate::tmux::sanitize(project_name))
-        .join(crate::tmux::sanitize(branch))
-        .join("pr_url.txt")
+    task_dir(project_name, branch).join("pr_url.txt")
 }
 
 /// Path to the cached stacked-PR list for a stacked task (JSON array of `[url, title]`,
 /// bottom→top). Written by `spr update`/refresh; read by the background worker (no git).
 pub fn stack_cache_path(project_name: &str, branch: &str) -> PathBuf {
-    base_dir()
-        .join("tasks")
-        .join(crate::tmux::sanitize(project_name))
-        .join(crate::tmux::sanitize(branch))
-        .join("stack.json")
+    task_dir(project_name, branch).join("stack.json")
 }
 
 /// Persist a freshly-published stack so the worker/UI can read it without touching git:

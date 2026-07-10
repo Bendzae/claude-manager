@@ -1465,10 +1465,13 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let help_spans = match app.input_mode {
         InputMode::Normal => {
             let kb = &app.keybindings;
-            let enter_label = if matches!(app.selected_item(), Some(app::ListItem::Task { .. })) {
-                "edit"
-            } else {
+            let enter_label = if matches!(
+                app.selected_item(),
+                Some(app::ListItem::Session { .. }) | Some(app::ListItem::AdhocSession { .. })
+            ) {
                 "attach"
+            } else {
+                "collapse"
             };
             if compact {
                 help_bar(&[

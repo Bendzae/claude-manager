@@ -193,9 +193,6 @@ fn main() -> Result<()> {
             tmux::attach_session(&session_name)?;
         } else if let Some((session_name, window_idx)) = app.should_attach_window.take() {
             tmux::attach_session_window(&session_name, window_idx)?;
-        } else if let Some(path) = app.should_open_editor.take() {
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
-            std::process::Command::new(&editor).arg(&path).status()?;
         } else if let Some((cwd, args, candidates)) = app.should_review_hunk.take() {
             // hunk is a terminal TUI: run it on the real terminal (the TUI is
             // suspended here), polling its live session so comments can be
@@ -254,7 +251,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         KeyCode::Char(c) if c == kb.move_down => app.move_down(),
                         KeyCode::Enter => {
                             app.enter_selected();
-                            if app.should_attach.is_some() || app.should_open_editor.is_some() {
+                            if app.should_attach.is_some() {
                                 return Ok(());
                             }
                         }
@@ -522,11 +519,10 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
         }
 
-        // A context-menu action may request attaching to a session/terminal or
-        // opening the editor; suspend the TUI so the main loop can run it.
+        // A context-menu action may request attaching to a session/terminal;
+        // suspend the TUI so the main loop can run it.
         if app.should_attach.is_some()
             || app.should_attach_window.is_some()
-            || app.should_open_editor.is_some()
             || app.should_review_hunk.is_some()
         {
             return Ok(());

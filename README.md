@@ -42,7 +42,7 @@ Launch from any directory. Configuration is stored in `~/.claude-manager/config.
 ### Concepts
 
 - **Project** — A git repository you want to manage Claude sessions for. Added by its filesystem path.
-- **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple Claude sessions and a shared context file (edit it with `Enter`) that every session for the task can read.
+- **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple Claude sessions.
 - **Session** — A Claude Code instance running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
 - **Adhoc session** — A project-scoped session that runs Claude directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
 
@@ -55,7 +55,7 @@ All keybindings are customizable via `~/.claude-manager/keybindings.toml`. The t
 | Key | Action | Config key |
 |-----|--------|------------|
 | `j/k` or `Up/Down` | Navigate | `move_down` / `move_up` |
-| `Enter` | Attach to session, or edit a task's context file in `$EDITOR` | — |
+| `Enter` | Attach to session, or collapse/expand project or task | — |
 | `Space` | Collapse/expand project or task | `toggle_collapse` |
 | `a` | Open context menu | `context_menu` |
 | `p` | Add project | `add_project` |
@@ -236,11 +236,10 @@ This gives you a valid-HTTPS URL reachable only from your own devices. Open it o
 
 The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive its own Claude Manager task without leaving the worktree:
 
-- **`update-task-context`** — update the shared task context file with current progress, so parallel sessions on the task stay in sync.
 - **`commit-push-task`** — commit changes on the worktree branch, fast-forward merge into the task branch, and push the task branch.
 - **`stacked-pr`** — work on a task whose changes ship as a stack of dependent PRs (one PR per commit, via `git spr`), including the commit-shaping workflow. Pairs with the `set-stacked` / `stack-publish` / `stack-sync` CLI subcommands.
 
-Add the plugin to Claude Code and the skills become available as `/update-task-context`, `/commit-push-task`, and `/stacked-pr` inside any session.
+Add the plugin to Claude Code and the skills become available as `/commit-push-task` and `/stacked-pr` inside any session.
 
 ## Development
 

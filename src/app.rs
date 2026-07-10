@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -285,7 +284,6 @@ pub struct App {
     pub should_attach: Option<String>,
     /// Attach to a specific (session, window index) — used for terminals.
     pub should_attach_window: Option<(String, usize)>,
-    pub should_open_editor: Option<PathBuf>,
     /// Pending foreground hunk review: `(cwd, hunk args, candidate sessions)`.
     /// Set by the review action when the configured tool is `hunk`; the main loop
     /// suspends the TUI, runs hunk on the real terminal, then resumes. Unlike
@@ -556,7 +554,6 @@ impl App {
             should_quit: false,
             should_attach: None,
             should_attach_window: None,
-            should_open_editor: None,
             should_review_hunk: None,
             pending_project_path: None,
             pending_task_name: None,
@@ -937,7 +934,7 @@ impl App {
         }
     }
 
-    /// Get the task context for the currently selected item.
+    /// Get the project/task info for the currently selected item.
     fn selected_task_info(&self) -> Option<(&str, &str, &Task)> {
         match self.selected_item()? {
             ListItem::Task {
@@ -1004,19 +1001,13 @@ impl App {
 
     pub fn enter_selected(&mut self) {
         match self.selected_item() {
-            // Enter on a task opens its shared context file in $EDITOR.
-            Some(ListItem::Task {
-                project_name, task, ..
-            }) => {
-                let ctx_path = crate::config::task_context_path(&project_name, &task.branch);
-                self.should_open_editor = Some(ctx_path);
-            }
             // Enter on a session attaches to it.
             Some(ListItem::Session { session, .. })
             | Some(ListItem::AdhocSession { session, .. }) => {
                 self.should_attach = Some(session.name.clone());
             }
-            _ => {}
+            // Enter on a collapsible item (project/task/adhoc group) toggles it.
+            _ => self.toggle_collapse(),
         }
     }
 
