@@ -54,6 +54,7 @@ pub fn run(bind: &str) -> Result<()> {
         .route("/api/sessions/{name}/send", post(api_send))
         .route("/api/sessions/{name}/keys", post(api_keys))
         .route("/api/sessions/{name}/kill", post(api_kill))
+        .route("/api/projects", post(api_create_project))
         .route("/api/tasks", post(api_create_task))
         .route("/api/sessions", post(api_create_session))
         .with_state(state);
@@ -358,6 +359,61 @@ async fn api_kill(Path(name): Path<String>) -> Result<StatusCode, ApiError> {
     .map_err(internal)?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct CreateProjectBody {
+    path: String,
+    name: Option<String>,
+}
+
+/// Register a new project from a directory on the server's filesystem. Mirrors
+/// the TUI's add-project flow: the path must be an existing git repository, and
+/// the name defaults to the directory's basename.
+async fn api_create_project(
+    State(state): State<Arc<ServerState>>,
+    axum::Json(body): axum::Json<CreateProjectBody>,
+) -> Result<Response, ApiError> {
+    let name = tokio::task::spawn_blocking(move || {
+        let raw = body.path.trim();
+        if raw.is_empty() {
+            anyhow::bail!("project path is required");
+        }
+        let path = std::path::PathBuf::from(crate::app::expand_tilde(raw));
+        if !path.is_dir() {
+            anyhow::bail!("not a directory: {raw}");
+        }
+        let path = path.canonicalize().unwrap_or(path);
+        let path_str = path.to_string_lossy().to_string();
+        if !path.join(".git").is_dir() {
+            anyhow::bail!("not a git repository");
+        }
+        if Config::load()?.has_project_at(&path_str) {
+            anyhow::bail!("project already registered");
+        }
+
+        let name = body
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            });
+
+        let name_for_add = name.clone();
+        let cfg = Config::modify(move |c| c.add_project(name_for_add, path_str))?;
+        sync_hints(&state.worker, &cfg);
+        Ok(name)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(|e: anyhow::Error| bad_request(e.to_string()))?;
+
+    Ok(axum::Json(json!({ "name": name })).into_response())
 }
 
 #[derive(Deserialize)]

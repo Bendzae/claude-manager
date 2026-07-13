@@ -594,11 +594,17 @@ let sheetCtx = null;
 
 function openSheet(ctx) {
   sheetCtx = ctx;
-  $("sheet-title").textContent = `new task · ${ctx.project}`;
-  $("sheet-name").value = "";
+  const isProject = ctx.mode === "project";
+  $("sheet-title").textContent = isProject ? "add project" : `new task · ${ctx.project}`;
+  $("sheet-path").hidden = !isProject;
+  $("sheet-path").value = "";
+  $("sheet-prompt").hidden = isProject;
   $("sheet-prompt").value = "";
+  $("sheet-name").value = "";
+  $("sheet-name").placeholder = isProject ? "project name (optional)" : "task name";
+  $("sheet-create").textContent = isProject ? "add" : "create";
   $("sheet-backdrop").hidden = false;
-  $("sheet-name").focus();
+  (isProject ? $("sheet-path") : $("sheet-name")).focus();
 }
 
 function closeSheet() {
@@ -606,8 +612,12 @@ function closeSheet() {
   $("sheet-backdrop").hidden = true;
 }
 
-async function createFromSheet() {
+function createFromSheet() {
   if (!sheetCtx) return;
+  return sheetCtx.mode === "project" ? createProjectFromSheet() : createTaskFromSheet();
+}
+
+async function createTaskFromSheet() {
   const name = $("sheet-name").value.trim();
   if (!name) {
     toast("task name required", true);
@@ -633,8 +643,38 @@ async function createFromSheet() {
   }
 }
 
+async function createProjectFromSheet() {
+  const path = $("sheet-path").value.trim();
+  if (!path) {
+    toast("project path required", true);
+    return;
+  }
+  const btn = $("sheet-create");
+  btn.disabled = true;
+  btn.textContent = "adding…";
+  try {
+    const res = await post("/api/projects", {
+      path,
+      name: $("sheet-name").value.trim() || null,
+    });
+    const name = (res && res.name) || "project";
+    // Expand the freshly added project so its (empty) task list is visible.
+    expanded.add(name);
+    localStorage.setItem("cm-expanded", JSON.stringify([...expanded]));
+    toast(`project '${name}' added`);
+    closeSheet();
+    refreshState();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "add";
+  }
+}
+
 // ---------- wiring ----------
 
+$("add-project-btn").onclick = () => openSheet({ mode: "project" });
 $("back-btn").onclick = closeSession;
 $("kill-btn").onclick = killSession;
 $("sv-diff-btn").onclick = () => {

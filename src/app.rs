@@ -423,7 +423,7 @@ fn adhoc_group_key(project: &str) -> String {
 }
 
 /// Expand a leading `~` to the user's home directory.
-fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~') {
         if let Some(home) = dirs::home_dir() {
             return format!("{}{}", home.to_string_lossy(), rest);

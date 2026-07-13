@@ -21,7 +21,10 @@
         <span class="brand-mark">▚</span>
         <span class="brand-name">claude<b>manager</b></span>
       </div>
-      <div class="host-chip" id="host">…</div>
+      <div class="header-actions">
+        <button class="add-project-btn" id="add-project-btn">+ project</button>
+        <div class="host-chip" id="host">…</div>
+      </div>
     </header>
     <main id="projects">
       <div class="empty" id="loading">connecting…</div>
@@ -73,6 +76,7 @@
   <div id="sheet-backdrop" hidden>
     <div id="sheet">
       <div class="sheet-title" id="sheet-title">new task</div>
+      <input id="sheet-path" placeholder="project directory (absolute path)" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" hidden />
       <input id="sheet-name" placeholder="task name" autocapitalize="off" autocomplete="off" autocorrect="off" />
       <textarea id="sheet-prompt" rows="4" placeholder="initial prompt (optional)"></textarea>
       <div class="sheet-actions">
