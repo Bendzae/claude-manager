@@ -56,7 +56,9 @@ pub fn run(bind: &str) -> Result<()> {
         .route("/api/sessions/{name}/kill", post(api_kill))
         .route("/api/projects", post(api_create_project))
         .route("/api/tasks", post(api_create_task))
+        .route("/api/tasks/delete", post(api_delete_task))
         .route("/api/sessions", post(api_create_session))
+        .route("/api/adhoc", post(api_create_adhoc))
         .with_state(state);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -348,7 +350,12 @@ async fn api_kill(Path(name): Path<String>) -> Result<StatusCode, ApiError> {
                 worktree_path: tmux::worktree_dir(&r.project_name, &r.task_name, &r.session_name)
                     .to_string_lossy()
                     .to_string(),
-                branch_name: None,
+                // Remove the per-session branch too, matching the TUI's delete.
+                branch_name: Some(format!(
+                    "{}-{}",
+                    tmux::sanitize(&r.task_branch),
+                    tmux::sanitize(&r.session_name)
+                )),
             });
         tmux::kill_session_with_fallback(&name, fallback)?;
         config::remove_session_record(&name);
@@ -507,6 +514,113 @@ async fn api_create_session(
     .await
     .map_err(internal)?
     .map_err(internal)?;
+
+    Ok(axum::Json(json!({ "tmux_name": tmux_name })).into_response())
+}
+
+#[derive(Deserialize)]
+struct DeleteTaskBody {
+    project: String,
+    task: String,
+}
+
+/// Delete a task: kill its sessions, remove their worktrees/branches, drop the
+/// session records, and remove the task from the config. Mirrors the TUI's
+/// task delete.
+async fn api_delete_task(
+    axum::Json(body): axum::Json<DeleteTaskBody>,
+) -> Result<StatusCode, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        let cfg = Config::load()?;
+        let project = cfg
+            .projects
+            .iter()
+            .find(|p| p.name == body.project)
+            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", body.project))?;
+        let task = project
+            .tasks
+            .iter()
+            .find(|t| t.name == body.task)
+            .ok_or_else(|| anyhow::anyhow!("task '{}' not found", body.task))?;
+
+        let sessions = tmux::list_sessions().unwrap_or_default();
+        tmux::delete_task(
+            &project.name,
+            &project.path,
+            &task.name,
+            &task.branch,
+            &sessions,
+        );
+        config::remove_task_session_records(&project.name, &task.name);
+
+        let (pname, tname) = (body.project.clone(), body.task.clone());
+        Config::modify(move |c| {
+            c.remove_task(&pname, &tname);
+        })?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(internal)?
+    .map_err(internal)?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct CreateAdhocBody {
+    project: String,
+    name: String,
+}
+
+/// Create an ad-hoc session (no task, no worktree) on a project. Mirrors the
+/// TUI's "new adhoc session" flow.
+async fn api_create_adhoc(
+    axum::Json(body): axum::Json<CreateAdhocBody>,
+) -> Result<Response, ApiError> {
+    let tmux_name = tokio::task::spawn_blocking(move || {
+        let cfg = Config::load()?;
+        let project = cfg
+            .projects
+            .iter()
+            .find(|p| p.name == body.project)
+            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", body.project))?
+            .clone();
+
+        let name = body.name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("adhoc session name is required");
+        }
+
+        let tmux_name = format!(
+            "cm__{}__{}__{}",
+            tmux::sanitize(&project.name),
+            tmux::ADHOC_MARKER,
+            tmux::sanitize(&name),
+        );
+        let sessions = tmux::list_sessions().unwrap_or_default();
+        if sessions.iter().any(|s| s.name == tmux_name) {
+            anyhow::bail!("adhoc session '{name}' already exists");
+        }
+
+        let tmux_name =
+            tmux::create_adhoc_session(&project.name, &project.path, &name, &cfg.startup_skills)?;
+        config::add_session_record(
+            &tmux_name,
+            config::SessionRecord {
+                project_name: project.name.clone(),
+                project_path: project.path.clone(),
+                task_name: tmux::ADHOC_MARKER.to_string(),
+                task_branch: String::new(),
+                session_name: name,
+                use_worktree: false,
+                archived: false,
+            },
+        );
+        Ok(tmux_name)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(|e: anyhow::Error| bad_request(e.to_string()))?;
 
     Ok(axum::Json(json!({ "tmux_name": tmux_name })).into_response())
 }

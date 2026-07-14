@@ -51,6 +51,32 @@ function el(tag, className, text) {
   return node;
 }
 
+/// A destructive inline button with a two-tap confirm: the first tap arms it
+/// ("✕" → "sure?"), a second tap within 3s runs `onConfirm(btn)`. `stopPropagation`
+/// keeps taps from bubbling to an enclosing row/card.
+function confirmButton(className, label, onConfirm) {
+  const btn = el("button", className, label);
+  let armed = false;
+  let timer = null;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (!armed) {
+      armed = true;
+      btn.classList.add("confirm");
+      btn.textContent = "sure?";
+      timer = setTimeout(() => {
+        armed = false;
+        btn.classList.remove("confirm");
+        btn.textContent = label;
+      }, 3000);
+      return;
+    }
+    clearTimeout(timer);
+    onConfirm(btn);
+  };
+  return btn;
+}
+
 function diffSpan(diff, className) {
   const span = el("span", className || "diff");
   if (!diff || (diff.added === 0 && diff.removed === 0)) return span;
@@ -108,9 +134,13 @@ function renderProjects(projects) {
     if (p.branch) name.append(el("span", "project-branch", `⎇ ${p.branch}`));
     toggle.append(name);
     toggle.onclick = () => toggleCollapse(p.name);
+    const actions = el("div", "project-actions");
     const addBtn = el("button", "new-task-btn", "+ task");
     addBtn.onclick = () => openSheet({ mode: "task", project: p.name });
-    header.append(toggle, addBtn);
+    const addAdhocBtn = el("button", "new-task-btn", "+ adhoc");
+    addAdhocBtn.onclick = () => openSheet({ mode: "adhoc", project: p.name });
+    actions.append(addBtn, addAdhocBtn);
+    header.append(toggle, actions);
     proj.append(header);
 
     if (isCollapsed) {
@@ -175,6 +205,19 @@ function renderTask(project, task) {
     a.target = "_blank";
     meta.append(a);
   }
+  meta.append(
+    confirmButton("row-del", "✕", async (btn) => {
+      btn.disabled = true;
+      try {
+        await post("/api/tasks/delete", { project: project.name, task: task.name });
+        toast(`task '${task.name}' deleted`);
+        refreshState();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    })
+  );
   header.append(meta);
   card.append(header);
 
@@ -202,6 +245,7 @@ function renderTask(project, task) {
 }
 
 function sessionRow(session, title) {
+  const wrap = el("div", "session-row-wrap");
   const row = el("button", "session-row");
   const dot = el("span", `dot ${session.status || ""}`);
   const label = el("span", "label", `#${session.name}`);
@@ -212,7 +256,21 @@ function sessionRow(session, title) {
   );
   row.append(dot, label, diffSpan(session.diff, "diff"), status, el("span", "chev", "›"));
   row.onclick = () => openSession(session.tmux_name, title, session.status);
-  return row;
+
+  const del = confirmButton("row-del", "✕", async (btn) => {
+    btn.disabled = true;
+    try {
+      await post(`/api/sessions/${encodeURIComponent(session.tmux_name)}/kill`);
+      toast("session killed");
+      refreshState();
+    } catch (e) {
+      toast(e.message, true);
+      btn.disabled = false;
+    }
+  });
+
+  wrap.append(row, del);
+  return wrap;
 }
 
 // ---------- session view ----------
@@ -594,17 +652,28 @@ let sheetCtx = null;
 
 function openSheet(ctx) {
   sheetCtx = ctx;
-  const isProject = ctx.mode === "project";
-  $("sheet-title").textContent = isProject ? "add project" : `new task · ${ctx.project}`;
-  $("sheet-path").hidden = !isProject;
+  const mode = ctx.mode;
+  const title =
+    mode === "project"
+      ? "add project"
+      : mode === "adhoc"
+        ? `new adhoc session · ${ctx.project}`
+        : `new task · ${ctx.project}`;
+  $("sheet-title").textContent = title;
+  $("sheet-path").hidden = mode !== "project";
   $("sheet-path").value = "";
-  $("sheet-prompt").hidden = isProject;
+  $("sheet-prompt").hidden = mode !== "task";
   $("sheet-prompt").value = "";
   $("sheet-name").value = "";
-  $("sheet-name").placeholder = isProject ? "project name (optional)" : "task name";
-  $("sheet-create").textContent = isProject ? "add" : "create";
+  $("sheet-name").placeholder =
+    mode === "project"
+      ? "project name (optional)"
+      : mode === "adhoc"
+        ? "adhoc session name"
+        : "task name";
+  $("sheet-create").textContent = mode === "project" ? "add" : "create";
   $("sheet-backdrop").hidden = false;
-  (isProject ? $("sheet-path") : $("sheet-name")).focus();
+  (mode === "project" ? $("sheet-path") : $("sheet-name")).focus();
 }
 
 function closeSheet() {
@@ -614,7 +683,31 @@ function closeSheet() {
 
 function createFromSheet() {
   if (!sheetCtx) return;
-  return sheetCtx.mode === "project" ? createProjectFromSheet() : createTaskFromSheet();
+  if (sheetCtx.mode === "project") return createProjectFromSheet();
+  if (sheetCtx.mode === "adhoc") return createAdhocFromSheet();
+  return createTaskFromSheet();
+}
+
+async function createAdhocFromSheet() {
+  const name = $("sheet-name").value.trim();
+  if (!name) {
+    toast("session name required", true);
+    return;
+  }
+  const btn = $("sheet-create");
+  btn.disabled = true;
+  btn.textContent = "creating…";
+  try {
+    await post("/api/adhoc", { project: sheetCtx.project, name });
+    toast(`adhoc session '${name}' created`);
+    closeSheet();
+    refreshState();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "create";
+  }
 }
 
 async function createTaskFromSheet() {
