@@ -1,6 +1,6 @@
 {
   "name": "claude-manager",
-  "description": "Skills for Claude Manager sessions: shared task context updates, worktree commit/merge/push, and stacked-PR workflow.",
+  "description": "Skills for Claude Manager sessions: worktree commit/merge/push and stacked-PR workflow.",
   "version": "0.1.0",
   "author": {
     "name": "Claude Manager"

@@ -360,12 +360,6 @@ pub fn create_session(
         work_dir = project_path.to_string();
     }
 
-    let context_path = crate::config::task_context_path(project_name, task_branch);
-    let context_path_str = context_path.to_string_lossy().to_string();
-
-    // Clean any stale hooks that may have been copied from the main project's .claude/
-    remove_task_context_hooks(&work_dir);
-
     // Always install the claude-manager plugin (skills + plugin enable)
     install_claude_manager_plugin(&work_dir);
 
@@ -376,12 +370,8 @@ pub fn create_session(
         None
     };
 
-    let system_prompt = build_base_system_prompt(
-        project_name,
-        task_branch,
-        session_branch.as_deref(),
-        &context_path_str,
-    );
+    let system_prompt =
+        build_base_system_prompt(project_name, task_branch, session_branch.as_deref());
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
     claude_cmd.push_str(&format!(
@@ -558,9 +548,6 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
         record.project_path.clone()
     };
 
-    let context_path = crate::config::task_context_path(&record.project_name, &record.task_branch);
-    let context_path_str = context_path.to_string_lossy().to_string();
-
     // Always install plugin
     install_claude_manager_plugin(&work_dir);
 
@@ -578,7 +565,6 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
         &record.project_name,
         &record.task_branch,
         session_branch.as_deref(),
-        &context_path_str,
     );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
@@ -1017,29 +1003,11 @@ fn copy_patterns_to_worktree(project_path: &str, worktree_path: &str, patterns: 
         .output();
 }
 
-pub fn remove_task_context_hooks(work_dir: &str) {
-    let settings_path = Path::new(work_dir).join(".claude/settings.local.json");
-    let mut existing: serde_json::Value = fs::read_to_string(&settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    if let Some(obj) = existing.as_object_mut() {
-        obj.remove("hooks");
-    }
-
-    let _ = fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&existing).unwrap_or_default(),
-    );
-}
-
 /// Build the base system prompt that all sessions receive.
 fn build_base_system_prompt(
     project_name: &str,
     task_branch: &str,
     worktree_branch: Option<&str>,
-    context_path: &str,
 ) -> String {
     let mut prompt = format!(
         "You have been spawned as a session agent by Claude Manager, a multi-agent task management tool.\n\
@@ -1053,8 +1021,6 @@ fn build_base_system_prompt(
     prompt.push_str(&format!(
         "- PRs should always be opened from the task branch: {task_branch}\n\
          - Other agents may be working on the same task in parallel\n\
-         - A shared task context file exists at {context_path}\n\
-         - Periodically read the shared task context file to stay in sync with other agents\n\
          - NEVER push the worktree branch unless explicitly told to do so"
     ));
     prompt
@@ -1097,8 +1063,6 @@ fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) ->
 
 // Embedded claude-manager plugin files (see claude-manager-plugin/ at repo root).
 const PLUGIN_MANIFEST: &str = include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
-const PLUGIN_SKILL_UPDATE_TASK_CONTEXT: &str =
-    include_str!("../claude-manager-plugin/skills/update-task-context/SKILL.md");
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
     include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
 const PLUGIN_SKILL_STACKED_PR: &str =
@@ -1119,9 +1083,9 @@ fn claude_manager_plugin_path(work_dir: &str) -> String {
 /// `.claude/plugins/claude-manager/`. The plugin is loaded at session start via
 /// `claude --plugin-dir <path>` (see `claude_manager_plugin_path`).
 fn install_claude_manager_plugin(work_dir: &str) {
-    // Remove the legacy standalone skill that older versions installed at
-    // `.claude/skills/update-task-context/` — it would otherwise show up
-    // alongside the plugin-namespaced skill.
+    // Remove the update-task-context skill that older versions installed
+    // (standalone under `.claude/skills/` and inside the plugin) — the shared
+    // task context concept no longer exists.
     let legacy_skill_dir = Path::new(work_dir)
         .join(".claude")
         .join("skills")
@@ -1129,22 +1093,15 @@ fn install_claude_manager_plugin(work_dir: &str) {
     let _ = fs::remove_dir_all(&legacy_skill_dir);
 
     let plugin_dir = PathBuf::from(claude_manager_plugin_path(work_dir));
+    let _ = fs::remove_dir_all(plugin_dir.join("skills").join("update-task-context"));
 
     let _ = fs::create_dir_all(plugin_dir.join(".claude-plugin"));
-    let _ = fs::create_dir_all(plugin_dir.join("skills").join("update-task-context"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("commit-push-task"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("stacked-pr"));
 
     let _ = fs::write(
         plugin_dir.join(".claude-plugin").join("plugin.json"),
         PLUGIN_MANIFEST,
-    );
-    let _ = fs::write(
-        plugin_dir
-            .join("skills")
-            .join("update-task-context")
-            .join("SKILL.md"),
-        PLUGIN_SKILL_UPDATE_TASK_CONTEXT,
     );
     let _ = fs::write(
         plugin_dir
@@ -2119,11 +2076,8 @@ pub fn delete_task(
         .args(["-C", project_path, "worktree", "prune"])
         .output();
 
-    // Delete task context files
-    let context_path = crate::config::task_context_path(project_name, task_branch);
-    if let Some(parent) = context_path.parent() {
-        let _ = std::fs::remove_dir_all(parent);
-    }
+    // Delete cached task files (pr_url.txt, stack.json)
+    let _ = std::fs::remove_dir_all(crate::config::task_dir(project_name, task_branch));
 
     // Delete the task branch itself (session branches are already cleaned up above)
     if !task_branch.is_empty() && task_branch != "main" && task_branch != "master" {
@@ -2144,7 +2098,7 @@ pub fn delete_task(
 
 /// Reap an orphaned session record whose task no longer exists in config.
 ///
-/// Removes the worktree directory and cached task context, but deliberately
+/// Removes the worktree directory and cached task files, but deliberately
 /// PRESERVES the git branch so any committed work stays recoverable. This is
 /// meant for automatic startup reconciliation, where silently deleting branches
 /// would be unsafe. Explicit, user-initiated deletion still goes through
@@ -2178,13 +2132,13 @@ pub fn cleanup_orphan_session(record: &crate::config::SessionRecord) {
             .output();
     }
 
-    // Remove the cached task context directory (TASK_CONTEXT.md, pr_url.txt).
-    // The context dir is shared by all sessions of a task; since orphan status
-    // is per-task, every session of this task is being reaped together.
-    let context_path = crate::config::task_context_path(&record.project_name, &record.task_branch);
-    if let Some(parent) = context_path.parent() {
-        let _ = std::fs::remove_dir_all(parent);
-    }
+    // Remove the cached task directory (pr_url.txt, stack.json). The dir is
+    // shared by all sessions of a task; since orphan status is per-task, every
+    // session of this task is being reaped together.
+    let _ = std::fs::remove_dir_all(crate::config::task_dir(
+        &record.project_name,
+        &record.task_branch,
+    ));
 }
 
 /// Clean up worktree and task config directories for a project.
