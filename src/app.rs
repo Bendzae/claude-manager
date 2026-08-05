@@ -53,10 +53,6 @@ pub enum InputMode {
     AddSessionPrompt,
     AddAdhocSessionName,
     ConfirmDelete,
-    RenameProject,
-    RenameTask,
-    RenameSession,
-    RenameAdhocSession,
     MergeCommitMessage,
     ConfirmCreatePr,
     SetBaseBranch,
@@ -87,7 +83,6 @@ pub enum ContextAction {
     NewSessionNoWorktree,
     NewAdhocSession,
     Delete,
-    Rename,
     Merge,
     Update,
     Push,
@@ -97,7 +92,6 @@ pub enum ContextAction {
     SetBaseBranch,
     Archive,
     Unarchive,
-    ToggleStacked,
     Review,
     Terminal,
     /// Checkout a branch in the project dir via the fuzzy branch picker.
@@ -303,12 +297,9 @@ pub struct App {
     pub task_diff_stats: HashMap<String, DiffStats>,
     /// PR URLs keyed by branch name
     pub pr_urls: HashMap<String, String>,
-    /// Stacked tasks' PRs (bottom→top `(url, title)`), keyed by branch name
-    pub stack_prs: HashMap<String, Vec<(String, String)>>,
     /// Current git branch for each project, keyed by project name
     pub project_branches: HashMap<String, String>,
-    /// Last-seen modification time of config.toml, used to detect external edits
-    /// (e.g. `claude-manager set-stacked` run by the stacked-pr skill).
+    /// Last-seen modification time of config.toml, used to detect external edits.
     pub config_mtime: Option<std::time::SystemTime>,
     /// Number of in-flight async ops. UI stays interactive while ops run; the
     /// status bar shows a spinner when this is non-zero.
@@ -500,8 +491,8 @@ impl App {
                 // to recreate vs. prune is based on whether the task still
                 // exists in config — NOT on tmux liveness — so legitimate
                 // sessions are recovered after claude-manager/tmux restarts,
-                // while sessions whose task was deleted/renamed-away are reaped
-                // instead of being resurrected on every startup.
+                // while sessions whose task was deleted are reaped instead of
+                // being resurrected on every startup.
                 if live_names.contains(tmux_name.as_str()) {
                     continue;
                 }
@@ -517,8 +508,9 @@ impl App {
                     continue;
                 }
 
-                // Task-scoped session: match by branch (+ project path), which
-                // is stable across renames, unlike the display-name fields.
+                // Task-scoped session: match by branch (+ project path) rather
+                // than the display-name fields, which can drift when the config
+                // is edited by hand.
                 match config.find_task_by_branch(&record.project_path, &record.task_branch) {
                     Some(_) => {
                         if tmux::recreate_session(tmux_name, record).is_err() {
@@ -565,7 +557,6 @@ impl App {
             session_branches: HashMap::new(),
             task_diff_stats: HashMap::new(),
             pr_urls: HashMap::new(),
-            stack_prs: HashMap::new(),
             project_branches: HashMap::new(),
             config_mtime: config_file_mtime(),
             op_count: 0,
@@ -632,9 +623,6 @@ impl App {
             }
             if !update.pr_urls.is_empty() {
                 self.pr_urls.extend(update.pr_urls);
-            }
-            if !update.stack_prs.is_empty() {
-                self.stack_prs.extend(update.stack_prs);
             }
             if !update.project_branches.is_empty() {
                 self.project_branches = update.project_branches;
@@ -799,7 +787,6 @@ impl App {
                     project_path: p.path.clone(),
                     branch: t.branch.clone(),
                     base_branch: t.base_branch().to_string(),
-                    stacked: t.stacked,
                 })
             })
             .collect();
@@ -1055,11 +1042,6 @@ impl App {
                     action: ContextAction::CopyProjectPath,
                 },
                 ContextMenuItem {
-                    key: cm.rename,
-                    label: "Rename",
-                    action: ContextAction::Rename,
-                },
-                ContextMenuItem {
                     key: cm.delete,
                     label: "Delete",
                     action: ContextAction::Delete,
@@ -1077,11 +1059,6 @@ impl App {
                     action: ContextAction::Run,
                 },
                 ContextMenuItem {
-                    key: cm.rename,
-                    label: "Rename",
-                    action: ContextAction::Rename,
-                },
-                ContextMenuItem {
                     key: cm.delete,
                     label: "Delete",
                     action: ContextAction::Delete,
@@ -1096,23 +1073,13 @@ impl App {
                             action: ContextAction::Unarchive,
                         },
                         ContextMenuItem {
-                            key: cm.rename,
-                            label: "Rename",
-                            action: ContextAction::Rename,
-                        },
-                        ContextMenuItem {
                             key: cm.delete,
                             label: "Delete",
                             action: ContextAction::Delete,
                         },
                     ]
                 } else {
-                    let stacked_label = if task.stacked {
-                        "Disable stacked PRs"
-                    } else {
-                        "Enable stacked PRs"
-                    };
-                    vec![
+                    let mut items = vec![
                         ContextMenuItem {
                             key: cm.new_session,
                             label: "New session",
@@ -1132,11 +1099,6 @@ impl App {
                             key: cm.run,
                             label: "Run",
                             action: ContextAction::Run,
-                        },
-                        ContextMenuItem {
-                            key: cm.toggle_stacked,
-                            label: stacked_label,
-                            action: ContextAction::ToggleStacked,
                         },
                         ContextMenuItem {
                             key: cm.update,
@@ -1163,41 +1125,46 @@ impl App {
                             label: "Open PR",
                             action: ContextAction::OpenPr,
                         },
+                    ];
+                    items.extend([
                         ContextMenuItem {
                             key: cm.archive,
                             label: "Archive",
                             action: ContextAction::Archive,
                         },
                         ContextMenuItem {
-                            key: cm.rename,
-                            label: "Rename",
-                            action: ContextAction::Rename,
-                        },
-                        ContextMenuItem {
                             key: cm.delete,
                             label: "Delete",
                             action: ContextAction::Delete,
                         },
-                    ]
+                    ]);
+                    items
                 }
             }
-            Some(ListItem::Session { .. }) => {
-                let mut items = vec![
-                    ContextMenuItem {
-                        key: cm.review,
-                        label: review_label,
-                        action: ContextAction::Review,
-                    },
-                    ContextMenuItem {
-                        key: cm.merge,
-                        label: "Merge",
-                        action: ContextAction::Merge,
-                    },
-                    ContextMenuItem {
-                        key: cm.update,
-                        label: "Update",
-                        action: ContextAction::Update,
-                    },
+            Some(ListItem::Session { session, .. }) => {
+                // The main session is on the task branch itself, so merging into
+                // it / rebasing onto it are no-ops, and it can't be deleted.
+                let is_main = tmux::is_main_session(&session.session_name);
+                let mut items = vec![ContextMenuItem {
+                    key: cm.review,
+                    label: review_label,
+                    action: ContextAction::Review,
+                }];
+                if !is_main {
+                    items.extend([
+                        ContextMenuItem {
+                            key: cm.merge,
+                            label: "Merge",
+                            action: ContextAction::Merge,
+                        },
+                        ContextMenuItem {
+                            key: cm.update,
+                            label: "Update",
+                            action: ContextAction::Update,
+                        },
+                    ]);
+                }
+                items.extend([
                     ContextMenuItem {
                         key: cm.terminal,
                         label: "Terminal",
@@ -1208,22 +1175,19 @@ impl App {
                         label: "Run",
                         action: ContextAction::Run,
                     },
-                ];
-                items.push(ContextMenuItem {
-                    key: cm.copy_path,
-                    label: "Copy worktree path",
-                    action: ContextAction::CopyWorktreePath,
-                });
-                items.push(ContextMenuItem {
-                    key: cm.rename,
-                    label: "Rename",
-                    action: ContextAction::Rename,
-                });
-                items.push(ContextMenuItem {
-                    key: cm.delete,
-                    label: "Delete",
-                    action: ContextAction::Delete,
-                });
+                    ContextMenuItem {
+                        key: cm.copy_path,
+                        label: "Copy worktree path",
+                        action: ContextAction::CopyWorktreePath,
+                    },
+                ]);
+                if !is_main {
+                    items.push(ContextMenuItem {
+                        key: cm.delete,
+                        label: "Delete",
+                        action: ContextAction::Delete,
+                    });
+                }
                 items
             }
             None => return,
@@ -1241,13 +1205,11 @@ impl App {
             ContextAction::NewSessionNoWorktree => self.start_new_session(false),
             ContextAction::NewAdhocSession => self.start_new_adhoc_session(),
             ContextAction::Delete => self.start_delete(),
-            ContextAction::Rename => self.start_rename(),
             ContextAction::Merge => self.start_merge(),
             ContextAction::Update => self.update_session(),
             ContextAction::Push => self.push_task_branch(),
             ContextAction::OpenPr => self.open_pr(),
             ContextAction::Checkout => self.checkout_task_branch(),
-            ContextAction::ToggleStacked => self.toggle_stacked(),
             ContextAction::CopyWorktreePath => self.copy_worktree_path(),
             ContextAction::SetBaseBranch => self.start_set_base_branch(),
             ContextAction::Archive => self.archive_task(),
@@ -1891,21 +1853,6 @@ impl App {
         }
     }
 
-    pub fn toggle_stacked(&mut self) {
-        let (project_name, task_name) = match self.selected_task_info() {
-            Some((pn, _, t)) => (pn.to_string(), t.name.clone()),
-            None => return,
-        };
-
-        self.config.reload();
-        if let Some(new_state) = self.config.toggle_stacked(&project_name, &task_name) {
-            let _ = self.config.save();
-            let label = if new_state { "enabled" } else { "disabled" };
-            self.status_message = Some(format!("Stacked PRs {label} for '{task_name}'"));
-            self.rebuild_items();
-        }
-    }
-
     pub fn start_add_project(&mut self) {
         // Prefill with the current directory as a convenient starting point; the
         // user can edit it (Tab completes directory paths).
@@ -2059,7 +2006,6 @@ impl App {
         self.input_mode = InputMode::Normal;
 
         let use_worktree = self.use_worktree;
-        let sessions = self.sessions.clone();
         let startup_skills = self.config.startup_skills.clone();
         let project = self.config.projects.iter().find(|p| p.name == project_name);
         let copy_patterns = project.map(|p| p.copy_patterns.clone()).unwrap_or_default();
@@ -2097,8 +2043,7 @@ impl App {
                 };
             }
 
-            let session_name =
-                tmux::next_session_number(&project_name, &task_name, &sessions).to_string();
+            let session_name = tmux::MAIN_SESSION.to_string();
 
             match tmux::create_session(
                 &project_name,
@@ -2261,6 +2206,15 @@ impl App {
             self.input_buffer.trim().to_string()
         };
 
+        if tmux::is_main_session(&session_name) {
+            self.cancel_input();
+            self.status_message = Some(format!(
+                "'{}' is reserved for the task's own session",
+                tmux::MAIN_SESSION
+            ));
+            return;
+        }
+
         self.pending_session_name = Some(session_name);
         self.input_buffer.clear();
         self.input_mode = InputMode::AddSessionPrompt;
@@ -2362,7 +2316,14 @@ impl App {
                     self.status_message = Some("Delete this project? (y/n)".into());
                 }
             }
-            Some(ListItem::Session { .. }) => {
+            Some(ListItem::Session { session, .. }) => {
+                if tmux::is_main_session(&session.session_name) {
+                    self.status_message = Some(
+                        "The main session can't be deleted — delete or archive the task instead"
+                            .into(),
+                    );
+                    return;
+                }
                 self.input_mode = InputMode::ConfirmDelete;
                 self.status_message = Some("Delete this session? (y/n)".into());
             }
@@ -2440,15 +2401,15 @@ impl App {
                         .map(|r| {
                             let wt =
                                 tmux::worktree_dir(&r.project_name, &r.task_name, &r.session_name);
-                            let branch = format!(
-                                "{}-{}",
-                                tmux::sanitize(&r.task_branch),
-                                tmux::sanitize(&r.session_name),
-                            );
                             tmux::SessionCleanupInfo {
                                 project_path: r.project_path,
                                 worktree_path: wt.to_string_lossy().to_string(),
-                                branch_name: Some(branch),
+                                branch_name: Some(format!(
+                                    "{}-{}",
+                                    tmux::sanitize(&r.task_branch),
+                                    tmux::sanitize(&r.session_name),
+                                )),
+                                task_branch: Some(r.task_branch),
                             }
                         });
                     match tmux::kill_session_with_fallback(&name, fallback) {
@@ -2521,158 +2482,6 @@ impl App {
             }
             _ => {}
         }
-        self.input_mode = InputMode::Normal;
-    }
-
-    pub fn start_rename(&mut self) {
-        let (mode, name) = match self.selected_item() {
-            Some(ListItem::Project { project }) => (InputMode::RenameProject, project.name.clone()),
-            Some(ListItem::Task { task, .. }) => (InputMode::RenameTask, task.name.clone()),
-            Some(ListItem::Session { session, .. }) => {
-                (InputMode::RenameSession, session.session_name.clone())
-            }
-            Some(ListItem::AdhocSession { session, .. }) => {
-                (InputMode::RenameAdhocSession, session.session_name.clone())
-            }
-            _ => return,
-        };
-        let label = match mode {
-            InputMode::RenameProject => "Rename project: ",
-            InputMode::RenameTask => "Rename task: ",
-            InputMode::RenameSession => "Rename session: ",
-            InputMode::RenameAdhocSession => "Rename adhoc session: ",
-            _ => unreachable!(),
-        };
-        self.input_mode = mode;
-        self.input_buffer = name;
-        self.status_message = Some(label.into());
-    }
-
-    pub fn confirm_rename(&mut self) {
-        let new_name = self.input_buffer.trim().to_string();
-        if new_name.is_empty() {
-            self.cancel_input();
-            return;
-        }
-
-        match self.input_mode {
-            InputMode::RenameProject => {
-                if let Some(ListItem::Project { project }) = self.selected_item().cloned() {
-                    let old_name = project.name.clone();
-                    if old_name == new_name {
-                        self.cancel_input();
-                        return;
-                    }
-
-                    // Rename all tmux sessions for this project
-                    let old_san = tmux::sanitize(&old_name);
-                    let new_san = tmux::sanitize(&new_name);
-                    for session in &self.sessions {
-                        if session.project_name == old_san {
-                            let new_tmux = session.name.replacen(&old_san, &new_san, 1);
-                            let _ = tmux::rename_session(&session.name, &new_tmux);
-                            config::rename_session_record(&session.name, &new_tmux);
-                        }
-                    }
-
-                    self.config.reload();
-                    self.config.rename_project(&old_name, new_name.clone());
-                    let _ = self.config.save();
-                    self.status_message = Some(format!("Renamed project to {new_name}"));
-                }
-            }
-            InputMode::RenameTask => {
-                if let Some(ListItem::Task {
-                    project_name, task, ..
-                }) = self.selected_item().cloned()
-                {
-                    if task.name == new_name {
-                        self.cancel_input();
-                        return;
-                    }
-
-                    let old_san = tmux::sanitize(&task.name);
-                    let new_san = tmux::sanitize(&new_name);
-                    for session in &self.sessions {
-                        if session.project_name == tmux::sanitize(&project_name)
-                            && session.task_name == old_san
-                        {
-                            let new_tmux = session.name.replacen(&old_san, &new_san, 1);
-                            let _ = tmux::rename_session(&session.name, &new_tmux);
-                            config::rename_session_record(&session.name, &new_tmux);
-                        }
-                    }
-
-                    self.config.reload();
-                    self.config
-                        .rename_task(&project_name, &task.name, new_name.clone());
-                    let _ = self.config.save();
-                    self.status_message = Some(format!("Renamed task to {new_name}"));
-                }
-            }
-            InputMode::RenameSession => {
-                if let Some(ListItem::Session {
-                    project_name,
-                    task,
-                    session,
-                    ..
-                }) = self.selected_item().cloned()
-                {
-                    if session.session_name == new_name {
-                        self.cancel_input();
-                        return;
-                    }
-
-                    let new_tmux = format!(
-                        "cm__{}__{}__{new_name}",
-                        tmux::sanitize(&project_name),
-                        tmux::sanitize(&task.name),
-                    );
-                    match tmux::rename_session(&session.name, &new_tmux) {
-                        Ok(()) => {
-                            config::rename_session_record(&session.name, &new_tmux);
-                            self.status_message = Some(format!("Renamed session to {new_name}"));
-                        }
-                        Err(e) => {
-                            self.status_message = Some(format!("Error: {e}"));
-                        }
-                    }
-                }
-            }
-            InputMode::RenameAdhocSession => {
-                if let Some(ListItem::AdhocSession {
-                    project_name,
-                    session,
-                    ..
-                }) = self.selected_item().cloned()
-                {
-                    if session.session_name == new_name {
-                        self.cancel_input();
-                        return;
-                    }
-
-                    let new_tmux = format!(
-                        "cm__{}__{}__{}",
-                        tmux::sanitize(&project_name),
-                        tmux::ADHOC_MARKER,
-                        tmux::sanitize(&new_name),
-                    );
-                    match tmux::rename_session(&session.name, &new_tmux) {
-                        Ok(()) => {
-                            config::rename_session_record(&session.name, &new_tmux);
-                            self.status_message =
-                                Some(format!("Renamed adhoc session to {new_name}"));
-                        }
-                        Err(e) => {
-                            self.status_message = Some(format!("Error: {e}"));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
     }
 
@@ -2797,23 +2606,10 @@ impl App {
     pub fn update_session(&mut self) {
         match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_name,
-                project_path,
-                task,
+                project_path, task, ..
             }) => {
                 let branch = task.branch.clone();
                 let base_branch = task.base_branch().to_string();
-                // Stacked task: re-publish the stack (rebases onto trunk + refreshes PRs).
-                if task.stacked {
-                    self.run_stack_update(
-                        project_name,
-                        project_path,
-                        branch,
-                        "Syncing stack...",
-                        false,
-                    );
-                    return;
-                }
                 self.start_op(
                     "Updating task branch...",
                     move || match tmux::update_task_branch(&project_path, &branch, &base_branch) {
@@ -3074,49 +2870,11 @@ impl App {
         }
     }
 
-    /// Run `git spr update` for a stacked task: publishes/refreshes one PR per commit,
-    /// caches the resulting stack for the worker/UI, and (optionally) opens the bottom PR.
-    fn run_stack_update(
-        &mut self,
-        project_name: String,
-        project_path: String,
-        branch: String,
-        label: &'static str,
-        open_bottom: bool,
-    ) {
-        self.start_op(label, move || {
-            match tmux::spr_update(&project_path, &branch) {
-                Ok(prs) => {
-                    // Cache the stack so the background worker (and UI) can read it
-                    // without touching git. Bottom PR feeds the PR icon / "Open PR".
-                    config::write_stack_cache(&project_name, &branch, &prs);
-                    if open_bottom {
-                        if let Some((url, _)) = prs.first() {
-                            open_url(url);
-                        }
-                    }
-                    OpResult {
-                        message: format!("Stack updated: {} PR(s)", prs.len()),
-                        rebuild: true,
-                        reload_config: false,
-                    }
-                }
-                Err(e) => OpResult {
-                    message: format!("Stack error: {e}"),
-                    rebuild: false,
-                    reload_config: false,
-                },
-            }
-        });
-    }
-
     pub fn confirm_create_pr(&mut self) {
-        let (project_path, project_name, task) = match self.selected_item().cloned() {
+        let (project_path, task) = match self.selected_item().cloned() {
             Some(ListItem::Task {
-                project_path,
-                project_name,
-                task,
-            }) => (project_path, project_name, task),
+                project_path, task, ..
+            }) => (project_path, task),
             _ => {
                 self.cancel_input();
                 return;
@@ -3126,18 +2884,6 @@ impl App {
         let branch = task.branch.clone();
         let task_name = task.name.clone();
         self.input_mode = InputMode::Normal;
-
-        // Stacked task: publish each commit as its own PR via `git spr`, not a single PR.
-        if task.stacked {
-            self.run_stack_update(
-                project_name,
-                project_path,
-                branch,
-                "Publishing stack...",
-                true,
-            );
-            return;
-        }
 
         self.start_op("Creating PR...", move || {
             // Push branch first

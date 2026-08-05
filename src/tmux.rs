@@ -129,6 +129,14 @@ fn build_tmux_name(project: &str, task: &str, session: &str) -> String {
     )
 }
 
+/// The always-present first session of a task. Unlike other sessions it works
+/// directly on the task branch instead of a `<task-branch>-<session>` branch.
+pub const MAIN_SESSION: &str = "main";
+
+pub fn is_main_session(session_name: &str) -> bool {
+    session_name == MAIN_SESSION
+}
+
 pub fn worktree_dir(project_name: &str, task: &str, session: &str) -> PathBuf {
     crate::config::base_dir()
         .join("worktrees")
@@ -317,20 +325,15 @@ pub fn create_session(
             fs::create_dir_all(parent)?;
         }
 
-        // Create worktree with a session-specific branch based on task branch
+        // The main session works on the task branch itself; every other session
+        // gets its own branch forked off it.
+        let mut args = vec!["-C", project_path, "worktree", "add"];
         let session_branch = format!("{task_branch}-{}", sanitize(session_name));
-        let status = Command::new("git")
-            .args([
-                "-C",
-                project_path,
-                "worktree",
-                "add",
-                "-b",
-                &session_branch,
-                &worktree_path_str,
-                task_branch,
-            ])
-            .output()?;
+        if !is_main_session(session_name) {
+            args.extend(["-b", &session_branch]);
+        }
+        args.extend([worktree_path_str.as_str(), task_branch]);
+        let status = Command::new("git").args(&args).output()?;
 
         if !status.status.success() {
             let stderr = String::from_utf8_lossy(&status.stderr);
@@ -363,15 +366,18 @@ pub fn create_session(
     // Always install the claude-manager plugin (skills + plugin enable)
     install_claude_manager_plugin(&work_dir);
 
-    let session_branch = if use_worktree {
-        let branch = format!("{task_branch}-{}", sanitize(session_name));
-        Some(branch)
+    let session_branch = if use_worktree && !is_main_session(session_name) {
+        Some(format!("{task_branch}-{}", sanitize(session_name)))
     } else {
         None
     };
 
-    let system_prompt =
-        build_base_system_prompt(project_name, task_branch, session_branch.as_deref());
+    let system_prompt = build_base_system_prompt(
+        project_name,
+        task_branch,
+        session_branch.as_deref(),
+        is_main_session(session_name),
+    );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
     claude_cmd.push_str(&format!(
@@ -524,10 +530,9 @@ pub fn recreate_adhoc_session(
     Ok(tmux_name.to_string())
 }
 
-/// Recreate a tmux session from a saved record (e.g. after tmux dies).
-/// Reuses the existing worktree if present; does NOT send an initial prompt.
-/// `tmux_name` is the expected session name (which may differ from what
-/// build_tmux_name would produce if the session was renamed).
+/// Recreate a tmux session from a saved record (e.g. after tmux dies) under the
+/// record's own `tmux_name`. Reuses the existing worktree if present; does NOT
+/// send an initial prompt.
 pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) -> Result<String> {
     let work_dir = if record.use_worktree {
         let wt_path = worktree_dir(
@@ -551,7 +556,7 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
     // Always install plugin
     install_claude_manager_plugin(&work_dir);
 
-    let session_branch = if record.use_worktree {
+    let session_branch = if record.use_worktree && !is_main_session(&record.session_name) {
         Some(format!(
             "{}-{}",
             record.task_branch,
@@ -565,6 +570,7 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
         &record.project_name,
         &record.task_branch,
         session_branch.as_deref(),
+        is_main_session(&record.session_name),
     );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
@@ -888,18 +894,6 @@ fn get_session_env(session_name: &str, var: &str) -> Option<String> {
     line.trim().split_once('=').map(|(_, v)| v.to_string())
 }
 
-pub fn rename_session(old_name: &str, new_name: &str) -> Result<()> {
-    let output = Command::new("tmux")
-        .args(["rename-session", "-t", old_name, new_name])
-        .output()?;
-
-    if !output.status.success() {
-        bail!("Failed to rename tmux session from {old_name} to {new_name}");
-    }
-
-    Ok(())
-}
-
 /// Fallback paths for cleaning up a session when the tmux session is already dead
 /// and environment variables are unavailable.
 pub struct SessionCleanupInfo {
@@ -908,6 +902,8 @@ pub struct SessionCleanupInfo {
     /// The branch checked out in the worktree (e.g. "task-branch-session-name").
     /// If not provided, it will be derived from the worktree before removal.
     pub branch_name: Option<String>,
+    /// The task branch, which is never deleted (the main session has it checked out).
+    pub task_branch: Option<String>,
 }
 
 pub fn kill_session(name: &str) -> Result<()> {
@@ -929,6 +925,7 @@ pub fn kill_session_with_fallback(name: &str, fallback: Option<SessionCleanupInf
         .or_else(|| fallback.as_ref().map(|f| f.project_path.clone()));
     let worktree_path = get_session_env(name, "CM_WORKTREE_PATH")
         .or_else(|| fallback.as_ref().map(|f| f.worktree_path.clone()));
+    let task_branch_fallback = fallback.as_ref().and_then(|f| f.task_branch.clone());
 
     // Kill the tmux session (ignore errors — it may already be dead)
     let _ = Command::new("tmux")
@@ -957,9 +954,15 @@ pub fn kill_session_with_fallback(name: &str, fallback: Option<SessionCleanupInf
             .args(["-C", &proj_path, "worktree", "prune"])
             .output();
 
-        // Delete the worktree branch
+        // Delete the worktree branch — never the task branch, which the main
+        // session has checked out.
+        let task_branch = get_session_env(name, "CM_TASK_BRANCH").or(task_branch_fallback);
         if let Some(branch_name) = branch {
-            if !branch_name.is_empty() && branch_name != "main" && branch_name != "master" {
+            if !branch_name.is_empty()
+                && branch_name != "main"
+                && branch_name != "master"
+                && Some(&branch_name) != task_branch.as_ref()
+            {
                 let _ = Command::new("git")
                     .args(["-C", &proj_path, "branch", "-D", &branch_name])
                     .output();
@@ -1003,11 +1006,14 @@ fn copy_patterns_to_worktree(project_path: &str, worktree_path: &str, patterns: 
         .output();
 }
 
-/// Build the base system prompt that all sessions receive.
+/// Build the base system prompt that all sessions receive. `worktree_branch` is
+/// the session's own branch, or `None` for the main session (which works on the
+/// task branch) and for sessions running without a worktree.
 fn build_base_system_prompt(
     project_name: &str,
     task_branch: &str,
     worktree_branch: Option<&str>,
+    is_main: bool,
 ) -> String {
     let mut prompt = format!(
         "You have been spawned as a session agent by Claude Manager, a multi-agent task management tool.\n\
@@ -1016,13 +1022,25 @@ fn build_base_system_prompt(
          - Task branch: {task_branch}\n"
     );
     if let Some(wt_branch) = worktree_branch {
-        prompt.push_str(&format!("- Worktree branch: {wt_branch}\n"));
+        prompt.push_str(&format!(
+            "- Worktree branch: {wt_branch}\n\
+             - You are on your own branch; the task branch is checked out in the task's\n  \
+             main session worktree, so never check it out here — merge into it instead\n  \
+             (the `commit-push-task` skill does this correctly)\n"
+        ));
+    } else if is_main {
+        prompt.push_str(
+            "- You are the task's main session and work on the task branch directly:\n  \
+             commit here, there is no merge step\n",
+        );
     }
     prompt.push_str(&format!(
         "- PRs should always be opened from the task branch: {task_branch}\n\
-         - Other agents may be working on the same task in parallel\n\
-         - NEVER push the worktree branch unless explicitly told to do so"
+         - Other agents may be working on the same task in parallel"
     ));
+    if worktree_branch.is_some() {
+        prompt.push_str("\n- NEVER push the worktree branch unless explicitly told to do so");
+    }
     prompt
 }
 
@@ -1065,8 +1083,6 @@ fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) ->
 const PLUGIN_MANIFEST: &str = include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
     include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
-const PLUGIN_SKILL_STACKED_PR: &str =
-    include_str!("../claude-manager-plugin/skills/stacked-pr/SKILL.md");
 
 /// Filesystem path to the installed claude-manager plugin directory inside `work_dir`.
 /// This is the path passed to `claude --plugin-dir`.
@@ -1093,11 +1109,13 @@ fn install_claude_manager_plugin(work_dir: &str) {
     let _ = fs::remove_dir_all(&legacy_skill_dir);
 
     let plugin_dir = PathBuf::from(claude_manager_plugin_path(work_dir));
-    let _ = fs::remove_dir_all(plugin_dir.join("skills").join("update-task-context"));
+    // Also drop skills removed in later versions.
+    for stale in ["update-task-context", "stacked-pr"] {
+        let _ = fs::remove_dir_all(plugin_dir.join("skills").join(stale));
+    }
 
     let _ = fs::create_dir_all(plugin_dir.join(".claude-plugin"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("commit-push-task"));
-    let _ = fs::create_dir_all(plugin_dir.join("skills").join("stacked-pr"));
 
     let _ = fs::write(
         plugin_dir.join(".claude-plugin").join("plugin.json"),
@@ -1109,13 +1127,6 @@ fn install_claude_manager_plugin(work_dir: &str) {
             .join("commit-push-task")
             .join("SKILL.md"),
         PLUGIN_SKILL_COMMIT_PUSH_TASK,
-    );
-    let _ = fs::write(
-        plugin_dir
-            .join("skills")
-            .join("stacked-pr")
-            .join("SKILL.md"),
-        PLUGIN_SKILL_STACKED_PR,
     );
 
     // Git-ignore the locally installed plugin via .git/info/exclude.
@@ -1253,29 +1264,42 @@ pub fn update_task_branch(project_path: &str, branch: &str, base_branch: &str) -
         base_branch.to_string()
     };
 
-    // Remember current branch to restore after rebase
-    let head = Command::new("git")
-        .args(["-C", project_path, "rev-parse", "--abbrev-ref", "HEAD"])
-        .output()?;
-    let original_branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    // A dedicated worktree already has the branch checked out — git refuses to
+    // check it out again in the project dir, so rebase in place there. Otherwise
+    // rebase in the project dir, which checks the branch out and back again.
+    let worktree = other_worktree_for_branch(project_path, branch);
+    let work_dir = worktree.as_deref().unwrap_or(project_path);
 
-    // Rebase the task branch onto target (checks out branch, rebases, leaves it checked out)
-    let output = Command::new("git")
-        .args(["-C", project_path, "rebase", &target, branch])
-        .output()?;
+    let original_branch = match &worktree {
+        Some(_) => None,
+        None => {
+            let head = Command::new("git")
+                .args(["-C", project_path, "rev-parse", "--abbrev-ref", "HEAD"])
+                .output()?;
+            Some(String::from_utf8_lossy(&head.stdout).trim().to_string())
+        }
+    };
+
+    let mut args = vec!["-C", work_dir, "rebase", &target];
+    if worktree.is_none() {
+        args.push(branch);
+    }
+    let output = Command::new("git").args(&args).output()?;
 
     if !output.status.success() {
         // Leave the branch checked out so the user can resolve conflicts
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "Rebase has conflicts. Resolve them in {project_path} then run `git rebase --continue`.\n{stderr}"
+            "Rebase has conflicts. Resolve them in {work_dir} then run `git rebase --continue`.\n{stderr}"
         );
     }
 
     // Restore original branch only on success
-    let _ = Command::new("git")
-        .args(["-C", project_path, "checkout", &original_branch])
-        .output();
+    if let Some(original_branch) = original_branch {
+        let _ = Command::new("git")
+            .args(["-C", project_path, "checkout", &original_branch])
+            .output();
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.contains("is up to date") {
@@ -1287,54 +1311,6 @@ pub fn update_task_branch(project_path: &str, branch: &str, base_branch: &str) -
     }
 }
 
-/// Whether the `git spr` subcommand is available.
-pub fn spr_installed() -> bool {
-    Command::new("git")
-        .args(["spr", "version"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Ensure `git spr` never blocks on the interactive "enjoying git spr?" star prompt
-/// by writing `stargazer: true` to `~/.spr.yml` (idempotent).
-fn ensure_spr_stargazer() {
-    let Some(home) = dirs::home_dir() else { return };
-    let path = home.join(".spr.yml");
-    let already = fs::read_to_string(&path)
-        .map(|c| c.lines().any(|l| l.trim_start().starts_with("stargazer:")))
-        .unwrap_or(false);
-    if already {
-        return;
-    }
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "stargazer: true");
-    }
-}
-
-/// One pull request in a stack: its URL and title (commit subject).
-pub type StackPr = (String, String);
-
-/// Parse `git spr status --text` output (`<url> : <title>` per line) into PRs.
-/// spr lists top→bottom; we reverse to bottom→top (merge order).
-fn parse_spr_status(stdout: &str) -> Vec<StackPr> {
-    let mut prs: Vec<StackPr> = stdout
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let (url, title) = line.split_once(" : ")?;
-            let url = url.trim();
-            if !url.starts_with("http") {
-                return None;
-            }
-            Some((url.to_string(), title.trim().to_string()))
-        })
-        .collect();
-    prs.reverse();
-    prs
-}
-
-/// Current branch name, or `None` if detached/unknown.
 fn current_branch(project_path: &str) -> Option<String> {
     let out = Command::new("git")
         .args(["-C", project_path, "rev-parse", "--abbrev-ref", "HEAD"])
@@ -1348,73 +1324,9 @@ fn current_branch(project_path: &str) -> Option<String> {
     }
 }
 
-fn checkout_branch(project_path: &str, branch: &str) -> Result<()> {
-    let out = Command::new("git")
-        .args(["-C", project_path, "checkout", branch])
-        .output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("Could not checkout '{branch}' in {project_path}: {stderr}");
-    }
-    Ok(())
-}
-
-/// Publish/update a task's commits as a stack of dependent PRs via `git spr update`.
-/// Each commit on `branch` (relative to trunk) becomes one PR. Returns the stack's
-/// PRs bottom→top. spr rewrites `branch` history (rebase onto trunk + `commit-id`
-/// trailers); pre-existing session worktrees re-sync on their next push (rebase-then-ff).
-pub fn spr_update(project_path: &str, branch: &str) -> Result<Vec<StackPr>> {
-    run_spr_command(project_path, branch, "update")
-}
-
-/// Reconcile the stack after PRs merge or trunk moves (`git spr sync`): fetch trunk,
-/// rebase the remaining stack onto it, update PRs. Returns the stack's PRs bottom→top.
-pub fn spr_sync(project_path: &str, branch: &str) -> Result<Vec<StackPr>> {
-    run_spr_command(project_path, branch, "sync")
-}
-
-/// Run `git spr <subcommand>` on `branch` in `project_path`: check the branch out,
-/// run the command, read the resulting stack via `spr status --text`, restore HEAD.
-/// On a rebase conflict spr leaves `branch` mid-rebase (checked out) for the user to
-/// resolve; the error surfaces stdout+stderr.
-fn run_spr_command(project_path: &str, branch: &str, subcommand: &str) -> Result<Vec<StackPr>> {
-    if branch.is_empty() || branch == "main" || branch == "master" {
-        bail!("Refusing to run `git spr {subcommand}` on protected branch '{branch}'");
-    }
-    if !spr_installed() {
-        bail!("`git spr` not found. Install with `brew install ejoffe/tap/spr`.");
-    }
-    ensure_spr_stargazer();
-
-    let original = current_branch(project_path);
-    if original.as_deref() != Some(branch) {
-        checkout_branch(project_path, branch)?;
-    }
-
-    let output = Command::new("git")
-        .args(["-C", project_path, "spr", subcommand])
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        bail!("`git spr {subcommand}` failed:\n{stdout}{stderr}");
-    }
-
-    // Read the resulting stack while `branch` is still checked out, then restore HEAD.
-    let status = Command::new("git")
-        .args(["-C", project_path, "spr", "status", "--text"])
-        .output();
-    if let Some(orig) = &original {
-        if orig != branch {
-            let _ = checkout_branch(project_path, orig);
-        }
-    }
-    let prs = match status {
-        Ok(o) if o.status.success() => parse_spr_status(&String::from_utf8_lossy(&o.stdout)),
-        _ => Vec::new(),
-    };
-    Ok(prs)
+/// A worktree other than the project dir that has `branch` checked out, if any.
+fn other_worktree_for_branch(project_path: &str, branch: &str) -> Option<String> {
+    find_worktree_for_branch(project_path, branch).filter(|p| p.as_str() != project_path)
 }
 
 pub fn rebase_session_on_task(
@@ -1953,11 +1865,14 @@ pub fn sessions_for_task(
     task_name: &str,
     sessions: &[TmuxSession],
 ) -> Vec<TmuxSession> {
-    sessions
+    let mut task_sessions: Vec<TmuxSession> = sessions
         .iter()
         .filter(|s| s.project_name == sanitize(project_name) && s.task_name == sanitize(task_name))
         .cloned()
-        .collect()
+        .collect();
+    // The main session always sorts first.
+    task_sessions.sort_by_key(|s| (!is_main_session(&s.session_name), s.session_name.clone()));
+    task_sessions
 }
 
 /// All adhoc sessions belonging to a project.
@@ -2018,6 +1933,8 @@ pub fn delete_task(
                         project_path: record.project_path.clone(),
                         worktree_path: wt_path.to_string_lossy().to_string(),
                         branch_name: Some(session_branch),
+                        // The task branch is deleted explicitly further down.
+                        task_branch: Some(task_branch.to_string()),
                     }),
                 );
             }
@@ -2056,6 +1973,12 @@ pub fn delete_task(
                         ])
                         .output();
 
+                    // If git refused (e.g. the dir was never registered as a
+                    // worktree), drop the directory so nothing is left behind.
+                    if entry.path().exists() {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+
                     if let Some(branch_name) = branch {
                         if !branch_name.is_empty()
                             && branch_name != "main"
@@ -2076,7 +1999,7 @@ pub fn delete_task(
         .args(["-C", project_path, "worktree", "prune"])
         .output();
 
-    // Delete cached task files (pr_url.txt, stack.json)
+    // Delete cached task files (pr_url.txt)
     let _ = std::fs::remove_dir_all(crate::config::task_dir(project_name, task_branch));
 
     // Delete the task branch itself (session branches are already cleaned up above)
@@ -2132,7 +2055,7 @@ pub fn cleanup_orphan_session(record: &crate::config::SessionRecord) {
             .output();
     }
 
-    // Remove the cached task directory (pr_url.txt, stack.json). The dir is
+    // Remove the cached task directory (pr_url.txt). The dir is
     // shared by all sessions of a task; since orphan status is per-task, every
     // session of this task is being reaped together.
     let _ = std::fs::remove_dir_all(crate::config::task_dir(
@@ -2162,31 +2085,6 @@ pub fn cleanup_project_dirs(project_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- spr status parsing ---
-
-    #[test]
-    fn parse_spr_status_reverses_to_bottom_top() {
-        // spr lists top→bottom; we return bottom→top (merge order).
-        let out = "\
-https://github.com/o/r/pull/14 : Add dashboard
-https://github.com/o/r/pull/13 : Add API
-https://github.com/o/r/pull/12 : Add model
-";
-        let prs = parse_spr_status(out);
-        assert_eq!(prs.len(), 3);
-        assert_eq!(prs[0].0, "https://github.com/o/r/pull/12");
-        assert_eq!(prs[0].1, "Add model");
-        assert_eq!(prs[2].1, "Add dashboard");
-    }
-
-    #[test]
-    fn parse_spr_status_ignores_non_pr_lines() {
-        let out = "warming up\nhttps://github.com/o/r/pull/1 : Title\n\n";
-        let prs = parse_spr_status(out);
-        assert_eq!(prs.len(), 1);
-        assert_eq!(prs[0].1, "Title");
-    }
 
     // --- sanitize ---
 

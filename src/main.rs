@@ -21,23 +21,11 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use app::{App, InputMode};
-use config::Config;
 
 /// Handle non-TUI CLI invocations. Returns `Some(result)` when an argument was
 /// recognized (the process should exit), or `None` to fall through to the TUI.
 fn run_cli(args: &[String]) -> Option<Result<()>> {
     match args.first().map(String::as_str) {
-        // `claude-manager set-stacked <project-path> <branch> [on|off]`
-        // Used by the `stacked-pr` skill so an agent can enable stacked-PR mode
-        // for its task without going through the TUI. The running TUI picks up
-        // the change on its next idle config reload.
-        Some("set-stacked") => Some(cmd_set_stacked(&args[1..])),
-        // `claude-manager stack-publish <project-path> <branch>` — run `git spr update`
-        // on the task branch (publish/refresh the stack). `stack-sync` runs `git spr sync`
-        // (reconcile after merges / trunk moves). Both mirror the TUI's task actions so the
-        // stacked-pr skill can drive them from a worktree.
-        Some("stack-publish") => Some(cmd_stack(&args[1..], false)),
-        Some("stack-sync") => Some(cmd_stack(&args[1..], true)),
         // `claude-manager serve [--bind addr:port]` — HTTP server + mobile web UI
         // for managing sessions remotely (e.g. from a phone over Tailscale).
         Some("serve") => Some(cmd_serve(&args[1..])),
@@ -46,12 +34,6 @@ fn run_cli(args: &[String]) -> Option<Result<()>> {
                 "claude-manager — TUI for managing Claude Code sessions\n\n\
                  Usage:\n  \
                  claude-manager                                  launch the TUI\n  \
-                 claude-manager set-stacked <project-path> <branch> [on|off]\n  \
-                 \t\tenable/disable stacked-PR mode for a task (default: on)\n  \
-                 claude-manager stack-publish <project-path> <branch>\n  \
-                 \t\tpublish/refresh the stack (git spr update) on the task branch\n  \
-                 claude-manager stack-sync <project-path> <branch>\n  \
-                 \t\treconcile the stack after merges (git spr sync)\n  \
                  claude-manager serve [--bind <addr:port>]\n  \
                  \t\tserve the mobile web UI (default 127.0.0.1:7878);\n  \
                  \t\texpose over your tailnet with `tailscale serve --bg 7878`"
@@ -60,43 +42,6 @@ fn run_cli(args: &[String]) -> Option<Result<()>> {
         }
         _ => None,
     }
-}
-
-fn cmd_stack(args: &[String], sync: bool) -> Result<()> {
-    let verb = if sync { "stack-sync" } else { "stack-publish" };
-    let project_path = args
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: {verb} <project-path> <branch>"))?;
-    let branch = args
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: {verb} <project-path> <branch>"))?;
-
-    // Resolve the project's display name (needed for the stack cache path).
-    let cfg = Config::load()?;
-    let project_name = cfg
-        .projects
-        .iter()
-        .find(|p| p.path == *project_path)
-        .map(|p| p.name.clone())
-        .ok_or_else(|| anyhow::anyhow!("No registered project at path '{project_path}'"))?;
-
-    // Publishing implies stacked mode — keep the flag in sync so the TUI routes correctly.
-    let _ = Config::modify(|c| {
-        c.set_task_stacked_by_branch(project_path, branch, true);
-    });
-
-    let prs = if sync {
-        tmux::spr_sync(project_path, branch)?
-    } else {
-        tmux::spr_update(project_path, branch)?
-    };
-    config::write_stack_cache(&project_name, branch, &prs);
-
-    println!("{} PR(s) in the stack (bottom→top):", prs.len());
-    for (url, title) in &prs {
-        println!("  {url}  {title}");
-    }
-    Ok(())
 }
 
 fn cmd_serve(args: &[String]) -> Result<()> {
@@ -116,33 +61,6 @@ fn cmd_serve(args: &[String]) -> Result<()> {
     server::run(&bind)
 }
 
-fn cmd_set_stacked(args: &[String]) -> Result<()> {
-    let project_path = args
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("usage: set-stacked <project-path> <branch> [on|off]"))?;
-    let branch = args
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: set-stacked <project-path> <branch> [on|off]"))?;
-    let on = !matches!(args.get(2).map(String::as_str), Some("off" | "false" | "0"));
-
-    let mut found = false;
-    Config::modify(|cfg| {
-        found = cfg.set_task_stacked_by_branch(project_path, branch, on);
-    })?;
-
-    if found {
-        println!(
-            "Stacked-PR mode {} for branch '{branch}'",
-            if on { "enabled" } else { "disabled" }
-        );
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "No task found for project path '{project_path}' with branch '{branch}'"
-        ))
-    }
-}
-
 fn is_text_input_mode(mode: InputMode) -> bool {
     matches!(
         mode,
@@ -153,10 +71,6 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::AddTaskName
             | InputMode::AddTaskBranch
             | InputMode::AddTaskPrompt
-            | InputMode::RenameProject
-            | InputMode::RenameTask
-            | InputMode::RenameSession
-            | InputMode::RenameAdhocSession
             | InputMode::MergeCommitMessage
             | InputMode::SetBaseBranch
             | InputMode::Search
@@ -394,18 +308,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     InputMode::ConfirmDelete => match key.code {
                         KeyCode::Char('y') => app.confirm_delete(),
                         KeyCode::Char('n') | KeyCode::Esc => app.cancel_input(),
-                        _ => {}
-                    },
-                    InputMode::RenameProject
-                    | InputMode::RenameTask
-                    | InputMode::RenameSession
-                    | InputMode::RenameAdhocSession => match key.code {
-                        KeyCode::Enter => app.confirm_rename(),
-                        KeyCode::Esc => app.cancel_input(),
-                        KeyCode::Backspace => {
-                            app.input_buffer.pop();
-                        }
-                        KeyCode::Char(c) => app.input_buffer.push(c),
                         _ => {}
                     },
                     InputMode::ConfirmCreatePr => match key.code {

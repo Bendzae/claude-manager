@@ -12,7 +12,6 @@ pub struct TaskInfo {
     pub project_path: String,
     pub branch: String,
     pub base_branch: String,
-    pub stacked: bool,
 }
 
 /// Shared state the UI thread writes to, the worker thread reads from.
@@ -33,8 +32,6 @@ pub struct WorkerUpdate {
     pub session_branches: HashMap<String, String>,
     /// PR URLs keyed by branch name.
     pub pr_urls: HashMap<String, String>,
-    /// Stacked tasks' PRs (bottom→top `(url, title)`), keyed by branch name.
-    pub stack_prs: HashMap<String, Vec<(String, String)>>,
     /// Current git branch for each project, keyed by project name.
     pub project_branches: HashMap<String, String>,
     /// Live "Run" sessions, keyed by tmux name (`cmrun-*`); value is true while
@@ -72,7 +69,6 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
     let mut session_branches: HashMap<String, String> = HashMap::new();
     let mut pr_urls: HashMap<String, String> = HashMap::new();
-    let mut stack_prs: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut task_diff_stats: HashMap<String, DiffStats> = HashMap::new();
     let mut project_branches: HashMap<String, String> = HashMap::new();
     let mut tick: u64 = 0;
@@ -135,7 +131,6 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             session_branches: session_branches.clone(),
             task_diff_stats: task_diff_stats.clone(),
             pr_urls: pr_urls.clone(),
-            stack_prs: stack_prs.clone(),
             project_branches: project_branches.clone(),
             run_sessions: tmux::list_run_sessions(),
         });
@@ -174,25 +169,9 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             }
         }
 
-        // Stacked tasks: read the stack cache written by `spr update` (pure file read,
-        // no git, so it's safe to poll often ~every 2s). Bottom PR feeds the PR icon.
-        if tick % 4 == 0 {
-            for task in tasks.iter().filter(|t| t.stacked) {
-                let cache = crate::config::stack_cache_path(&task.project_name, &task.branch);
-                if let Ok(data) = std::fs::read_to_string(&cache) {
-                    if let Ok(prs) = serde_json::from_str::<Vec<(String, String)>>(&data) {
-                        if let Some((url, _)) = prs.first() {
-                            pr_urls.insert(task.branch.clone(), url.clone());
-                        }
-                        stack_prs.insert(task.branch.clone(), prs);
-                    }
-                }
-            }
-        }
-
         // Check for PRs (infrequently, ~every 10 seconds)
         if tick % 20 == 0 {
-            for task in tasks.iter().filter(|t| !t.stacked) {
+            for task in tasks.iter() {
                 if !pr_urls.contains_key(&task.branch) {
                     if let Some(url) = tmux::get_pr_url(&task.project_path, &task.branch) {
                         // Write PR URL to file so hooks can read it without network calls
@@ -224,7 +203,6 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             session_branches: session_branches.clone(),
             task_diff_stats: task_diff_stats.clone(),
             pr_urls: pr_urls.clone(),
-            stack_prs: stack_prs.clone(),
             project_branches: project_branches.clone(),
             run_sessions: tmux::list_run_sessions(),
         };

@@ -188,7 +188,6 @@ function renderTask(project, task) {
   header.append(el("div", "task-name", task.name));
 
   const meta = el("div", "task-meta");
-  if (task.stacked) meta.append(el("span", "stacked-badge", "≡"));
   const taskDiff = diffSpan(task.diff);
   if (taskDiff.childNodes.length) {
     taskDiff.classList.add("tappable");
@@ -245,10 +244,11 @@ function renderTask(project, task) {
 }
 
 function sessionRow(session, title) {
+  const isMain = session.name === "main";
   const wrap = el("div", "session-row-wrap");
   const row = el("button", "session-row");
   const dot = el("span", `dot ${session.status || ""}`);
-  const label = el("span", "label", `#${session.name}`);
+  const label = el("span", isMain ? "label main" : "label", isMain ? "◆ main" : `#${session.name}`);
   const status = el(
     "span",
     `status-label ${session.status || ""}`,
@@ -256,6 +256,12 @@ function sessionRow(session, title) {
   );
   row.append(dot, label, diffSpan(session.diff, "diff"), status, el("span", "chev", "›"));
   row.onclick = () => openSession(session.tmux_name, title, session.status);
+
+  if (isMain) {
+    // The main session belongs to the task — delete the task to remove it.
+    wrap.append(row);
+    return wrap;
+  }
 
   const del = confirmButton("row-del", "✕", async (btn) => {
     btn.disabled = true;

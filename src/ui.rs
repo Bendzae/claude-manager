@@ -182,10 +182,6 @@ fn is_text_input_mode(mode: InputMode) -> bool {
             | InputMode::AddTaskName
             | InputMode::AddTaskBranch
             | InputMode::AddTaskPrompt
-            | InputMode::RenameProject
-            | InputMode::RenameTask
-            | InputMode::RenameSession
-            | InputMode::RenameAdhocSession
             | InputMode::MergeCommitMessage
             | InputMode::SetBaseBranch
             | InputMode::Search
@@ -818,23 +814,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     .map(|s| (s.added, s.removed))
                     .unwrap_or((0, 0));
 
-                // Badge column: stacked-PR marker takes precedence, else PR icon.
-                let badge = if task.stacked {
-                    let count = app.stack_prs.get(&task.branch).map_or(0, |p| p.len());
-                    if count > 0 {
-                        vec![Span::styled(
-                            format!("\u{2446} {count}"),
-                            Style::default()
-                                .fg(current().accent)
-                                .add_modifier(Modifier::BOLD),
-                        )]
-                    } else {
-                        vec![Span::styled(
-                            "\u{2446}",
-                            Style::default().fg(current().muted),
-                        )]
-                    }
-                } else if let Some(url) = app.pr_urls.get(&task.branch) {
+                // Badge column: PR icon.
+                let badge = if let Some(url) = app.pr_urls.get(&task.branch) {
                     // Show "#<number>" instead of a bare icon; fall back to "PR"
                     // when the URL has no numeric id.
                     let label = pr_number(url)
@@ -862,49 +843,6 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     selected: is_selected,
                     has_meta: true,
                 });
-
-                // Stacked task: render its PRs as a vertical chain beneath the row
-                // (top of stack first → base at the bottom), unless collapsed.
-                let collapsed = app
-                    .collapsed
-                    .contains(&format!("t:{project_name}:{}", task.name));
-                if task.stacked && !collapsed {
-                    if let Some(prs) = app.stack_prs.get(&task.branch).filter(|p| !p.is_empty()) {
-                        let last = is_last_task(&app.items, i, project_name);
-                        let continuation = if last { "   " } else { "│  " };
-                        let total = prs.len();
-                        // `prs` is bottom→top; print top→bottom so the base sits last.
-                        for (idx, (url, title)) in prs.iter().rev().enumerate() {
-                            let is_base = idx + 1 == total;
-                            let branch_char = if is_base { "└─ " } else { "├─ " };
-                            let mut sub = vec![
-                                Span::raw("   "),
-                                Span::styled(continuation, tree_style),
-                                Span::styled(branch_char, tree_style),
-                                Span::styled("● ", Style::default().fg(current().green)),
-                            ];
-                            if let Some(n) = pr_number(url) {
-                                sub.push(Span::styled(
-                                    format!("#{n} "),
-                                    Style::default().fg(current().accent),
-                                ));
-                            }
-                            sub.push(Span::styled(
-                                title.clone(),
-                                Style::default().fg(current().white),
-                            ));
-                            rows.push(Row::Body {
-                                left: sub,
-                                churn: Vec::new(),
-                                badge: Vec::new(),
-                                branch: None,
-                                rail: None,
-                                selected: false,
-                                has_meta: false,
-                            });
-                        }
-                    }
-                }
             }
             app::ListItem::AdhocGroup {
                 project_name,
@@ -951,13 +889,17 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 ..
             } => {
                 let indicator = if is_selected { " ▸ " } else { "   " };
-                let style = if is_selected {
-                    Style::default()
-                        .fg(current().green)
-                        .add_modifier(Modifier::BOLD)
+                // The main session sits on the task branch itself — mark it out.
+                let is_main = tmux::is_main_session(&session.session_name);
+                let name_color = if is_main {
+                    current().accent
                 } else {
-                    Style::default().fg(current().green)
+                    current().green
                 };
+                let mut style = Style::default().fg(name_color);
+                if is_selected || is_main {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
 
                 let status = app
                     .session_statuses
@@ -999,13 +941,17 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                 ..
             } => {
                 let indicator = if is_selected { " ▸ " } else { "   " };
-                let style = if is_selected {
-                    Style::default()
-                        .fg(current().green)
-                        .add_modifier(Modifier::BOLD)
+                // The main session sits on the task branch itself — mark it out.
+                let is_main = tmux::is_main_session(&session.session_name);
+                let name_color = if is_main {
+                    current().accent
                 } else {
-                    Style::default().fg(current().green)
+                    current().green
                 };
+                let mut style = Style::default().fg(name_color);
+                if is_selected || is_main {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
 
                 let status = app
                     .session_statuses
@@ -1026,7 +972,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(branch_char, tree_style),
                     Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
                 ];
-                if wt.is_some() {
+                if is_main {
+                    left.push(Span::styled("◆ ", Style::default().fg(current().accent)));
+                } else if wt.is_some() {
                     left.push(Span::styled(
                         "\u{e0a0} ",
                         Style::default().fg(current().border),
@@ -1518,10 +1466,6 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         | InputMode::AddAdhocSessionName
         | InputMode::AddTaskName
         | InputMode::AddTaskBranch
-        | InputMode::RenameProject
-        | InputMode::RenameTask
-        | InputMode::RenameSession
-        | InputMode::RenameAdhocSession
         | InputMode::SetBaseBranch
         | InputMode::RunCommand => help_bar(&[("⏎", "confirm"), ("Esc", "cancel")]),
         InputMode::ConfirmDelete | InputMode::ConfirmCreatePr => {
@@ -1622,9 +1566,6 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 | InputMode::AddTaskName
                 | InputMode::AddTaskBranch
                 | InputMode::AddTaskPrompt
-                | InputMode::RenameProject
-                | InputMode::RenameTask
-                | InputMode::RenameSession
                 | InputMode::MergeCommitMessage
         ) {
             format!("{}{}", msg, app.input_buffer)

@@ -55,9 +55,6 @@ fn cm_checkout() -> char {
 fn cm_open_pr() -> char {
     'o'
 }
-fn cm_rename() -> char {
-    'R'
-}
 fn cm_delete() -> char {
     'd'
 }
@@ -72,9 +69,6 @@ fn cm_set_base_branch() -> char {
 }
 fn cm_archive() -> char {
     'A'
-}
-fn cm_toggle_stacked() -> char {
-    's'
 }
 
 fn cm_review() -> char {
@@ -133,9 +127,6 @@ pub struct ContextMenuKeyBindings {
     /// Open PR (default: o)
     #[serde(default = "cm_open_pr")]
     pub open_pr: char,
-    /// Rename item (default: R)
-    #[serde(default = "cm_rename")]
-    pub rename: char,
     /// Delete item (default: d)
     #[serde(default = "cm_delete")]
     pub delete: char,
@@ -151,9 +142,6 @@ pub struct ContextMenuKeyBindings {
     /// Archive / unarchive task (default: A)
     #[serde(default = "cm_archive")]
     pub archive: char,
-    /// Toggle stacked-PR mode for a task (default: s)
-    #[serde(default = "cm_toggle_stacked")]
-    pub toggle_stacked: char,
     /// Review diff in the configured review tool (default: r)
     #[serde(default = "cm_review")]
     pub review: char,
@@ -179,13 +167,11 @@ impl Default for ContextMenuKeyBindings {
             push: cm_push(),
             checkout: cm_checkout(),
             open_pr: cm_open_pr(),
-            rename: cm_rename(),
             delete: cm_delete(),
             merge: cm_merge(),
             copy_path: cm_copy_path(),
             set_base_branch: cm_set_base_branch(),
             archive: cm_archive(),
-            toggle_stacked: cm_toggle_stacked(),
             review: cm_review(),
             terminal: cm_terminal(),
             fetch_pull: cm_fetch_pull(),
@@ -277,10 +263,6 @@ pub struct Task {
     /// Archived: hidden from default view, sessions killed but worktrees/branches/context preserved.
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
-    /// Stacked-PR mode: this task's commits are published as a stack of dependent PRs
-    /// (via `spr`) instead of a single PR. Opt-in; defaults to false (single-PR happy path).
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub stacked: bool,
 }
 
 impl Task {
@@ -414,7 +396,7 @@ pub fn save_theme(name: &str) {
     let _ = fs::write(theme_path(), name);
 }
 
-/// Directory holding cached per-task files (pr_url.txt, stack.json) for a project/branch.
+/// Directory holding cached per-task files (pr_url.txt) for a project/branch.
 pub fn task_dir(project_name: &str, branch: &str) -> PathBuf {
     base_dir()
         .join("tasks")
@@ -425,28 +407,6 @@ pub fn task_dir(project_name: &str, branch: &str) -> PathBuf {
 /// Path to the cached PR URL file for a given project/branch.
 pub fn pr_url_path(project_name: &str, branch: &str) -> PathBuf {
     task_dir(project_name, branch).join("pr_url.txt")
-}
-
-/// Path to the cached stacked-PR list for a stacked task (JSON array of `[url, title]`,
-/// bottom→top). Written by `spr update`/refresh; read by the background worker (no git).
-pub fn stack_cache_path(project_name: &str, branch: &str) -> PathBuf {
-    task_dir(project_name, branch).join("stack.json")
-}
-
-/// Persist a freshly-published stack so the worker/UI can read it without touching git:
-/// the full list to `stack.json` and the bottom PR URL to `pr_url.txt` (PR icon / "Open PR").
-pub fn write_stack_cache(project_name: &str, branch: &str, prs: &[(String, String)]) {
-    let cache = stack_cache_path(project_name, branch);
-    if let Some(parent) = cache.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(
-        &cache,
-        serde_json::to_string(prs).unwrap_or_else(|_| "[]".into()),
-    );
-    if let Some((url, _)) = prs.first() {
-        let _ = fs::write(pr_url_path(project_name, branch), url);
-    }
 }
 
 /// Metadata needed to recreate a tmux session after tmux dies.
@@ -540,18 +500,6 @@ pub fn set_task_session_records_archived(
     changed
 }
 
-/// Re-key a session record under a new tmux name.
-/// The record fields are kept as-is since they reflect the original creation
-/// state (worktree paths, project paths, etc.) which don't change on rename.
-pub fn rename_session_record(old_tmux_name: &str, new_tmux_name: &str) {
-    let _g = IO_LOCK.lock().unwrap();
-    let mut sessions = load_sessions();
-    if let Some(record) = sessions.remove(old_tmux_name) {
-        sessions.insert(new_tmux_name.to_string(), record);
-        let _ = save_sessions(&sessions);
-    }
-}
-
 /// Remove all session records matching a project and persist.
 pub fn remove_project_session_records(project_name: &str) {
     let _g = IO_LOCK.lock().unwrap();
@@ -631,15 +579,6 @@ impl Config {
         self.projects.iter().any(|p| p.path == path)
     }
 
-    pub fn rename_project(&mut self, old_name: &str, new_name: String) -> bool {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.name == old_name) {
-            project.name = new_name;
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn add_task(&mut self, project_name: &str, task_name: String, branch: String) -> bool {
         if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
             if !project.tasks.iter().any(|t| t.name == task_name) {
@@ -648,7 +587,6 @@ impl Config {
                     branch,
                     base_branch: None,
                     archived: false,
-                    stacked: false,
                 });
                 return true;
             }
@@ -661,21 +599,6 @@ impl Config {
             let before = project.tasks.len();
             project.tasks.retain(|t| t.name != task_name);
             return project.tasks.len() < before;
-        }
-        false
-    }
-
-    pub fn rename_task(
-        &mut self,
-        project_name: &str,
-        old_task_name: &str,
-        new_task_name: String,
-    ) -> bool {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
-            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == old_task_name) {
-                task.name = new_task_name;
-                return true;
-            }
         }
         false
     }
@@ -739,35 +662,6 @@ impl Config {
         false
     }
 
-    /// Set stacked-PR mode for the task identified by `project_path` + `branch`
-    /// (both stable across renames — the keys an external caller like the
-    /// `stacked-pr` skill knows). Returns true if the task was found.
-    pub fn set_task_stacked_by_branch(
-        &mut self,
-        project_path: &str,
-        branch: &str,
-        stacked: bool,
-    ) -> bool {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.path == project_path) {
-            if let Some(task) = project.tasks.iter_mut().find(|t| t.branch == branch) {
-                task.stacked = stacked;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Toggle stacked-PR mode for a task. Returns the new value, or `None` if not found.
-    pub fn toggle_stacked(&mut self, project_name: &str, task_name: &str) -> Option<bool> {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.name == project_name) {
-            if let Some(task) = project.tasks.iter_mut().find(|t| t.name == task_name) {
-                task.stacked = !task.stacked;
-                return Some(task.stacked);
-            }
-        }
-        None
-    }
-
     #[allow(dead_code)]
     pub fn find_task(&self, project_name: &str, task_name: &str) -> Option<&Task> {
         self.projects
@@ -779,9 +673,8 @@ impl Config {
     }
 
     /// Find a task by its branch within the project identified by path.
-    /// Unlike [`find_task`], this keys on `project_path` + `branch`, both of
-    /// which are stable across project/task renames. Use this when reconciling
-    /// persisted session records (whose display-name fields may be stale).
+    /// Unlike [`find_task`], this keys on `project_path` + `branch` — use it when
+    /// reconciling persisted session records (whose name fields may be stale).
     pub fn find_task_by_branch(&self, project_path: &str, branch: &str) -> Option<&Task> {
         self.projects
             .iter()
@@ -835,51 +728,10 @@ mod tests {
     }
 
     #[test]
-    fn toggle_stacked_flips_flag() {
-        let mut cfg = empty_config();
-        cfg.add_project("App".into(), "/tmp/app".into());
-        cfg.add_task("App", "feat".into(), "feat".into());
-        assert!(!cfg.projects[0].tasks[0].stacked);
-        assert_eq!(cfg.toggle_stacked("App", "feat"), Some(true));
-        assert!(cfg.projects[0].tasks[0].stacked);
-        assert_eq!(cfg.toggle_stacked("App", "feat"), Some(false));
-        assert_eq!(cfg.toggle_stacked("App", "missing"), None);
-    }
-
-    #[test]
-    fn set_task_stacked_by_branch_keys_on_path_and_branch() {
-        let mut cfg = empty_config();
-        cfg.add_project("App".into(), "/tmp/app".into());
-        cfg.add_task("App", "feat".into(), "feat-branch".into());
-        assert!(cfg.set_task_stacked_by_branch("/tmp/app", "feat-branch", true));
-        assert!(cfg.projects[0].tasks[0].stacked);
-        assert!(cfg.set_task_stacked_by_branch("/tmp/app", "feat-branch", false));
-        assert!(!cfg.projects[0].tasks[0].stacked);
-        // Wrong path or branch → not found.
-        assert!(!cfg.set_task_stacked_by_branch("/tmp/other", "feat-branch", true));
-        assert!(!cfg.set_task_stacked_by_branch("/tmp/app", "missing", true));
-    }
-
-    #[test]
-    fn task_without_stacked_field_defaults_false() {
-        // Backward compat: existing config.toml entries have no `stacked` key.
+    fn task_without_optional_fields_defaults() {
         let task: Task = toml::from_str("name = \"t\"\nbranch = \"b\"\n").unwrap();
-        assert!(!task.stacked);
         assert!(!task.archived);
-    }
-
-    #[test]
-    fn rename_project_success() {
-        let mut cfg = empty_config();
-        cfg.add_project("Old".into(), "/tmp/app".into());
-        assert!(cfg.rename_project("Old", "New".into()));
-        assert_eq!(cfg.projects[0].name, "New");
-    }
-
-    #[test]
-    fn rename_project_not_found() {
-        let mut cfg = empty_config();
-        assert!(!cfg.rename_project("Missing", "New".into()));
+        assert_eq!(task.base_branch(), "main");
     }
 
     #[test]
@@ -926,15 +778,6 @@ mod tests {
     }
 
     #[test]
-    fn rename_task() {
-        let mut cfg = empty_config();
-        cfg.add_project("App".into(), "/tmp/app".into());
-        cfg.add_task("App", "old".into(), "branch".into());
-        assert!(cfg.rename_task("App", "old", "new".into()));
-        assert_eq!(cfg.projects[0].tasks[0].name, "new");
-    }
-
-    #[test]
     fn find_task() {
         let mut cfg = empty_config();
         cfg.add_project("App".into(), "/tmp/app".into());
@@ -947,16 +790,13 @@ mod tests {
     }
 
     #[test]
-    fn find_task_by_branch_is_stable_across_rename() {
+    fn find_task_by_branch() {
         let mut cfg = empty_config();
         cfg.add_project("App".into(), "/tmp/app".into());
-        cfg.add_task("App", "old-name".into(), "b1".into());
-        // Branch lookup finds it before and after a rename (rename keeps branch).
-        assert!(cfg.find_task_by_branch("/tmp/app", "b1").is_some());
-        cfg.rename_task("App", "old-name", "new-name".into());
+        cfg.add_task("App", "task-name".into(), "b1".into());
         let task = cfg.find_task_by_branch("/tmp/app", "b1");
         assert!(task.is_some());
-        assert_eq!(task.unwrap().name, "new-name");
+        assert_eq!(task.unwrap().name, "task-name");
         // A branch that no longer exists (task deleted) is reported as gone.
         assert!(
             cfg.find_task_by_branch("/tmp/app", "missing-branch")

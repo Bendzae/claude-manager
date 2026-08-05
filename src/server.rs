@@ -85,7 +85,6 @@ fn sync_hints(worker: &Worker, cfg: &Config) {
                 project_path: p.path.clone(),
                 branch: t.branch.clone(),
                 base_branch: t.base_branch().to_string(),
-                stacked: t.stacked,
             })
         })
         .collect();
@@ -144,7 +143,6 @@ fn build_state(cfg: &Config, u: &WorkerUpdate, hostname: &str) -> Value {
                         "branch": t.branch,
                         "base_branch": t.base_branch(),
                         "archived": t.archived,
-                        "stacked": t.stacked,
                         "pr_url": u.pr_urls.get(&t.branch),
                         "diff": u.task_diff_stats.get(&t.branch).map(diff_json),
                         "sessions": sessions,
@@ -189,7 +187,6 @@ async fn api_state(State(state): State<Arc<ServerState>>) -> Result<Response, Ap
                         task_diff_stats: Default::default(),
                         session_branches: Default::default(),
                         pr_urls: Default::default(),
-                        stack_prs: Default::default(),
                         project_branches: Default::default(),
                         run_sessions: Default::default(),
                     };
@@ -340,6 +337,11 @@ async fn api_keys(
 
 async fn api_kill(Path(name): Path<String>) -> Result<StatusCode, ApiError> {
     validate_session_name(&name)?;
+    if name.ends_with(&format!("__{}", tmux::MAIN_SESSION)) {
+        return Err(bad_request(
+            "the main session can't be killed — delete the task instead",
+        ));
+    }
 
     tokio::task::spawn_blocking(move || {
         let fallback = config::load_sessions()
@@ -356,6 +358,7 @@ async fn api_kill(Path(name): Path<String>) -> Result<StatusCode, ApiError> {
                     tmux::sanitize(&r.task_branch),
                     tmux::sanitize(&r.session_name)
                 )),
+                task_branch: Some(r.task_branch.clone()),
             });
         tmux::kill_session_with_fallback(&name, fallback)?;
         config::remove_session_record(&name);

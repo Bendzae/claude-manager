@@ -44,6 +44,7 @@ Launch from any directory. Configuration is stored in `~/.claude-manager/config.
 - **Project** — A git repository you want to manage Claude sessions for. Added by its filesystem path.
 - **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple Claude sessions.
 - **Session** — A Claude Code instance running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
+- **Main session** (`◆ main`) — Every task has one, created with the task. It works in a worktree with the **task branch itself** checked out, so its commits land on the task branch directly — no merge step. Extra sessions (`n`) get their own `<task-branch>-<name>` branch and merge back into it.
 - **Adhoc session** — A project-scoped session that runs Claude directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
 
 ### Keybindings
@@ -80,7 +81,6 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 | `b` | Checkout branch (fuzzy-search the branch list) | `checkout` |
 | `f` | Fetch & pull all branches (`git fetch --all --prune` + ff-only pull) | `fetch_pull` |
 | `y` | Copy project path to clipboard | `copy_path` |
-| `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
 
 The branch checkout picker opens a fuzzy finder over the project's local and remote branches — type to filter, `↑/↓` to navigate, `Enter` to check out (a remote-only branch is checked out as a new local tracking branch).
@@ -111,23 +111,9 @@ Run sessions are independent per item, so running on a different item starts a s
 | `B` | Set base branch | `set_base_branch` |
 | `P` | Push branch | `push` |
 | `b` | Checkout branch in project dir | `checkout` |
-| `o` | Open/create PR (publishes the stack when stacked) | `open_pr` |
-| `s` | Toggle stacked-PR mode | `toggle_stacked` |
+| `o` | Open/create PR | `open_pr` |
 | `A` | Archive | `archive` |
-| `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
-
-In **stacked-PR mode** a task publishes one PR per commit via [`git spr`](https://github.com/ejoffe/spr) instead of a single PR. Enable it with `s`, then `o` to publish the stack and `u` to refresh it after edits. The task row shows a `⑆ N PRs` badge and lists each PR (top of stack first) beneath it. Requires `git spr` installed and GitHub auth (`gh auth login`). See the `stacked-pr` agent skill for the commit-shaping workflow.
-
-Stacked mode can also be driven from outside the TUI (the `stacked-pr` skill uses these so an agent can manage the stack for its own task — all operate on the task branch):
-
-```bash
-claude-manager set-stacked   <project-path> <branch> [on|off]   # toggle the flag (default: on)
-claude-manager stack-publish <project-path> <branch>            # git spr update — create/refresh PRs
-claude-manager stack-sync    <project-path> <branch>            # git spr sync — reconcile after merges
-```
-
-A running TUI picks up config/flag changes on its next idle refresh, and the published stack on its next poll.
 
 **Session actions:**
 
@@ -139,8 +125,9 @@ A running TUI picks up config/flag changes on its next idle refresh, and the pub
 | `t` | Open/attach a terminal in the worktree | `terminal` |
 | `x` | Run the project's configured run command | `run` |
 | `y` | Copy worktree path to clipboard | `copy_path` |
-| `R` | Rename | `rename` |
 | `d` | Delete | `delete` |
+
+The main session only offers Review, Terminal, Run and Copy path: it is already on the task branch, so Merge and Update have nothing to do, and it can't be deleted on its own — delete or archive the task instead.
 
 The **Review** action (`r`) launches the configured diff review tool on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Choose the tool with `review_tool` in `~/.claude-manager/config.toml` (`"difit"`, the default, or `"hunk"`):
 
@@ -162,7 +149,9 @@ Sessions display their current status:
 
 ### Worktrees
 
-When creating a session with `n` (via the context menu on a task), Claude Manager creates a git worktree so each session works on an isolated copy of the codebase. Use `N` to skip worktree creation and work directly in the project directory.
+Every session gets a git worktree so it works on an isolated copy of the codebase. The task's **main session** checks out the task branch itself; additional sessions created with `n` get their own `<task-branch>-<name>` branch. Use `N` to skip worktree creation and work directly in the project directory.
+
+Because the main session's worktree owns the task branch, `b` (checkout in the project dir) fails while it exists — check out the branch in a worktree instead, or delete the task. **Update branch** (`u`) and session **Merge** (`m`) run inside that worktree rather than checking the branch out in the project dir. Worktrees are removed when their session is deleted, and all of a task's worktrees when the task (`d`) or project is deleted.
 
 You can configure file patterns to copy into new worktrees (e.g. `.env` files) by adding `copy_patterns` to your project config. To run commands inside each freshly-created worktree (installing dependencies, configuring git hooks, etc.), add `setup_commands` (a single string or a list):
 
@@ -198,10 +187,9 @@ base_branch = "develop"                # rebase/diff target (defaults to "main")
 [[projects.tasks]]
 name = "add-dark-mode"
 branch = "feature/dark-mode"
-stacked = true                         # publish commits as a stack of PRs
 ```
 
-Most of these fields are set for you through the TUI (`run_command` on first Run, `base_branch` via `B`, `stacked` via `s`), so manual editing is rarely necessary. A running TUI picks up external edits on its next idle refresh.
+Most of these fields are set for you through the TUI (`run_command` on first Run, `base_branch` via `B`), so manual editing is rarely necessary. A running TUI picks up external edits on its next idle refresh.
 
 #### Custom Keybindings
 
@@ -236,10 +224,9 @@ This gives you a valid-HTTPS URL reachable only from your own devices. Open it o
 
 The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive its own Claude Manager task without leaving the worktree:
 
-- **`commit-push-task`** — commit changes on the worktree branch, fast-forward merge into the task branch, and push the task branch.
-- **`stacked-pr`** — work on a task whose changes ship as a stack of dependent PRs (one PR per commit, via `git spr`), including the commit-shaping workflow. Pairs with the `set-stacked` / `stack-publish` / `stack-sync` CLI subcommands.
+- **`commit-push-task`** — commit changes on the current branch, fast-forward them into the task branch (in whichever worktree has it checked out), and push the task branch. In the main session, where the current branch *is* the task branch, it just commits and pushes.
 
-Add the plugin to Claude Code and the skills become available as `/commit-push-task` and `/stacked-pr` inside any session.
+Add the plugin to Claude Code and the skill becomes available as `/commit-push-task` inside any session.
 
 ## Development
 
