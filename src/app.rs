@@ -732,8 +732,7 @@ impl App {
         }
     }
 
-    /// Pick up config edits made by another process (e.g. `claude-manager
-    /// set-stacked` from the stacked-pr skill). Only reloads when idle (no
+    /// Pick up config edits made by another process. Only reloads when idle (no
     /// in-flight op, Normal mode) and the on-disk content actually differs from
     /// memory — so the app's own saves never trigger a spurious rebuild.
     pub fn maybe_reload_config(&mut self) {

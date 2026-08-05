@@ -466,11 +466,13 @@ async fn api_create_task(
             );
         })?;
 
+        // A new task starts with its main session, like the TUI.
         create_session_for_task(
             &cfg,
             &project,
             &task_name,
             &branch,
+            tmux::MAIN_SESSION.to_string(),
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
         )
     })
@@ -506,11 +508,16 @@ async fn api_create_session(
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", body.task))?
             .clone();
 
+        let sessions = tmux::list_sessions()?;
+        let session_name =
+            tmux::next_session_number(&project.name, &task.name, &sessions).to_string();
+
         create_session_for_task(
             &cfg,
             &project,
             &task.name,
             &task.branch,
+            session_name,
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
         )
     })
@@ -633,11 +640,9 @@ fn create_session_for_task(
     project: &config::Project,
     task_name: &str,
     branch: &str,
+    session_name: String,
     prompt: Option<&str>,
 ) -> Result<String> {
-    let sessions = tmux::list_sessions()?;
-    let session_name = tmux::next_session_number(&project.name, task_name, &sessions).to_string();
-
     let tmux_name = tmux::create_session(
         &project.name,
         &project.path,
