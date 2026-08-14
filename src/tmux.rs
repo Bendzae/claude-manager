@@ -32,6 +32,17 @@ pub enum SessionStatus {
     Finished,
 }
 
+impl SessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionStatus::Running => "running",
+            SessionStatus::WaitingForInput => "waiting_input",
+            SessionStatus::WaitingForPermission => "waiting_permission",
+            SessionStatus::Finished => "finished",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TmuxSession {
     pub name: String,
@@ -706,6 +717,29 @@ pub fn capture_output(session_name: &str, lines: usize) -> Option<(String, usize
     Some((String::from_utf8_lossy(&output.stdout).to_string(), width))
 }
 
+/// Capture the last `lines` lines (including scrollback) of a session's Claude
+/// pane as plain text, without ANSI escape sequences.
+pub fn capture_output_plain(session_name: &str, lines: usize) -> Option<String> {
+    let target = format!("{session_name}:0");
+    let output = Command::new("tmux")
+        .args([
+            "capture-pane",
+            "-p",
+            "-t",
+            &target,
+            "-S",
+            &format!("-{lines}"),
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Send a single tmux key name (e.g. "Enter", "Escape", "Up", "1") to the
 /// Claude pane.
 pub fn send_key(session_name: &str, key: &str) -> Result<()> {
@@ -1036,7 +1070,10 @@ fn build_base_system_prompt(
     }
     prompt.push_str(&format!(
         "- PRs should always be opened from the task branch: {task_branch}\n\
-         - Other agents may be working on the same task in parallel"
+         - Other agents may be working on the same task in parallel\n\
+         - The `claude-manager` CLI lets you list, create and manage other tasks and\n  \
+         sessions, and ask an agent in another session a question — see the\n  \
+         `manage-sessions` skill"
     ));
     if worktree_branch.is_some() {
         prompt.push_str("\n- NEVER push the worktree branch unless explicitly told to do so");
@@ -1083,6 +1120,8 @@ fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) ->
 const PLUGIN_MANIFEST: &str = include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
     include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
+const PLUGIN_SKILL_MANAGE_SESSIONS: &str =
+    include_str!("../claude-manager-plugin/skills/manage-sessions/SKILL.md");
 
 /// Filesystem path to the installed claude-manager plugin directory inside `work_dir`.
 /// This is the path passed to `claude --plugin-dir`.
@@ -1116,6 +1155,7 @@ fn install_claude_manager_plugin(work_dir: &str) {
 
     let _ = fs::create_dir_all(plugin_dir.join(".claude-plugin"));
     let _ = fs::create_dir_all(plugin_dir.join("skills").join("commit-push-task"));
+    let _ = fs::create_dir_all(plugin_dir.join("skills").join("manage-sessions"));
 
     let _ = fs::write(
         plugin_dir.join(".claude-plugin").join("plugin.json"),
@@ -1127,6 +1167,13 @@ fn install_claude_manager_plugin(work_dir: &str) {
             .join("commit-push-task")
             .join("SKILL.md"),
         PLUGIN_SKILL_COMMIT_PUSH_TASK,
+    );
+    let _ = fs::write(
+        plugin_dir
+            .join("skills")
+            .join("manage-sessions")
+            .join("SKILL.md"),
+        PLUGIN_SKILL_MANAGE_SESSIONS,
     );
 
     // Git-ignore the locally installed plugin via .git/info/exclude.

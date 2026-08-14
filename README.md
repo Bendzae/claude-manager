@@ -220,13 +220,42 @@ tailscale serve --bg 7878
 
 This gives you a valid-HTTPS URL reachable only from your own devices. Open it on your phone and use "Add to Home Screen" to install it as an app.
 
+## CLI
+
+Besides the TUI and `serve`, the binary exposes the same task/session operations as commands. They act on the shared state in `~/.claude-manager/`, so a running TUI picks the changes up on its next refresh. Agents running inside a session use these to manage each other (see [Claude Code plugin](#claude-code-plugin)), and they're handy from any shell.
+
+```sh
+claude-manager list [--json] [--project <name>]      # projects, tasks, live sessions + status
+claude-manager task create <project> <name> [--branch <b>] [--prompt <text>]
+claude-manager task delete <project> <task> --yes
+claude-manager session create <project> <task> [--prompt <text>] [--no-worktree]
+claude-manager session kill <session> --yes
+claude-manager ask <session> <question> [--timeout <secs>]
+claude-manager send <session> <text> [--no-submit]
+claude-manager output <session> [--lines <n>]
+```
+
+Sessions are addressed by the refs `list` prints — `<project>/<task>/<session>` (e.g. `myapp/fix-auth/2`), `<project>/<task>` for that task's main session, or a raw tmux name. `list` marks the session you're calling from as `(this session)`, and reports the same statuses as the TUI (`running`, `waiting_input`, `waiting_permission`, `finished`); it samples each pane twice, so it takes a moment.
+
+`task create` and `session create` mirror the TUI's flows exactly — branch, worktree, setup commands, startup skills and initial prompt included. `task delete` and `session kill` are destructive (worktrees removed, branches deleted) and require `--yes`; a task's main session can only go away with its task.
+
+**`ask`** sends a question to another session, waits until that agent finishes its turn, and prints its reply on stdout:
+
+```sh
+$ claude-manager ask myapp/fix-auth/2 "which module owns token refresh?"
+⏺ src/auth/refresh.ts — TokenRefresher. It's called from the interceptor in api/client.ts.
+```
+
+A busy session queues the question and answers when it gets there, so `ask` blocks for as long as that takes (default timeout 300s). On timeout, or when the target stops on a permission/question dialog, whatever it printed still goes to stdout and the exit status is non-zero. Use `send` to drop a message without waiting for a reply, and `output` to read a session's screen directly.
+
 ## Claude Code plugin
 
-The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive its own Claude Manager task without leaving the worktree:
+The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive Claude Manager without leaving the worktree:
 
 - **`commit-push-task`** — commit changes on the current branch, fast-forward them into the task branch (in whichever worktree has it checked out), and push the task branch. In the main session, where the current branch *is* the task branch, it just commits and pushes.
+- **`manage-sessions`** — view, create and manage other tasks and sessions, and ask an agent in another session a question, via the [CLI](#cli) above. Session agents are told about this in their system prompt, so they can fan work out to new sessions or consult a sibling agent that holds context they don't.
 
-Add the plugin to Claude Code and the skill becomes available as `/commit-push-task` inside any session.
+The plugin is installed into every session's worktree automatically, so both skills are available inside any session (`/commit-push-task`, `/manage-sessions`).
 
 ## Development
 

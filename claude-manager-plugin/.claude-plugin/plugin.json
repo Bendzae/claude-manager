@@ -1,6 +1,6 @@
 {
   "name": "claude-manager",
-  "description": "Skills for Claude Manager sessions: worktree commit/merge/push.",
+  "description": "Skills for Claude Manager sessions: worktree commit/merge/push, and managing other tasks and sessions.",
   "version": "0.1.0",
   "author": {
     "name": "Claude Manager"

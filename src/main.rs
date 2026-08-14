@@ -1,5 +1,7 @@
 mod app;
+mod cli;
 mod config;
+mod ops;
 mod server;
 mod theme;
 mod tmux;
@@ -22,45 +24,6 @@ use ratatui::backend::CrosstermBackend;
 
 use app::{App, InputMode};
 
-/// Handle non-TUI CLI invocations. Returns `Some(result)` when an argument was
-/// recognized (the process should exit), or `None` to fall through to the TUI.
-fn run_cli(args: &[String]) -> Option<Result<()>> {
-    match args.first().map(String::as_str) {
-        // `claude-manager serve [--bind addr:port]` — HTTP server + mobile web UI
-        // for managing sessions remotely (e.g. from a phone over Tailscale).
-        Some("serve") => Some(cmd_serve(&args[1..])),
-        Some("--help" | "-h" | "help") => {
-            println!(
-                "claude-manager — TUI for managing Claude Code sessions\n\n\
-                 Usage:\n  \
-                 claude-manager                                  launch the TUI\n  \
-                 claude-manager serve [--bind <addr:port>]\n  \
-                 \t\tserve the mobile web UI (default 127.0.0.1:7878);\n  \
-                 \t\texpose over your tailnet with `tailscale serve --bg 7878`"
-            );
-            Some(Ok(()))
-        }
-        _ => None,
-    }
-}
-
-fn cmd_serve(args: &[String]) -> Result<()> {
-    let mut bind = "127.0.0.1:7878".to_string();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--bind" => {
-                bind = it
-                    .next()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("--bind requires an address"))?;
-            }
-            other => anyhow::bail!("unknown argument '{other}' (usage: serve [--bind addr:port])"),
-        }
-    }
-    server::run(&bind)
-}
-
 fn is_text_input_mode(mode: InputMode) -> bool {
     matches!(
         mode,
@@ -80,7 +43,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(result) = run_cli(&args) {
+    if let Some(result) = cli::dispatch(&args) {
         return result;
     }
 

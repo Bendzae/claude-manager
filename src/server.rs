@@ -10,7 +10,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::config::{self, Config};
-use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
+use crate::ops;
+use crate::tmux::{self, DiffStats, TmuxSession};
 use crate::worker::{TaskInfo, Worker, WorkerUpdate};
 
 struct ServerState {
@@ -101,15 +102,6 @@ fn sync_hints(worker: &Worker, cfg: &Config) {
     }
 }
 
-fn status_str(status: SessionStatus) -> &'static str {
-    match status {
-        SessionStatus::Running => "running",
-        SessionStatus::WaitingForInput => "waiting_input",
-        SessionStatus::WaitingForPermission => "waiting_permission",
-        SessionStatus::Finished => "finished",
-    }
-}
-
 fn diff_json(d: &DiffStats) -> Value {
     json!({ "added": d.added, "removed": d.removed })
 }
@@ -118,7 +110,7 @@ fn session_json(s: &TmuxSession, u: &WorkerUpdate) -> Value {
     json!({
         "tmux_name": s.name,
         "name": s.session_name,
-        "status": u.statuses.get(&s.name).map(|st| status_str(*st)),
+        "status": u.statuses.get(&s.name).map(|st| st.as_str()),
         "branch": u.session_branches.get(&s.name),
         "diff": u.diff_stats.get(&s.name).map(diff_json),
     })
@@ -343,30 +335,10 @@ async fn api_kill(Path(name): Path<String>) -> Result<StatusCode, ApiError> {
         ));
     }
 
-    tokio::task::spawn_blocking(move || {
-        let fallback = config::load_sessions()
-            .get(&name)
-            .filter(|r| r.use_worktree)
-            .map(|r| tmux::SessionCleanupInfo {
-                project_path: r.project_path.clone(),
-                worktree_path: tmux::worktree_dir(&r.project_name, &r.task_name, &r.session_name)
-                    .to_string_lossy()
-                    .to_string(),
-                // Remove the per-session branch too, matching the TUI's delete.
-                branch_name: Some(format!(
-                    "{}-{}",
-                    tmux::sanitize(&r.task_branch),
-                    tmux::sanitize(&r.session_name)
-                )),
-                task_branch: Some(r.task_branch.clone()),
-            });
-        tmux::kill_session_with_fallback(&name, fallback)?;
-        config::remove_session_record(&name);
-        Ok::<_, anyhow::Error>(())
-    })
-    .await
-    .map_err(internal)?
-    .map_err(internal)?;
+    tokio::task::spawn_blocking(move || ops::kill_session(&name))
+        .await
+        .map_err(internal)?
+        .map_err(internal)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -438,43 +410,17 @@ async fn api_create_task(
 ) -> Result<Response, ApiError> {
     let tmux_name = tokio::task::spawn_blocking(move || {
         let cfg = Config::load()?;
-        let project = cfg
-            .projects
-            .iter()
-            .find(|p| p.name == body.project)
-            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", body.project))?
-            .clone();
-
-        let task_name = body.name.trim().to_string();
-        let branch = tmux::to_branch_name(&task_name);
-        if branch.is_empty() {
-            anyhow::bail!("task name produces an empty branch name");
-        }
-
-        if !tmux::branch_exists(&project.path, &branch) {
-            tmux::create_task_branch(&project.path, &branch)?;
-        }
-
-        let task_name_for_modify = task_name.clone();
-        let branch_for_modify = branch.clone();
-        let project_name_for_modify = project.name.clone();
-        Config::modify(move |c| {
-            c.add_task(
-                &project_name_for_modify,
-                task_name_for_modify,
-                branch_for_modify,
-            );
-        })?;
+        let project = ops::find_project(&cfg, &body.project)?.clone();
 
         // A new task starts with its main session, like the TUI.
-        create_session_for_task(
+        let (_, tmux_name) = ops::create_task(
             &cfg,
             &project,
-            &task_name,
-            &branch,
-            tmux::MAIN_SESSION.to_string(),
+            body.name.trim(),
+            None,
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
-        )
+        )?;
+        Ok::<_, anyhow::Error>(tmux_name)
     })
     .await
     .map_err(internal)?
@@ -495,12 +441,7 @@ async fn api_create_session(
 ) -> Result<Response, ApiError> {
     let tmux_name = tokio::task::spawn_blocking(move || {
         let cfg = Config::load()?;
-        let project = cfg
-            .projects
-            .iter()
-            .find(|p| p.name == body.project)
-            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", body.project))?
-            .clone();
+        let project = ops::find_project(&cfg, &body.project)?.clone();
         let task = project
             .tasks
             .iter()
@@ -508,16 +449,12 @@ async fn api_create_session(
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", body.task))?
             .clone();
 
-        let sessions = tmux::list_sessions()?;
-        let session_name =
-            tmux::next_session_number(&project.name, &task.name, &sessions).to_string();
-
-        create_session_for_task(
+        ops::create_session(
             &cfg,
             &project,
             &task.name,
             &task.branch,
-            session_name,
+            true,
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
         )
     })
@@ -542,32 +479,7 @@ async fn api_delete_task(
 ) -> Result<StatusCode, ApiError> {
     tokio::task::spawn_blocking(move || {
         let cfg = Config::load()?;
-        let project = cfg
-            .projects
-            .iter()
-            .find(|p| p.name == body.project)
-            .ok_or_else(|| anyhow::anyhow!("project '{}' not found", body.project))?;
-        let task = project
-            .tasks
-            .iter()
-            .find(|t| t.name == body.task)
-            .ok_or_else(|| anyhow::anyhow!("task '{}' not found", body.task))?;
-
-        let sessions = tmux::list_sessions().unwrap_or_default();
-        tmux::delete_task(
-            &project.name,
-            &project.path,
-            &task.name,
-            &task.branch,
-            &sessions,
-        );
-        config::remove_task_session_records(&project.name, &task.name);
-
-        let (pname, tname) = (body.project.clone(), body.task.clone());
-        Config::modify(move |c| {
-            c.remove_task(&pname, &tname);
-        })?;
-        Ok::<_, anyhow::Error>(())
+        ops::delete_task(ops::find_project(&cfg, &body.project)?, &body.task)
     })
     .await
     .map_err(internal)?
@@ -633,43 +545,6 @@ async fn api_create_adhoc(
     .map_err(|e: anyhow::Error| bad_request(e.to_string()))?;
 
     Ok(axum::Json(json!({ "tmux_name": tmux_name })).into_response())
-}
-
-fn create_session_for_task(
-    cfg: &Config,
-    project: &config::Project,
-    task_name: &str,
-    branch: &str,
-    session_name: String,
-    prompt: Option<&str>,
-) -> Result<String> {
-    let tmux_name = tmux::create_session(
-        &project.name,
-        &project.path,
-        task_name,
-        branch,
-        &session_name,
-        true,
-        &project.copy_patterns,
-        &project.setup_commands,
-        prompt,
-        &cfg.startup_skills,
-    )?;
-
-    config::add_session_record(
-        &tmux_name,
-        config::SessionRecord {
-            project_name: project.name.clone(),
-            project_path: project.path.clone(),
-            task_name: task_name.to_string(),
-            task_branch: branch.to_string(),
-            session_name,
-            use_worktree: true,
-            archived: false,
-        },
-    );
-
-    Ok(tmux_name)
 }
 
 async fn index() -> Response {
