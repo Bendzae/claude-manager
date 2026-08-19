@@ -810,9 +810,10 @@ impl App {
         let want_archived = self.view_archived;
         for project in &self.config.projects {
             // Determine which tasks of this project match the current view + filter.
+            // Stack-ordered so chained tasks sit together instead of in creation order.
             let visible_tasks: Vec<&Task> = project
-                .tasks
-                .iter()
+                .tasks_stack_ordered()
+                .into_iter()
                 .filter(|t| t.archived == want_archived)
                 .filter(|t| {
                     needle.is_empty()

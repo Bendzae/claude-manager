@@ -267,8 +267,8 @@ fn cmd_list(args: &[String]) -> Result<()> {
             .map(|p| {
                 let stacks = p.stack_positions();
                 let tasks: Vec<Value> = p
-                    .tasks
-                    .iter()
+                    .tasks_stack_ordered()
+                    .into_iter()
                     .map(|t| {
                         json!({
                             "name": t.name,
@@ -324,7 +324,7 @@ fn cmd_list(args: &[String]) -> Result<()> {
     for project in projects {
         println!("{}  ({})", project.name, project.path);
         let stacks = project.stack_positions();
-        for task in &project.tasks {
+        for task in project.tasks_stack_ordered() {
             let archived = if task.archived { "  [archived]" } else { "" };
             let stack = stacks
                 .get(&task.branch)

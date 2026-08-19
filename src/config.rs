@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -340,10 +340,9 @@ pub struct Project {
 impl Project {
     /// Tasks chained by `base_branch` → `branch` links form a stack, the same
     /// relationship GitHub's stacked PRs use (each PR's base is the previous
-    /// branch). Returns each stacked task's 1-based depth and its chain's
-    /// length, keyed by task branch; tasks not part of a chain of ≥2 are
-    /// absent. A forked chain counts its longest path as the length.
-    pub fn stack_positions(&self) -> HashMap<String, (usize, usize)> {
+    /// branch). Groups tasks by their chain's root branch; the value holds
+    /// each member's branch and 1-based depth. Lone tasks form 1-chains.
+    fn stack_chains(&self) -> HashMap<&str, Vec<(&str, usize)>> {
         let by_branch: HashMap<&str, &Task> =
             self.tasks.iter().map(|t| (t.branch.as_str(), t)).collect();
 
@@ -366,8 +365,14 @@ impl Project {
                 .or_default()
                 .push((task.branch.as_str(), depth));
         }
-
         chains
+    }
+
+    /// Each stacked task's 1-based depth and its chain's length, keyed by task
+    /// branch; tasks not part of a chain of ≥2 are absent. A forked chain
+    /// counts its longest path as the length.
+    pub fn stack_positions(&self) -> HashMap<String, (usize, usize)> {
+        self.stack_chains()
             .into_values()
             .filter(|members| members.len() >= 2)
             .flat_map(|members| {
@@ -377,6 +382,45 @@ impl Project {
                     .map(move |(branch, depth)| (branch.to_string(), (depth, total)))
             })
             .collect()
+    }
+
+    /// Tasks in display order: members of a stack appear consecutively in
+    /// chain order (root first), the whole chain sitting where its first
+    /// member appears in config order. Everything else keeps config order.
+    pub fn tasks_stack_ordered(&self) -> Vec<&Task> {
+        let chains = self.stack_chains();
+        let index_of: HashMap<&str, usize> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.branch.as_str(), i))
+            .collect();
+
+        let mut chain_of: HashMap<&str, &Vec<(&str, usize)>> = HashMap::new();
+        for members in chains.values().filter(|m| m.len() >= 2) {
+            for (branch, _) in members {
+                chain_of.insert(branch, members);
+            }
+        }
+
+        let mut emitted: HashSet<&str> = HashSet::new();
+        let mut ordered = Vec::with_capacity(self.tasks.len());
+        for task in &self.tasks {
+            if !emitted.insert(task.branch.as_str()) {
+                continue;
+            }
+            let Some(members) = chain_of.get(task.branch.as_str()) else {
+                ordered.push(task);
+                continue;
+            };
+            let mut members: Vec<(&str, usize)> = (*members).clone();
+            members.sort_by_key(|(branch, depth)| (*depth, index_of[branch]));
+            for (branch, _) in members {
+                emitted.insert(branch);
+                ordered.push(&self.tasks[index_of[branch]]);
+            }
+        }
+        ordered
     }
 }
 
@@ -788,6 +832,59 @@ mod tests {
             task("b", "feat/b", Some("develop")),
         ]);
         assert!(project.stack_positions().is_empty());
+    }
+
+    #[test]
+    fn tasks_stack_ordered_groups_chain_members_at_the_first_members_slot() {
+        let project = project_with_tasks(vec![
+            task("api", "feat/api", None),
+            task("other", "fix/typo", None),
+            task("tests", "feat/tests", Some("feat/cleanup")),
+            task("last", "chore/last", None),
+            task("cleanup", "feat/cleanup", Some("feat/api")),
+        ]);
+
+        let order: Vec<&str> = project
+            .tasks_stack_ordered()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        // The chain surfaces where "api" (its first member in config order)
+        // sits, sorted root-first; the rest keep config order.
+        assert_eq!(order, vec!["api", "cleanup", "tests", "other", "last"]);
+    }
+
+    #[test]
+    fn tasks_stack_ordered_keeps_config_order_without_stacks() {
+        let project = project_with_tasks(vec![
+            task("a", "feat/a", None),
+            task("b", "feat/b", Some("develop")),
+            task("c", "feat/c", None),
+        ]);
+
+        let order: Vec<&str> = project
+            .tasks_stack_ordered()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(order, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn tasks_stack_ordered_places_a_chain_at_a_child_seen_before_its_root() {
+        let project = project_with_tasks(vec![
+            task("tests", "feat/tests", Some("feat/api")),
+            task("other", "fix/typo", None),
+            task("api", "feat/api", None),
+        ]);
+
+        let order: Vec<&str> = project
+            .tasks_stack_ordered()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        // "tests" is seen first, so its whole chain (root first) lands there.
+        assert_eq!(order, vec!["api", "tests", "other"]);
     }
 
     #[test]
