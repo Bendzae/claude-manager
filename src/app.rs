@@ -2882,6 +2882,9 @@ impl App {
 
         let branch = task.branch.clone();
         let task_name = task.name.clone();
+        // An explicit base (a stacked task, or a non-main base like develop)
+        // must be the PR's base too; unset falls back to the repo default.
+        let base = task.base_branch.clone().filter(|b| !b.trim().is_empty());
         self.input_mode = InputMode::Normal;
 
         self.start_op("Creating PR...", move || {
@@ -2894,11 +2897,14 @@ impl App {
                 };
             }
 
+            let mut args = vec![
+                "pr", "create", "--draft", "--title", &task_name, "--body", "", "--head", &branch,
+            ];
+            if let Some(base) = &base {
+                args.extend(["--base", base]);
+            }
             let output = std::process::Command::new("gh")
-                .args([
-                    "pr", "create", "--draft", "--title", &task_name, "--body", "", "--head",
-                    &branch,
-                ])
+                .args(&args)
                 .current_dir(&project_path)
                 .output();
 

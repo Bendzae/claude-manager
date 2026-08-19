@@ -191,6 +191,10 @@ branch = "feature/dark-mode"
 
 Most of these fields are set for you through the TUI (`run_command` on first Run, `base_branch` via `B`), so manual editing is rarely necessary. A running TUI picks up external edits on its next idle refresh.
 
+#### Stacked PRs
+
+Tasks whose `base_branch` is another task's branch form a stack — the same relationship GitHub's stacked pull requests use (each PR's base is the previous branch in the chain). Claude Manager detects these chains automatically and marks each member with its position, `⧉ 2/3`, in the TUI task list and in `claude-manager list` (`stack=2/3`, or a `stack` object in `--json`). To stack task B on task A, set B's base branch to A's branch with `B`. Creating a PR from a stacked task targets its base branch, so the PR lands stacked on GitHub.
+
 #### Custom Keybindings
 
 Create `~/.claude-manager/keybindings.toml` to override any default keybinding. Only the keys you specify are overridden; everything else keeps its default. Example:

@@ -34,6 +34,10 @@ The session you are in is marked `(this session)`. Statuses are `running` (still
 `waiting_input` (idle at its prompt), `waiting_permission` (blocked on a dialog, needs the user), and
 `finished` (claude exited). Listing samples each pane twice, so it takes a second or two.
 
+Tasks whose base branch is another task's branch form a stacked-PR chain; `list` marks each member
+with `stack=<position>/<size>` (a `stack` object in `--json`). Treat a stacked task's parent branch
+as its integration target: PRs and rebases go against the base branch, not main.
+
 ## Asking another session a question
 
 ```

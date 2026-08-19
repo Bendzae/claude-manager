@@ -265,6 +265,7 @@ fn cmd_list(args: &[String]) -> Result<()> {
         let projects: Vec<Value> = projects
             .iter()
             .map(|p| {
+                let stacks = p.stack_positions();
                 let tasks: Vec<Value> = p
                     .tasks
                     .iter()
@@ -274,6 +275,9 @@ fn cmd_list(args: &[String]) -> Result<()> {
                             "branch": t.branch,
                             "base_branch": t.base_branch(),
                             "archived": t.archived,
+                            "stack": stacks.get(&t.branch).map(|(pos, total)| {
+                                json!({ "position": pos, "size": total })
+                            }),
                             "sessions": tmux::sessions_for_task(&p.name, &t.name, &sessions)
                                 .iter()
                                 .map(session_value)
@@ -319,10 +323,15 @@ fn cmd_list(args: &[String]) -> Result<()> {
 
     for project in projects {
         println!("{}  ({})", project.name, project.path);
+        let stacks = project.stack_positions();
         for task in &project.tasks {
             let archived = if task.archived { "  [archived]" } else { "" };
+            let stack = stacks
+                .get(&task.branch)
+                .map(|(pos, total)| format!("  stack={pos}/{total}"))
+                .unwrap_or_default();
             println!(
-                "  task {}  branch={} base={}{archived}",
+                "  task {}  branch={} base={}{stack}{archived}",
                 task.name,
                 task.branch,
                 task.base_branch()

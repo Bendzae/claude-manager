@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -686,6 +688,14 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let tree_style = Style::default().fg(current().border);
 
+    // Stacked-task positions (⧉ n/m) per project, keyed by task branch.
+    let stacks: HashMap<&str, HashMap<String, (usize, usize)>> = app
+        .config
+        .projects
+        .iter()
+        .map(|p| (p.name.as_str(), p.stack_positions()))
+        .collect();
+
     for (i, item) in app.items.iter().enumerate() {
         let is_selected = i == app.selected;
 
@@ -773,6 +783,16 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(branch_char, tree_style),
                     Span::styled(&task.name, style),
                 ];
+
+                if let Some((pos, total)) = stacks
+                    .get(project_name.as_str())
+                    .and_then(|s| s.get(&task.branch))
+                {
+                    left.push(Span::styled(
+                        format!("  ⧉ {pos}/{total}"),
+                        Style::default().fg(current().cyan),
+                    ));
+                }
 
                 if task.archived {
                     left.push(Span::styled(

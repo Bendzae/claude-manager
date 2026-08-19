@@ -337,6 +337,49 @@ pub struct Project {
     pub run_command: Option<String>,
 }
 
+impl Project {
+    /// Tasks chained by `base_branch` → `branch` links form a stack, the same
+    /// relationship GitHub's stacked PRs use (each PR's base is the previous
+    /// branch). Returns each stacked task's 1-based depth and its chain's
+    /// length, keyed by task branch; tasks not part of a chain of ≥2 are
+    /// absent. A forked chain counts its longest path as the length.
+    pub fn stack_positions(&self) -> HashMap<String, (usize, usize)> {
+        let by_branch: HashMap<&str, &Task> =
+            self.tasks.iter().map(|t| (t.branch.as_str(), t)).collect();
+
+        // Walk each task up its parent links to find its depth and chain root.
+        let mut chains: HashMap<&str, Vec<(&str, usize)>> = HashMap::new();
+        for task in &self.tasks {
+            let mut current = task;
+            let mut depth = 1;
+            let mut visited = vec![task.branch.as_str()];
+            while let Some(parent) = by_branch
+                .get(current.base_branch())
+                .filter(|p| !visited.contains(&p.branch.as_str()))
+            {
+                visited.push(parent.branch.as_str());
+                depth += 1;
+                current = parent;
+            }
+            chains
+                .entry(current.branch.as_str())
+                .or_default()
+                .push((task.branch.as_str(), depth));
+        }
+
+        chains
+            .into_values()
+            .filter(|members| members.len() >= 2)
+            .flat_map(|members| {
+                let total = members.iter().map(|(_, d)| *d).max().unwrap_or(1);
+                members
+                    .into_iter()
+                    .map(move |(branch, depth)| (branch.to_string(), (depth, total)))
+            })
+            .collect()
+    }
+}
+
 /// Which diff review tool the review action launches.
 ///
 /// - `Hunk` (default) — a terminal diff viewer ([modem-dev/hunk]) run in the
@@ -700,6 +743,61 @@ mod tests {
 
     fn empty_config() -> Config {
         Config::default()
+    }
+
+    fn task(name: &str, branch: &str, base: Option<&str>) -> Task {
+        Task {
+            name: name.into(),
+            branch: branch.into(),
+            base_branch: base.map(str::to_string),
+            archived: false,
+        }
+    }
+
+    fn project_with_tasks(tasks: Vec<Task>) -> Project {
+        Project {
+            name: "App".into(),
+            path: "/tmp/app".into(),
+            tasks,
+            copy_patterns: vec![],
+            setup_commands: vec![],
+            run_command: None,
+        }
+    }
+
+    #[test]
+    fn stack_positions_numbers_a_base_branch_chain() {
+        let project = project_with_tasks(vec![
+            task("api", "feat/api", None),
+            task("cleanup", "feat/cleanup", Some("feat/api")),
+            task("tests", "feat/tests", Some("feat/cleanup")),
+            task("unrelated", "fix/typo", None),
+        ]);
+
+        let stacks = project.stack_positions();
+        assert_eq!(stacks.get("feat/api"), Some(&(1, 3)));
+        assert_eq!(stacks.get("feat/cleanup"), Some(&(2, 3)));
+        assert_eq!(stacks.get("feat/tests"), Some(&(3, 3)));
+        assert_eq!(stacks.get("fix/typo"), None);
+    }
+
+    #[test]
+    fn stack_positions_ignores_lone_tasks_and_non_task_bases() {
+        let project = project_with_tasks(vec![
+            task("a", "feat/a", None),
+            task("b", "feat/b", Some("develop")),
+        ]);
+        assert!(project.stack_positions().is_empty());
+    }
+
+    #[test]
+    fn stack_positions_survives_a_base_branch_cycle() {
+        let project = project_with_tasks(vec![
+            task("a", "feat/a", Some("feat/b")),
+            task("b", "feat/b", Some("feat/a")),
+        ]);
+        // A cycle has no meaningful root/order; just don't hang or panic.
+        let _ = project.stack_positions();
     }
 
     #[test]
