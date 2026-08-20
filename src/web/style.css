@@ -70,7 +70,8 @@ body::before {
 }
 
 .brand { display: flex; align-items: center; gap: 8px; }
-.brand-mark { color: var(--amber); font-size: 18px; }
+.brand-mark { color: var(--amber); display: flex; align-items: center; }
+.brand-mark svg { width: 16px; height: 16px; }
 .brand-name { font-size: 15px; letter-spacing: 0.06em; color: var(--dim); }
 .brand-name b { color: var(--text); font-weight: 600; }
 

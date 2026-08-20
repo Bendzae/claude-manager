@@ -84,6 +84,12 @@ fn cm_fetch_pull() -> char {
 fn cm_run() -> char {
     'x'
 }
+fn cm_add_task_with_agent() -> char {
+    'T'
+}
+fn cm_new_session_with_agent() -> char {
+    'S'
+}
 fn kb_toggle_archive_view() -> char {
     'Z'
 }
@@ -100,7 +106,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Keybindings for context menu actions. All fields are single characters.
-/// Configured under `[context_menu]` in `~/.claude-manager/keybindings.toml`.
+/// Configured under `[context_menu_keys]` in `~/.claude-manager/keybindings.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuKeyBindings {
     /// Add task to project (default: t)
@@ -154,6 +160,12 @@ pub struct ContextMenuKeyBindings {
     /// Run the project's configured run command (default: x)
     #[serde(default = "cm_run")]
     pub run: char,
+    /// Add task, picking the agent harness first (default: T)
+    #[serde(default = "cm_add_task_with_agent")]
+    pub add_task_with_agent: char,
+    /// New session, picking the agent harness first (default: S)
+    #[serde(default = "cm_new_session_with_agent")]
+    pub new_session_with_agent: char,
 }
 
 impl Default for ContextMenuKeyBindings {
@@ -176,6 +188,8 @@ impl Default for ContextMenuKeyBindings {
             terminal: cm_terminal(),
             fetch_pull: cm_fetch_pull(),
             run: cm_run(),
+            add_task_with_agent: cm_add_task_with_agent(),
+            new_session_with_agent: cm_new_session_with_agent(),
         }
     }
 }
@@ -440,6 +454,10 @@ pub enum ReviewTool {
     Difit,
 }
 
+fn default_agent_id() -> String {
+    crate::agent::AgentKind::default().id().to_string()
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Diff review tool launched by the review action (default: hunk).
@@ -447,6 +465,11 @@ pub struct Config {
     /// scalar emitted after a table would be invalid TOML).
     #[serde(default)]
     pub review_tool: ReviewTool,
+    /// Agent harness new sessions run by default ("claude" or "codex");
+    /// overridable per creation with `--agent`. Scalar, so also declared
+    /// before `projects`.
+    #[serde(default = "default_agent_id")]
+    pub default_agent: String,
     #[serde(default)]
     pub projects: Vec<Project>,
     /// Startup skills/commands to run before the initial prompt (e.g. ["/prime", "/caveman ultra"])
@@ -458,7 +481,8 @@ pub struct Config {
     pub startup_skills: Vec<String>,
 }
 
-/// Root directory for all claude-manager data: ~/.claude-manager
+/// Root directory for all showrunner data. Kept at ~/.claude-manager (the
+/// pre-rename location) for backwards compatibility with existing installs.
 pub fn base_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
@@ -508,6 +532,16 @@ pub struct SessionRecord {
     /// Session belongs to an archived task. Skipped during startup recreation.
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
+    /// Agent harness running in the session. Records from before agents were
+    /// tracked default to "claude".
+    #[serde(default = "default_agent_id")]
+    pub agent: String,
+}
+
+impl SessionRecord {
+    pub fn agent_kind(&self) -> crate::agent::AgentKind {
+        crate::agent::AgentKind::from_id(&self.agent).unwrap_or_default()
+    }
 }
 
 /// Path to the persisted sessions file.

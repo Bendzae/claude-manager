@@ -9,30 +9,33 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::agent::AgentKind;
 use crate::config::Config;
 use crate::ops;
 use crate::server;
 use crate::tmux::{self, SessionStatus, TmuxSession};
 
 const HELP: &str = "\
-claude-manager — TUI for managing Claude Code sessions
+showrunner — TUI for managing coding agent sessions
 
 Usage:
-  claude-manager                                    launch the TUI
-  claude-manager serve [--bind <addr:port>]         serve the mobile web UI
+  showrunner                                    launch the TUI
+  showrunner serve [--bind <addr:port>]         serve the mobile web UI
                                                     (default 127.0.0.1:7878)
 
 Managing tasks and sessions (usable from inside a session):
-  claude-manager list [--json] [--project <name>]
-  claude-manager task create <project> <name> [--branch <b>] [--prompt <text>]
-  claude-manager task delete <project> <task> --yes
-  claude-manager session create <project> <task> [--prompt <text>] [--no-worktree]
-  claude-manager session kill <session> --yes
+  showrunner list [--json] [--project <name>]
+  showrunner task create <project> <name> [--branch <b>] [--prompt <text>]
+                                           [--agent claude|codex]
+  showrunner task delete <project> <task> --yes
+  showrunner session create <project> <task> [--prompt <text>] [--no-worktree]
+                                              [--agent claude|codex]
+  showrunner session kill <session> --yes
 
 Talking to another session:
-  claude-manager ask <session> <question> [--timeout <secs>]
-  claude-manager send <session> <text> [--no-submit]
-  claude-manager output <session> [--lines <n>]
+  showrunner ask <session> <question> [--timeout <secs>]
+  showrunner send <session> <text> [--no-submit]
+  showrunner output <session> [--lines <n>]
 
 <session> is a ref from `list` — `<project>/<task>/<session>`, `<project>/<task>`
 for that task's main session, or a raw tmux session name.
@@ -166,7 +169,7 @@ fn resolve_session(reference: &str, sessions: &[TmuxSession]) -> Result<TmuxSess
     };
 
     found.cloned().ok_or_else(|| {
-        anyhow::anyhow!("no live session matching '{reference}' (see `claude-manager list`)")
+        anyhow::anyhow!("no live session matching '{reference}' (see `showrunner list`)")
     })
 }
 
@@ -183,7 +186,7 @@ fn session_looks_busy(session_name: &str) -> bool {
         return true;
     }
 
-    let transcript = trim_pane(&text);
+    let transcript = trim_pane(&text, tmux::session_agent(session_name));
     transcript
         .lines()
         .rev()
@@ -215,7 +218,7 @@ fn sample_statuses(sessions: &[TmuxSession]) -> HashMap<String, SessionStatus> {
             let probe = tmux::probe_session(&s.name);
             let status = match (first.get(&s.name).and_then(|p| p.as_ref()), probe) {
                 (_, None) => SessionStatus::Finished,
-                (_, Some(p)) if !p.claude_alive => SessionStatus::Finished,
+                (_, Some(p)) if !p.agent_alive => SessionStatus::Finished,
                 (Some(before), Some(after)) if before.content_hash != after.content_hash => {
                     SessionStatus::Running
                 }
@@ -257,6 +260,7 @@ fn cmd_list(args: &[String]) -> Result<()> {
             "tmux_name": s.name,
             "name": s.session_name,
             "status": statuses.get(&s.name).map(|st| st.as_str()),
+            "agent": tmux::session_agent(&s.name).id(),
             "current": current.as_deref() == Some(s.name.as_str()),
         })
     };
@@ -313,12 +317,18 @@ fn cmd_list(args: &[String]) -> Result<()> {
             .get(&s.name)
             .map(|st| st.as_str())
             .unwrap_or("unknown");
+        let agent = tmux::session_agent(&s.name);
+        let agent = if agent == AgentKind::default() {
+            String::new()
+        } else {
+            format!("  agent={agent}")
+        };
         let you = if current.as_deref() == Some(s.name.as_str()) {
             "  (this session)"
         } else {
             ""
         };
-        println!("    {:<40} {status}{you}", session_ref(s));
+        println!("    {:<40} {status}{agent}{you}", session_ref(s));
     };
 
     for project in projects {
@@ -366,13 +376,16 @@ fn cmd_task(args: &[String]) -> Result<()> {
 }
 
 fn cmd_task_create(args: &[String]) -> Result<()> {
-    let (positional, flags) = parse_args(args, &["branch", "prompt"], &[])?;
+    let (positional, flags) = parse_args(args, &["branch", "prompt", "agent"], &[])?;
     let [project_name, task_name] = positional.as_slice() else {
-        bail!("usage: task create <project> <name> [--branch <b>] [--prompt <text>]");
+        bail!(
+            "usage: task create <project> <name> [--branch <b>] [--prompt <text>] [--agent <id>]"
+        );
     };
 
     let cfg = Config::load()?;
     let project = ops::find_project(&cfg, project_name)?;
+    let agent = ops::resolve_agent(&cfg, flags.get("agent").map(String::as_str))?;
     let (branch, tmux_name) = ops::create_task(
         &cfg,
         project,
@@ -382,6 +395,7 @@ fn cmd_task_create(args: &[String]) -> Result<()> {
             .get("prompt")
             .map(String::as_str)
             .filter(|p| !p.trim().is_empty()),
+        agent,
     )?;
 
     let session = TmuxSession::from_tmux_name(&tmux_name)
@@ -421,9 +435,11 @@ fn cmd_session(args: &[String]) -> Result<()> {
 }
 
 fn cmd_session_create(args: &[String]) -> Result<()> {
-    let (positional, flags) = parse_args(args, &["prompt"], &["no-worktree"])?;
+    let (positional, flags) = parse_args(args, &["prompt", "agent"], &["no-worktree"])?;
     let [project_name, task_name] = positional.as_slice() else {
-        bail!("usage: session create <project> <task> [--prompt <text>] [--no-worktree]");
+        bail!(
+            "usage: session create <project> <task> [--prompt <text>] [--no-worktree] [--agent <id>]"
+        );
     };
 
     let cfg = Config::load()?;
@@ -434,6 +450,7 @@ fn cmd_session_create(args: &[String]) -> Result<()> {
         .find(|t| t.name == *task_name)
         .ok_or_else(|| anyhow::anyhow!("task '{task_name}' not found"))?;
 
+    let agent = ops::resolve_agent(&cfg, flags.get("agent").map(String::as_str))?;
     let tmux_name = ops::create_session(
         &cfg,
         project,
@@ -444,6 +461,7 @@ fn cmd_session_create(args: &[String]) -> Result<()> {
             .get("prompt")
             .map(String::as_str)
             .filter(|p| !p.trim().is_empty()),
+        agent,
     )?;
 
     let session = TmuxSession::from_tmux_name(&tmux_name)
@@ -509,7 +527,7 @@ fn cmd_output(args: &[String]) -> Result<()> {
     let session = resolve_session(reference, &sessions)?;
     let text = tmux::capture_output_plain(&session.name, lines.clamp(10, 5000))
         .ok_or_else(|| anyhow::anyhow!("could not capture output for {reference}"))?;
-    println!("{}", trim_pane(&text));
+    println!("{}", trim_pane(&text, tmux::session_agent(&session.name)));
     Ok(())
 }
 
@@ -548,7 +566,7 @@ fn cmd_ask(args: &[String]) -> Result<()> {
     let token = ask_token();
     let message = format!(
         "{question}\n\n\
-         (Asked by another Claude Manager session via `claude-manager ask`, which is waiting for \
+         (Asked by another Showrunner session via `showrunner ask`, which is waiting for \
          your reply. Answer concisely in your response text; don't change files unless the \
          question asks you to.)\n\
          [cm-ask {token}]"
@@ -601,7 +619,7 @@ fn cmd_ask(args: &[String]) -> Result<()> {
             print_reply(name, &token);
             bail!(
                 "session {} was still working after {}s — the answer above is partial \
-                 (retry with --timeout, or read more with `claude-manager output`)",
+                 (retry with --timeout, or read more with `showrunner output`)",
                 session_ref(&session),
                 timeout.as_secs()
             );
@@ -620,12 +638,13 @@ fn ask_token() -> String {
 }
 
 fn print_reply(session_name: &str, token: &str) {
+    let agent = tmux::session_agent(session_name);
     match tmux::capture_output_plain(session_name, 2000) {
-        Some(pane) => match extract_reply(&pane, token) {
+        Some(pane) => match extract_reply(&pane, token, agent) {
             Some(reply) => println!("{reply}"),
             None => {
                 eprintln!("(could not locate the reply in the pane; showing its tail)");
-                println!("{}", trim_pane(&tail(&pane, 60)));
+                println!("{}", trim_pane(&tail(&pane, 60), agent));
             }
         },
         None => eprintln!("(could not capture the session's output)"),
@@ -634,10 +653,10 @@ fn print_reply(session_name: &str, token: &str) {
 
 /// Everything the target printed after the echoed question, with the input box
 /// and footer chrome stripped.
-fn extract_reply(pane: &str, token: &str) -> Option<String> {
+fn extract_reply(pane: &str, token: &str, agent: AgentKind) -> Option<String> {
     let after_marker = |idx: usize| -> Option<String> {
         let rest = pane[idx..].split_once('\n')?.1;
-        let cleaned = trim_pane(rest);
+        let cleaned = trim_pane(rest, agent);
         (!cleaned.trim().is_empty()).then_some(cleaned)
     };
 
@@ -649,20 +668,13 @@ fn extract_reply(pane: &str, token: &str) -> Option<String> {
 }
 
 /// Drop the input area and status hints tmux captured below the transcript,
-/// plus surrounding blank lines and trailing spaces.
-fn trim_pane(text: &str) -> String {
+/// plus surrounding blank lines and trailing spaces. Chrome differs per agent:
+/// Claude frames its prompt in a box or between horizontal rules, codex's
+/// input line starts with `›` (its ─ rules are transcript content).
+fn trim_pane(text: &str, agent: AgentKind) -> String {
     let mut lines: Vec<&str> = text.lines().map(str::trim_end).collect();
 
-    // Claude Code frames its prompt either in a box or between horizontal
-    // rules, with status hints below it.
-    let is_chrome = |line: &&str| {
-        let line = line.trim();
-        line == "❯"
-            || line == ">"
-            || line.starts_with('╭')
-            || line.starts_with('┌')
-            || (line.chars().count() >= 10 && line.chars().all(|c| c == '─'))
-    };
+    let is_chrome = |line: &&str| agent.is_prompt_chrome(line);
 
     if let Some(last) = lines.iter().rposition(is_chrome) {
         let mut start = last;
@@ -773,10 +785,10 @@ mod tests {
   ? for shortcuts";
 
         assert_eq!(
-            extract_reply(pane, "beef").unwrap(),
+            extract_reply(pane, "beef", AgentKind::Claude).unwrap(),
             "⏺ src/auth/refresh.ts — TokenRefresher."
         );
-        assert!(extract_reply(pane, "cafe").is_none());
+        assert!(extract_reply(pane, "cafe", AgentKind::Claude).is_none());
     }
 
     #[test]
@@ -792,7 +804,7 @@ mod tests {
 ╰───────╯";
 
         assert_eq!(
-            extract_reply(pane, "beef").unwrap(),
+            extract_reply(pane, "beef", AgentKind::Claude).unwrap(),
             "⏺ I saw the marker [cm-ask beef] in your message."
         );
     }
@@ -800,7 +812,7 @@ mod tests {
     #[test]
     fn trim_pane_drops_a_boxed_input_area_and_surrounding_blanks() {
         let pane = "\n\nanswer   \n\n╭───╮\n│ > │\n╰───╯\n? for shortcuts\n";
-        assert_eq!(trim_pane(pane), "answer");
+        assert_eq!(trim_pane(pane, AgentKind::Claude), "answer");
     }
 
     #[test]
@@ -814,6 +826,38 @@ mod tests {
   Ben@host try-cli-main Fable 5
   -- INSERT -- ⏵⏵ bypass permissions on
 ";
-        assert_eq!(trim_pane(pane), "⏺ README.md");
+        assert_eq!(trim_pane(pane, AgentKind::Claude), "⏺ README.md");
+    }
+
+    #[test]
+    fn trim_pane_codex_cuts_at_input_line_but_keeps_turn_rules() {
+        // Codex separates turns with long ─ rules inside the transcript; only
+        // the trailing `›` input line and the status line below it are chrome.
+        let pane = "\
+• Ran sleep 8 && echo done-sleeping
+  └ done-sleeping
+────────────────────────────────────────
+• It finished.
+› Ask Codex to do anything
+  gpt-5.6-sol default · /some/dir
+";
+        assert_eq!(
+            trim_pane(pane, AgentKind::Codex),
+            "• Ran sleep 8 && echo done-sleeping\n  └ done-sleeping\n────────────────────────────────────────\n• It finished."
+        );
+    }
+
+    #[test]
+    fn extract_reply_works_on_codex_panes() {
+        let pane = "\
+› what is 2+2?
+  [cm-ask beef]
+• 4
+› Ask Codex to do anything
+  gpt-5.6-sol default · /some/dir";
+        assert_eq!(
+            extract_reply(pane, "beef", AgentKind::Codex).unwrap(),
+            "• 4"
+        );
     }
 }

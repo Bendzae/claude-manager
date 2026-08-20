@@ -89,7 +89,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
                     stable_ticks.remove(&session.name);
                     SessionStatus::Finished
                 }
-                Some(probe) if !probe.claude_alive => {
+                Some(probe) if !probe.agent_alive => {
                     content_hashes.remove(&session.name);
                     stable_ticks.remove(&session.name);
                     SessionStatus::Finished

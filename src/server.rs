@@ -68,7 +68,7 @@ pub fn run(bind: &str) -> Result<()> {
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(bind).await?;
         let port = listener.local_addr()?.port();
-        println!("claude-manager serving on http://{bind}");
+        println!("showrunner serving on http://{bind}");
         println!("Expose over your tailnet with: tailscale serve --bg {port}");
         axum::serve(listener, app).await?;
         Ok(())
@@ -111,6 +111,7 @@ fn session_json(s: &TmuxSession, u: &WorkerUpdate) -> Value {
         "tmux_name": s.name,
         "name": s.session_name,
         "status": u.statuses.get(&s.name).map(|st| st.as_str()),
+        "agent": tmux::session_agent(&s.name).id(),
         "branch": u.session_branches.get(&s.name),
         "diff": u.diff_stats.get(&s.name).map(diff_json),
     })
@@ -195,13 +196,13 @@ async fn api_state(State(state): State<Arc<ServerState>>) -> Result<Response, Ap
     Ok(axum::Json(snapshot).into_response())
 }
 
-/// Reject session names that don't look like claude-manager tmux sessions so
+/// Reject session names that don't look like showrunner tmux sessions so
 /// the API can't be used to poke at arbitrary tmux targets.
 fn validate_session_name(name: &str) -> Result<(), ApiError> {
     if name.starts_with("cm") && !name.contains(':') {
         Ok(())
     } else {
-        Err(bad_request("not a claude-manager session"))
+        Err(bad_request("not a showrunner session"))
     }
 }
 
@@ -403,6 +404,7 @@ struct CreateTaskBody {
     project: String,
     name: String,
     prompt: Option<String>,
+    agent: Option<String>,
 }
 
 async fn api_create_task(
@@ -412,6 +414,7 @@ async fn api_create_task(
         let cfg = Config::load()?;
         let project = ops::find_project(&cfg, &body.project)?.clone();
 
+        let agent = ops::resolve_agent(&cfg, body.agent.as_deref())?;
         // A new task starts with its main session, like the TUI.
         let (_, tmux_name) = ops::create_task(
             &cfg,
@@ -419,6 +422,7 @@ async fn api_create_task(
             body.name.trim(),
             None,
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
+            agent,
         )?;
         Ok::<_, anyhow::Error>(tmux_name)
     })
@@ -434,6 +438,7 @@ struct CreateSessionBody {
     project: String,
     task: String,
     prompt: Option<String>,
+    agent: Option<String>,
 }
 
 async fn api_create_session(
@@ -449,6 +454,7 @@ async fn api_create_session(
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", body.task))?
             .clone();
 
+        let agent = ops::resolve_agent(&cfg, body.agent.as_deref())?;
         ops::create_session(
             &cfg,
             &project,
@@ -456,6 +462,7 @@ async fn api_create_session(
             &task.branch,
             true,
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
+            agent,
         )
     })
     .await
@@ -492,6 +499,7 @@ async fn api_delete_task(
 struct CreateAdhocBody {
     project: String,
     name: String,
+    agent: Option<String>,
 }
 
 /// Create an ad-hoc session (no task, no worktree) on a project. Mirrors the
@@ -524,8 +532,14 @@ async fn api_create_adhoc(
             anyhow::bail!("adhoc session '{name}' already exists");
         }
 
-        let tmux_name =
-            tmux::create_adhoc_session(&project.name, &project.path, &name, &cfg.startup_skills)?;
+        let agent = ops::resolve_agent(&cfg, body.agent.as_deref())?;
+        let tmux_name = tmux::create_adhoc_session(
+            &project.name,
+            &project.path,
+            &name,
+            &cfg.startup_skills,
+            agent,
+        )?;
         config::add_session_record(
             &tmux_name,
             config::SessionRecord {
@@ -536,6 +550,7 @@ async fn api_create_adhoc(
                 session_name: name,
                 use_worktree: false,
                 archived: false,
+                agent: agent.id().to_string(),
             },
         );
         Ok(tmux_name)

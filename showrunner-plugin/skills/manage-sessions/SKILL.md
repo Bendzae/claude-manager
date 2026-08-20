@@ -1,13 +1,13 @@
 ---
 name: manage-sessions
-description: View, create and manage other Claude Manager tasks and sessions, and ask an agent running in another session a question
+description: View, create and manage other Showrunner tasks and sessions, and ask an agent running in another session a question
 user-invocable: true
 ---
 
-You are running inside a Claude Manager session. The `claude-manager` CLI lets you see the other
+You are running inside a Showrunner session. The `showrunner` CLI lets you see the other
 tasks and sessions on this machine, create new ones, and talk to the agents running in them.
 
-Every command is a plain shell call. Run them from anywhere; they act on the shared Claude Manager
+Every command is a plain shell call. Run them from anywhere; they act on the shared Showrunner
 state (`~/.claude-manager/`), not on your worktree.
 
 ## Session refs
@@ -25,9 +25,9 @@ guessing — project and task names are sanitized in refs (spaces and symbols be
 ## Viewing
 
 ```
-claude-manager list                      # projects, tasks, and live sessions with status
-claude-manager list --json               # same, machine-readable
-claude-manager list --project <name>     # one project only
+showrunner list                      # projects, tasks, and live sessions with status
+showrunner list --json               # same, machine-readable
+showrunner list --project <name>     # one project only
 ```
 
 The session you are in is marked `(this session)`. Statuses are `running` (still working),
@@ -41,7 +41,7 @@ as its integration target: PRs and rebases go against the base branch, not main.
 ## Asking another session a question
 
 ```
-claude-manager ask <session> "<question>" [--timeout <secs>]
+showrunner ask <session> "<question>" [--timeout <secs>]
 ```
 
 This sends the question, waits until that agent stops working, and prints its reply on stdout
@@ -59,15 +59,15 @@ why, which module owns something in its area, whether an interface it owns is se
 To notify without waiting, or to read a pane directly:
 
 ```
-claude-manager send <session> "<text>"        # fire and forget (adds --no-submit to type without sending)
-claude-manager output <session> --lines 200   # what's currently on that session's screen
+showrunner send <session> "<text>"        # fire and forget (adds --no-submit to type without sending)
+showrunner output <session> --lines 200   # what's currently on that session's screen
 ```
 
 ## Creating work
 
 ```
-claude-manager task create <project> <name> [--branch <b>] [--prompt "<initial task>"]
-claude-manager session create <project> <task> [--prompt "<initial task>"] [--no-worktree]
+showrunner task create <project> <name> [--branch <b>] [--prompt "<initial task>"]
+showrunner session create <project> <task> [--prompt "<initial task>"] [--no-worktree]
 ```
 
 - `task create` branches off `main`, registers the task, and starts its main session in a fresh
@@ -82,8 +82,8 @@ claude-manager session create <project> <task> [--prompt "<initial task>"] [--no
 ## Deleting
 
 ```
-claude-manager task delete <project> <task> --yes
-claude-manager session kill <session> --yes
+showrunner task delete <project> <task> --yes
+showrunner session kill <session> --yes
 ```
 
 Both are destructive: they kill the sessions, remove their worktrees, and delete the branches

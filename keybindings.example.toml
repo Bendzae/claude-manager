@@ -1,4 +1,4 @@
-# Example keybindings configuration for claude-manager
+# Example keybindings configuration for showrunner
 # Copy this file to ~/.claude-manager/keybindings.toml and customize as needed.
 # All fields are optional — omitted fields fall back to the defaults shown here.
 # (Arrow keys, Enter, Esc, and Tab are not configurable.)
@@ -17,7 +17,9 @@ cycle_theme         = "t"
 # Context menu action keybindings
 [context_menu_keys]
 add_task                = "t"
+add_task_with_agent     = "T"
 new_session             = "n"
+new_session_with_agent  = "S"
 new_session_no_worktree = "N"
 new_adhoc_session       = "A"
 update                  = "u"
