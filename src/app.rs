@@ -314,6 +314,8 @@ pub struct App {
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
     pub session_branches: HashMap<String, String>,
+    /// Agent harness id per session, keyed by tmux name (from the worker).
+    pub session_agents: HashMap<String, String>,
     pub task_diff_stats: HashMap<String, DiffStats>,
     /// PR URLs keyed by branch name
     pub pr_urls: HashMap<String, String>,
@@ -582,6 +584,7 @@ impl App {
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
             session_branches: HashMap::new(),
+            session_agents: HashMap::new(),
             task_diff_stats: HashMap::new(),
             pr_urls: HashMap::new(),
             project_branches: HashMap::new(),
@@ -642,6 +645,9 @@ impl App {
             self.sessions = update.sessions;
             self.session_statuses = update.statuses;
             self.diff_stats = update.diff_stats;
+            if !update.session_agents.is_empty() {
+                self.session_agents = update.session_agents;
+            }
             if !update.session_branches.is_empty() {
                 self.session_branches = update.session_branches;
             }
