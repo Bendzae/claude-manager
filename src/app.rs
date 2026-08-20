@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::agent::AgentKind;
 use crate::config::{self, Config, KeyBindings, Project, ReviewTool, Task};
 use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
 use crate::worker::{TaskInfo, Worker};
@@ -67,6 +68,15 @@ pub enum InputMode {
     /// shown after a task review closes with comments and more than one session
     /// exists.
     ReviewSessionPicker,
+    /// Pick the agent harness before an add-task / new-session flow.
+    AgentPicker,
+}
+
+/// What the agent picker feeds into once an agent is chosen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AgentPickerTarget {
+    AddTask,
+    NewSession,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +89,11 @@ pub struct ContextMenuItem {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContextAction {
     AddTask,
+    /// Add task, picking the agent harness first.
+    AddTaskWithAgent,
     NewSession,
+    /// New worktree session, picking the agent harness first.
+    NewSessionWithAgent,
     NewSessionNoWorktree,
     NewAdhocSession,
     Delete,
@@ -108,6 +122,8 @@ pub enum ContextAction {
     RunRestart,
     /// Kill the item's run session.
     RunKill,
+    /// An agent chosen in the agent picker.
+    PickAgent(AgentKind),
 }
 
 /// Where a "Run" action should execute: the owning project (whose `run_command`
@@ -290,6 +306,10 @@ pub struct App {
     pub pending_task_name: Option<String>,
     pub pending_task_branch: Option<String>,
     pub pending_session_name: Option<String>,
+    /// Agent chosen in the agent picker, consumed by the next create flow.
+    pub pending_agent: Option<AgentKind>,
+    /// Flow the agent picker was opened for.
+    pub agent_picker_target: Option<AgentPickerTarget>,
     pub collapsed: HashSet<String>,
     pub session_statuses: HashMap<String, SessionStatus>,
     pub diff_stats: HashMap<String, DiffStats>,
@@ -474,6 +494,11 @@ fn complete_dir_path(input: &str) -> Option<String> {
 }
 
 impl App {
+    /// Agent new sessions run, from the config's `default_agent`.
+    fn default_agent(&self) -> AgentKind {
+        AgentKind::from_id(&self.config.default_agent).unwrap_or_default()
+    }
+
     pub fn new() -> Result<Self> {
         let config = Config::load()?;
         let keybindings = KeyBindings::load();
@@ -490,7 +515,7 @@ impl App {
                 // Only act on records whose tmux session is gone. The decision
                 // to recreate vs. prune is based on whether the task still
                 // exists in config — NOT on tmux liveness — so legitimate
-                // sessions are recovered after claude-manager/tmux restarts,
+                // sessions are recovered after showrunner/tmux restarts,
                 // while sessions whose task was deleted are reaped instead of
                 // being resurrected on every startup.
                 if live_names.contains(tmux_name.as_str()) {
@@ -551,6 +576,8 @@ impl App {
             pending_task_name: None,
             pending_task_branch: None,
             pending_session_name: None,
+            pending_agent: None,
+            agent_picker_target: None,
             collapsed: HashSet::new(),
             session_statuses: HashMap::new(),
             diff_stats: HashMap::new(),
@@ -1017,6 +1044,11 @@ impl App {
                     action: ContextAction::AddTask,
                 },
                 ContextMenuItem {
+                    key: cm.add_task_with_agent,
+                    label: "Add task (choose agent)",
+                    action: ContextAction::AddTaskWithAgent,
+                },
+                ContextMenuItem {
                     key: cm.new_adhoc_session,
                     label: "New adhoc session",
                     action: ContextAction::NewAdhocSession,
@@ -1089,6 +1121,11 @@ impl App {
                             key: cm.new_session_no_worktree,
                             label: "New session (no worktree)",
                             action: ContextAction::NewSessionNoWorktree,
+                        },
+                        ContextMenuItem {
+                            key: cm.new_session_with_agent,
+                            label: "New session (choose agent)",
+                            action: ContextAction::NewSessionWithAgent,
                         },
                         ContextMenuItem {
                             key: cm.review,
@@ -1199,9 +1236,17 @@ impl App {
 
     pub fn execute_context_action(&mut self, action: ContextAction) {
         self.input_mode = InputMode::Normal;
+        // A stale picked agent must never leak into a later create flow.
+        if !matches!(action, ContextAction::PickAgent(_)) {
+            self.pending_agent = None;
+        }
         match action {
             ContextAction::AddTask => self.start_add_task(),
+            ContextAction::AddTaskWithAgent => self.open_agent_picker(AgentPickerTarget::AddTask),
             ContextAction::NewSession => self.start_new_session(true),
+            ContextAction::NewSessionWithAgent => {
+                self.open_agent_picker(AgentPickerTarget::NewSession)
+            }
             ContextAction::NewSessionNoWorktree => self.start_new_session(false),
             ContextAction::NewAdhocSession => self.start_new_adhoc_session(),
             ContextAction::Delete => self.start_delete(),
@@ -1223,6 +1268,37 @@ impl App {
             ContextAction::RunAttach => self.run_attach(),
             ContextAction::RunRestart => self.run_restart(),
             ContextAction::RunKill => self.run_kill(),
+            ContextAction::PickAgent(agent) => self.confirm_agent_picker(agent),
+        }
+    }
+
+    /// Open a floating picker listing the available agent harnesses; the
+    /// chosen one feeds into `target`'s create flow.
+    fn open_agent_picker(&mut self, target: AgentPickerTarget) {
+        let keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+        self.context_menu_items = AgentKind::ALL
+            .iter()
+            .zip(keys)
+            .map(|(agent, key)| ContextMenuItem {
+                key,
+                label: agent.label(),
+                action: ContextAction::PickAgent(*agent),
+            })
+            .collect();
+        self.context_menu_selected = AgentKind::ALL
+            .iter()
+            .position(|a| *a == self.default_agent())
+            .unwrap_or(0);
+        self.agent_picker_target = Some(target);
+        self.input_mode = InputMode::AgentPicker;
+    }
+
+    fn confirm_agent_picker(&mut self, agent: AgentKind) {
+        self.pending_agent = Some(agent);
+        match self.agent_picker_target.take() {
+            Some(AgentPickerTarget::AddTask) => self.start_add_task(),
+            Some(AgentPickerTarget::NewSession) => self.start_new_session(true),
+            None => self.pending_agent = None,
         }
     }
 
@@ -2007,6 +2083,10 @@ impl App {
 
         let use_worktree = self.use_worktree;
         let startup_skills = self.config.startup_skills.clone();
+        let agent = self
+            .pending_agent
+            .take()
+            .unwrap_or_else(|| self.default_agent());
         let project = self.config.projects.iter().find(|p| p.name == project_name);
         let copy_patterns = project.map(|p| p.copy_patterns.clone()).unwrap_or_default();
         let setup_commands = project
@@ -2056,6 +2136,7 @@ impl App {
                 &setup_commands,
                 prompt.as_deref(),
                 &startup_skills,
+                agent,
             ) {
                 Ok(tmux_name) => {
                     config::add_session_record(
@@ -2068,6 +2149,7 @@ impl App {
                             session_name: session_name.clone(),
                             use_worktree,
                             archived: false,
+                            agent: agent.id().to_string(),
                         },
                     );
                     let task_msg = if branch_exists {
@@ -2132,6 +2214,7 @@ impl App {
         self.input_mode = InputMode::Normal;
 
         let startup_skills = self.config.startup_skills.clone();
+        let agent = self.default_agent();
         let proj_name_for_op = project_name.clone();
         let proj_path_for_op = project_path.clone();
         let session_name = name.clone();
@@ -2143,6 +2226,7 @@ impl App {
                 &proj_path_for_op,
                 &session_name,
                 &startup_skills,
+                agent,
             ) {
                 Ok(tmux_name) => {
                     config::add_session_record(
@@ -2155,6 +2239,7 @@ impl App {
                             session_name: session_name.clone(),
                             use_worktree: false,
                             archived: false,
+                            agent: agent.id().to_string(),
                         },
                     );
                     OpResult {
@@ -2253,6 +2338,10 @@ impl App {
             .map(|p| p.setup_commands.clone())
             .unwrap_or_default();
         let startup_skills = self.config.startup_skills.clone();
+        let agent = self
+            .pending_agent
+            .take()
+            .unwrap_or_else(|| self.default_agent());
         self.input_buffer.clear();
         self.input_mode = InputMode::Normal;
 
@@ -2268,6 +2357,7 @@ impl App {
                 &setup_commands,
                 prompt.as_deref(),
                 &startup_skills,
+                agent,
             ) {
                 Ok(tmux_name) => {
                     config::add_session_record(
@@ -2280,6 +2370,7 @@ impl App {
                             session_name: session_name.clone(),
                             use_worktree,
                             archived: false,
+                            agent: agent.id().to_string(),
                         },
                     );
                     OpResult {
@@ -2943,6 +3034,8 @@ impl App {
         self.pending_task_name = None;
         self.pending_task_branch = None;
         self.pending_session_name = None;
+        self.pending_agent = None;
+        self.agent_picker_target = None;
         self.pending_run = None;
     }
 }

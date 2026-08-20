@@ -1,6 +1,6 @@
 {
-  "name": "Claude Manager",
-  "short_name": "cm",
+  "name": "Showrunner",
+  "short_name": "showrunner",
   "display": "standalone",
   "start_url": "/",
   "background_color": "#0b0d12",

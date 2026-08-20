@@ -178,21 +178,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "claude-manager"
-version = "0.16.0"
-dependencies = [
- "anyhow",
- "axum",
- "crossterm 0.28.1",
- "dirs",
- "ratatui",
- "serde",
- "serde_json",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "compact_str"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1460,6 +1445,21 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "showrunner"
+version = "0.17.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "crossterm 0.28.1",
+ "dirs",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

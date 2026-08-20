@@ -3,8 +3,18 @@
 
 use anyhow::{Result, bail};
 
+use crate::agent::AgentKind;
 use crate::config::{self, Config, Project};
 use crate::tmux;
+
+/// The agent new sessions run: an explicit `--agent` value wins, else the
+/// config's `default_agent`, else Claude.
+pub fn resolve_agent(cfg: &Config, explicit: Option<&str>) -> Result<AgentKind> {
+    match explicit {
+        Some(id) => crate::agent::parse_agent_id(id),
+        None => Ok(AgentKind::from_id(&cfg.default_agent).unwrap_or_default()),
+    }
+}
 
 /// Create a session for a task and persist its record.
 pub fn create_task_session(
@@ -15,6 +25,7 @@ pub fn create_task_session(
     session_name: String,
     use_worktree: bool,
     prompt: Option<&str>,
+    agent: AgentKind,
 ) -> Result<String> {
     let tmux_name = tmux::create_session(
         &project.name,
@@ -27,6 +38,7 @@ pub fn create_task_session(
         &project.setup_commands,
         prompt,
         &cfg.startup_skills,
+        agent,
     )?;
 
     config::add_session_record(
@@ -39,6 +51,7 @@ pub fn create_task_session(
             session_name,
             use_worktree,
             archived: false,
+            agent: agent.id().to_string(),
         },
     );
 
@@ -54,6 +67,7 @@ pub fn create_task(
     task_name: &str,
     branch: Option<&str>,
     prompt: Option<&str>,
+    agent: AgentKind,
 ) -> Result<(String, String)> {
     let task_name = task_name.trim();
     if task_name.is_empty() {
@@ -99,6 +113,7 @@ pub fn create_task(
         tmux::MAIN_SESSION.to_string(),
         true,
         prompt,
+        agent,
     )?;
 
     Ok((branch, tmux_name))
@@ -112,6 +127,7 @@ pub fn create_session(
     branch: &str,
     use_worktree: bool,
     prompt: Option<&str>,
+    agent: AgentKind,
 ) -> Result<String> {
     let sessions = tmux::list_sessions()?;
     let session_name = tmux::next_session_number(&project.name, task_name, &sessions).to_string();
@@ -123,6 +139,7 @@ pub fn create_session(
         session_name,
         use_worktree,
         prompt,
+        agent,
     )
 }
 

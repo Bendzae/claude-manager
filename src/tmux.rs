@@ -6,15 +6,9 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
 
+use crate::agent::AgentKind;
+
 const SESSION_SEP: &str = "__";
-/// Markers for dialogs that need the user's attention: permission prompts and
-/// question dialogs (AskUserQuestion renders a "❯ 1." option selector).
-const PERMISSION_PROMPTS: &[&str] = &[
-    "Do you want to",
-    "Yes, allow all",
-    "No, and tell Claude what to do differently",
-    "❯ 1.",
-];
 
 /// Sentinel placed in the task slot of a tmux session name to mark an adhoc session.
 /// Adhoc sessions belong to a project but no task; they run in the project dir.
@@ -321,6 +315,7 @@ pub fn create_session(
     setup_commands: &[String],
     initial_prompt: Option<&str>,
     startup_skills: &[String],
+    agent: AgentKind,
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, task_name, session_name);
 
@@ -374,8 +369,8 @@ pub fn create_session(
         work_dir = project_path.to_string();
     }
 
-    // Always install the claude-manager plugin (skills + plugin enable)
-    install_claude_manager_plugin(&work_dir);
+    // Always install the showrunner skills (Claude plugin / .agents/skills)
+    install_agent_skills(agent, &work_dir);
 
     let session_branch = if use_worktree && !is_main_session(session_name) {
         Some(format!("{task_branch}-{}", sanitize(session_name)))
@@ -390,21 +385,13 @@ pub fn create_session(
         is_main_session(session_name),
     );
 
-    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
-    claude_cmd.push_str(&format!(
-        " --plugin-dir {}",
-        shell_escape(&claude_manager_plugin_path(&work_dir))
-    ));
-    claude_cmd.push_str(&format!(
-        " --append-system-prompt {}",
-        shell_escape(&system_prompt)
-    ));
-
-    let combined_prompt = build_initial_prompt(startup_skills, initial_prompt);
-    if let Some(prompt) = &combined_prompt {
-        claude_cmd.push(' ');
-        claude_cmd.push_str(&shell_escape(prompt));
-    }
+    let agent_cmd = build_agent_command(
+        agent,
+        &work_dir,
+        Some(&system_prompt),
+        build_initial_prompt(startup_skills, initial_prompt, agent).as_deref(),
+        false,
+    );
 
     let output = Command::new("tmux")
         .args([
@@ -414,7 +401,7 @@ pub fn create_session(
             &tmux_name,
             "-c",
             &work_dir,
-            &claude_cmd,
+            &agent_cmd,
         ])
         .output()?;
 
@@ -444,6 +431,8 @@ pub fn create_session(
         ])
         .output();
 
+    set_session_agent(&tmux_name, agent);
+
     if use_worktree {
         let _ = Command::new("tmux")
             .args([
@@ -467,14 +456,17 @@ pub fn create_adhoc_session(
     project_path: &str,
     session_name: &str,
     startup_skills: &[String],
+    agent: AgentKind,
 ) -> Result<String> {
     let tmux_name = build_tmux_name(project_name, ADHOC_MARKER, session_name);
 
-    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
-    if let Some(prompt) = build_initial_prompt(startup_skills, None) {
-        claude_cmd.push(' ');
-        claude_cmd.push_str(&shell_escape(&prompt));
-    }
+    let agent_cmd = build_agent_command(
+        agent,
+        project_path,
+        None,
+        build_initial_prompt(startup_skills, None, agent).as_deref(),
+        false,
+    );
 
     let output = Command::new("tmux")
         .args([
@@ -484,7 +476,7 @@ pub fn create_adhoc_session(
             &tmux_name,
             "-c",
             project_path,
-            &claude_cmd,
+            &agent_cmd,
         ])
         .output()?;
 
@@ -502,6 +494,8 @@ pub fn create_adhoc_session(
         ])
         .output();
 
+    set_session_agent(&tmux_name, agent);
+
     Ok(tmux_name)
 }
 
@@ -510,7 +504,8 @@ pub fn recreate_adhoc_session(
     tmux_name: &str,
     record: &crate::config::SessionRecord,
 ) -> Result<String> {
-    let claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
+    let agent = record.agent_kind();
+    let agent_cmd = build_agent_command(agent, &record.project_path, None, None, true);
 
     let output = Command::new("tmux")
         .args([
@@ -520,7 +515,7 @@ pub fn recreate_adhoc_session(
             tmux_name,
             "-c",
             &record.project_path,
-            &claude_cmd,
+            &agent_cmd,
         ])
         .output()?;
 
@@ -537,6 +532,8 @@ pub fn recreate_adhoc_session(
             &record.project_path,
         ])
         .output();
+
+    set_session_agent(tmux_name, agent);
 
     Ok(tmux_name.to_string())
 }
@@ -564,8 +561,10 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
         record.project_path.clone()
     };
 
-    // Always install plugin
-    install_claude_manager_plugin(&work_dir);
+    let agent = record.agent_kind();
+
+    // Always install the showrunner skills
+    install_agent_skills(agent, &work_dir);
 
     let session_branch = if record.use_worktree && !is_main_session(&record.session_name) {
         Some(format!(
@@ -584,15 +583,7 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
         is_main_session(&record.session_name),
     );
 
-    let mut claude_cmd = String::from("claude --dangerously-skip-permissions --continue");
-    claude_cmd.push_str(&format!(
-        " --plugin-dir {}",
-        shell_escape(&claude_manager_plugin_path(&work_dir))
-    ));
-    claude_cmd.push_str(&format!(
-        " --append-system-prompt {}",
-        shell_escape(&system_prompt)
-    ));
+    let agent_cmd = build_agent_command(agent, &work_dir, Some(&system_prompt), None, true);
 
     let output = Command::new("tmux")
         .args([
@@ -602,7 +593,7 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
             tmux_name,
             "-c",
             &work_dir,
-            &claude_cmd,
+            &agent_cmd,
         ])
         .output()?;
 
@@ -630,6 +621,8 @@ pub fn recreate_session(tmux_name: &str, record: &crate::config::SessionRecord) 
             &record.task_branch,
         ])
         .output();
+
+    set_session_agent(tmux_name, agent);
 
     if record.use_worktree {
         let _ = Command::new("tmux")
@@ -914,6 +907,103 @@ pub fn run_command_session(label: &str, work_dir: &str, command: &str) -> Result
     Ok(tmux_name)
 }
 
+/// Record which agent runs in the session, for status probing and transcript
+/// trimming after the fact.
+fn set_session_agent(tmux_name: &str, agent: AgentKind) {
+    let _ = Command::new("tmux")
+        .args(["set-environment", "-t", tmux_name, "CM_AGENT", agent.id()])
+        .output();
+}
+
+/// The agent running in a session. Sessions created before agents were
+/// tracked have no `CM_AGENT` and default to Claude.
+pub fn session_agent(session_name: &str) -> AgentKind {
+    get_session_env(session_name, "CM_AGENT")
+        .and_then(|id| AgentKind::from_id(id.trim()))
+        .unwrap_or_default()
+}
+
+/// Assemble the shell command that launches (or resumes) the agent for a
+/// session. `system_prompt` is the session-context briefing — present for task
+/// sessions, absent for adhoc ones; for Claude it also implies loading the
+/// showrunner plugin. Agents without a system-prompt flag get it prepended to
+/// the first message instead.
+fn build_agent_command(
+    agent: AgentKind,
+    work_dir: &str,
+    system_prompt: Option<&str>,
+    initial_prompt: Option<&str>,
+    resume: bool,
+) -> String {
+    match agent {
+        AgentKind::Claude => {
+            let mut cmd = String::from("claude --dangerously-skip-permissions");
+            if resume {
+                cmd.push_str(" --continue");
+            }
+            if system_prompt.is_some() {
+                cmd.push_str(&format!(
+                    " --plugin-dir {}",
+                    shell_escape(&showrunner_plugin_path(work_dir))
+                ));
+            }
+            if let Some(sp) = system_prompt {
+                cmd.push_str(&format!(" --append-system-prompt {}", shell_escape(sp)));
+            }
+            if let Some(prompt) = initial_prompt {
+                cmd.push(' ');
+                cmd.push_str(&shell_escape(prompt));
+            }
+            cmd
+        }
+        AgentKind::Codex => {
+            // Codex shows a per-directory trust dialog on first launch, even
+            // in yolo mode — pre-trust the work dir so sessions never stall.
+            ensure_codex_trust(work_dir);
+            let mut cmd = String::from("codex");
+            if resume {
+                // cwd-scoped: resumes the most recent session for this work dir.
+                cmd.push_str(" resume --last");
+            }
+            cmd.push_str(" --dangerously-bypass-approvals-and-sandbox");
+            if !resume {
+                let prompt = match (system_prompt, initial_prompt) {
+                    (Some(sp), Some(p)) => Some(format!("{sp}\n\n{p}")),
+                    (Some(sp), None) => Some(sp.to_string()),
+                    (None, p) => p.map(str::to_string),
+                };
+                if let Some(prompt) = prompt {
+                    cmd.push(' ');
+                    cmd.push_str(&shell_escape(&prompt));
+                }
+            }
+            cmd
+        }
+    }
+}
+
+/// Ensure `work_dir` is marked trusted in `~/.codex/config.toml`, appending a
+/// `[projects."<dir>"]` entry if missing (a `-c` override does not skip the
+/// trust dialog; the config file entry does).
+fn ensure_codex_trust(work_dir: &str) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let config_path = home.join(".codex").join("config.toml");
+    let content = fs::read_to_string(&config_path).unwrap_or_default();
+    let header = format!("[projects.\"{work_dir}\"]");
+    if content.contains(&header) {
+        return;
+    }
+    let _ = fs::create_dir_all(config_path.parent().unwrap());
+    let mut updated = content;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(&format!("\n{header}\ntrust_level = \"trusted\"\n"));
+    let _ = fs::write(&config_path, updated);
+}
+
 fn get_session_env(session_name: &str, var: &str) -> Option<String> {
     let output = Command::new("tmux")
         .args(["show-environment", "-t", session_name, var])
@@ -1050,7 +1140,7 @@ fn build_base_system_prompt(
     is_main: bool,
 ) -> String {
     let mut prompt = format!(
-        "You have been spawned as a session agent by Claude Manager, a multi-agent task management tool.\n\
+        "You have been spawned as a session agent by Showrunner, a multi-agent task management tool.\n\
          \n\
          - Project: {project_name}\n\
          - Task branch: {task_branch}\n"
@@ -1071,7 +1161,7 @@ fn build_base_system_prompt(
     prompt.push_str(&format!(
         "- PRs should always be opened from the task branch: {task_branch}\n\
          - Other agents may be working on the same task in parallel\n\
-         - The `claude-manager` CLI lets you list, create and manage other tasks and\n  \
+         - The `showrunner` CLI lets you list, create and manage other tasks and\n  \
          sessions, and ask an agent in another session a question — see the\n  \
          `manage-sessions` skill"
     ));
@@ -1083,7 +1173,11 @@ fn build_base_system_prompt(
 
 /// Build the combined initial prompt from startup skills and optional user prompt.
 /// Returns `None` if both are empty.
-fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) -> Option<String> {
+fn build_initial_prompt(
+    startup_skills: &[String],
+    user_prompt: Option<&str>,
+    agent: AgentKind,
+) -> Option<String> {
     let has_skills = !startup_skills.is_empty();
     let has_prompt = user_prompt.is_some_and(|p| !p.is_empty());
 
@@ -1102,42 +1196,83 @@ fn build_initial_prompt(startup_skills: &[String], user_prompt: Option<&str>) ->
         .collect::<Vec<_>>()
         .join("\n");
 
+    // Claude runs these via its Skill tool; other agents get the list as-is
+    // (skills they discover are invoked by name, unknown ones are skipped).
+    let how = match agent {
+        AgentKind::Claude => "(one at a time, using the Skill tool)",
+        _ => "(one at a time; skip any that aren't available to you)",
+    };
+
     if !has_prompt {
         return Some(format!(
-            "Run these startup skills first (one at a time, using the Skill tool):\n{skills_list}"
+            "Run these startup skills first {how}:\n{skills_list}"
         ));
     }
 
     Some(format!(
-        "Run these startup skills first (one at a time, using the Skill tool), then proceed with the task below:\n\
+        "Run these startup skills first {how}, then proceed with the task below:\n\
          {skills_list}\n\n\
          Task: {}",
         user_prompt.unwrap()
     ))
 }
 
-// Embedded claude-manager plugin files (see claude-manager-plugin/ at repo root).
-const PLUGIN_MANIFEST: &str = include_str!("../claude-manager-plugin/.claude-plugin/plugin.json");
+// Embedded showrunner plugin files (see showrunner-plugin/ at repo root).
+const PLUGIN_MANIFEST: &str = include_str!("../showrunner-plugin/.claude-plugin/plugin.json");
 const PLUGIN_SKILL_COMMIT_PUSH_TASK: &str =
-    include_str!("../claude-manager-plugin/skills/commit-push-task/SKILL.md");
+    include_str!("../showrunner-plugin/skills/commit-push-task/SKILL.md");
 const PLUGIN_SKILL_MANAGE_SESSIONS: &str =
-    include_str!("../claude-manager-plugin/skills/manage-sessions/SKILL.md");
+    include_str!("../showrunner-plugin/skills/manage-sessions/SKILL.md");
 
-/// Filesystem path to the installed claude-manager plugin directory inside `work_dir`.
+/// Filesystem path to the installed showrunner plugin directory inside `work_dir`.
 /// This is the path passed to `claude --plugin-dir`.
-fn claude_manager_plugin_path(work_dir: &str) -> String {
+fn showrunner_plugin_path(work_dir: &str) -> String {
     Path::new(work_dir)
         .join(".claude")
         .join("plugins")
-        .join("claude-manager")
+        .join("showrunner")
         .to_string_lossy()
         .to_string()
 }
 
-/// Install the bundled claude-manager plugin into the work directory's
-/// `.claude/plugins/claude-manager/`. The plugin is loaded at session start via
-/// `claude --plugin-dir <path>` (see `claude_manager_plugin_path`).
-fn install_claude_manager_plugin(work_dir: &str) {
+/// Install the showrunner skills in whatever form the agent discovers them:
+/// a Claude Code plugin for Claude, plain SKILL.md folders under
+/// `.agents/skills/` (the cross-agent location) for everyone else.
+fn install_agent_skills(agent: AgentKind, work_dir: &str) {
+    if agent.supports_plugin_dir() {
+        install_showrunner_plugin(work_dir);
+    } else {
+        install_agents_dir_skills(work_dir);
+    }
+}
+
+/// Install the two showrunner skills as plain SKILL.md folders under
+/// `<work_dir>/.agents/skills/`, which codex (and pi) scan from the cwd up.
+fn install_agents_dir_skills(work_dir: &str) {
+    let skills_dir = Path::new(work_dir).join(".agents").join("skills");
+    for (name, content) in [
+        ("commit-push-task", PLUGIN_SKILL_COMMIT_PUSH_TASK),
+        ("manage-sessions", PLUGIN_SKILL_MANAGE_SESSIONS),
+    ] {
+        let dir = skills_dir.join(name);
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("SKILL.md"), content);
+    }
+    // Exclude only our own skill folders so a repo's own .agents/skills stay
+    // visible to git.
+    add_git_excludes(
+        work_dir,
+        &[
+            ".agents/skills/commit-push-task/",
+            ".agents/skills/manage-sessions/",
+        ],
+    );
+}
+
+/// Install the bundled showrunner plugin into the work directory's
+/// `.claude/plugins/showrunner/`. The plugin is loaded at session start via
+/// `claude --plugin-dir <path>` (see `showrunner_plugin_path`).
+fn install_showrunner_plugin(work_dir: &str) {
     // Remove the update-task-context skill that older versions installed
     // (standalone under `.claude/skills/` and inside the plugin) — the shared
     // task context concept no longer exists.
@@ -1147,7 +1282,15 @@ fn install_claude_manager_plugin(work_dir: &str) {
         .join("update-task-context");
     let _ = fs::remove_dir_all(&legacy_skill_dir);
 
-    let plugin_dir = PathBuf::from(claude_manager_plugin_path(work_dir));
+    // Remove the plugin installed under its pre-rename name (claude-manager).
+    let _ = fs::remove_dir_all(
+        Path::new(work_dir)
+            .join(".claude")
+            .join("plugins")
+            .join("claude-manager"),
+    );
+
+    let plugin_dir = PathBuf::from(showrunner_plugin_path(work_dir));
     // Also drop skills removed in later versions.
     for stale in ["update-task-context", "stacked-pr"] {
         let _ = fs::remove_dir_all(plugin_dir.join("skills").join(stale));
@@ -1177,19 +1320,27 @@ fn install_claude_manager_plugin(work_dir: &str) {
     );
 
     // Git-ignore the locally installed plugin via .git/info/exclude.
-    let exclude_entries = [".claude/plugins/claude-manager/"];
-    let git_dir = Path::new(work_dir).join(".git");
-    let real_git_dir = if git_dir.is_file() {
-        fs::read_to_string(&git_dir).ok().and_then(|content| {
-            content
-                .strip_prefix("gitdir: ")
-                .map(|p| PathBuf::from(p.trim()))
-        })
-    } else if git_dir.is_dir() {
-        Some(git_dir)
-    } else {
-        None
-    };
+    add_git_excludes(work_dir, &[".claude/plugins/showrunner/"]);
+}
+
+/// Add entries to the repo's `.git/info/exclude`, skipping any already
+/// present. Git only reads `info/exclude` from the COMMON git dir — a linked
+/// worktree's own `worktrees/<name>/info/exclude` is ignored — so resolve the
+/// common dir; the slash-anchored patterns then apply to the project dir and
+/// every worktree alike.
+fn add_git_excludes(work_dir: &str, exclude_entries: &[&str]) {
+    let real_git_dir = Command::new("git")
+        .args([
+            "-C",
+            work_dir,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
     if let Some(gd) = real_git_dir {
         let info_dir = gd.join("info");
         let _ = fs::create_dir_all(&info_dir);
@@ -1197,7 +1348,7 @@ fn install_claude_manager_plugin(work_dir: &str) {
         let mut content = fs::read_to_string(&exclude_path).unwrap_or_default();
         let mut changed = false;
         for entry in exclude_entries {
-            if !content.lines().any(|l| l.trim() == entry) {
+            if !content.lines().any(|l| l.trim() == *entry) {
                 if !content.ends_with('\n') && !content.is_empty() {
                     content.push('\n');
                 }
@@ -1780,7 +1931,7 @@ pub fn get_branch_diff(project_path: &str, branch: &str, base_branch: &str) -> O
 
 /// Raw signals from a tmux session for status detection.
 pub struct SessionProbe {
-    pub claude_alive: bool,
+    pub agent_alive: bool,
     pub content_hash: u64,
     pub has_permission_prompt: bool,
 }
@@ -1813,7 +1964,11 @@ pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
 
     let pane_pid = parts.first().and_then(|p| p.parse::<u32>().ok())?;
 
-    // Check if the pane process itself is claude, or if claude is a child
+    let agent = session_agent(session_name);
+    let process_name = agent.process_name();
+
+    // Check if the pane process itself is the agent, or if the agent is a
+    // child (e.g. codex runs under a node wrapper).
     let pane_comm = Command::new("ps")
         .args(["-o", "comm=", "-p", &pane_pid.to_string()])
         .output()
@@ -1821,19 +1976,19 @@ pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    let claude_alive = pane_comm == "claude"
+    let agent_alive = pane_comm == process_name
         || Command::new("pgrep")
-            .args(["-P", &pane_pid.to_string(), "-x", "claude"])
+            .args(["-P", &pane_pid.to_string(), "-x", process_name])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
 
     let content = capture_pane_plain(&target).unwrap_or_default();
     let content_hash = hash_content(&content);
-    let has_permission_prompt = detect_attention_dialog(&content);
+    let has_permission_prompt = detect_attention_dialog(&content, agent);
 
     Some(SessionProbe {
-        claude_alive,
+        agent_alive,
         content_hash,
         has_permission_prompt,
     })
@@ -1844,21 +1999,25 @@ pub fn probe_session(session_name: &str) -> Option<SessionProbe> {
 ///
 /// Two guards against false positives from dialog text merely echoed in the
 /// transcript: markers must appear near the bottom of the pane (active
-/// dialogs render there), and the pane must not currently show the regular
-/// input prompt — a bare `❯`/`>` line — which Claude Code replaces while a
-/// dialog is open.
-fn detect_attention_dialog(content: &str) -> bool {
+/// dialogs render there), and — for Claude — the pane must not currently show
+/// the regular input prompt (a bare `❯`/`>` line), which Claude Code replaces
+/// while a dialog is open. Codex has no such guard: its selector line (`› 1.`)
+/// uses the same glyph as its input line, and its idle placeholder never
+/// matches the marker.
+fn detect_attention_dialog(content: &str, agent: AgentKind) -> bool {
     let nonempty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
-    let at_input_prompt = nonempty[nonempty.len().saturating_sub(8)..]
-        .iter()
-        .any(|l| matches!(l.trim(), "❯" | ">"));
-    if at_input_prompt {
-        return false;
+    if agent == AgentKind::Claude {
+        let at_input_prompt = nonempty[nonempty.len().saturating_sub(8)..]
+            .iter()
+            .any(|l| matches!(l.trim(), "❯" | ">"));
+        if at_input_prompt {
+            return false;
+        }
     }
 
     let tail = nonempty[nonempty.len().saturating_sub(12)..].join("\n");
-    PERMISSION_PROMPTS.iter().any(|p| tail.contains(p))
+    agent.attention_markers().iter().any(|p| tail.contains(p))
 }
 
 fn hash_content(s: &str) -> u64 {
@@ -2325,30 +2484,33 @@ mod tests {
 
     #[test]
     fn initial_prompt_none_when_empty() {
-        assert!(build_initial_prompt(&[], None).is_none());
-        assert!(build_initial_prompt(&[], Some("")).is_none());
+        assert!(build_initial_prompt(&[], None, AgentKind::Claude).is_none());
+        assert!(build_initial_prompt(&[], Some(""), AgentKind::Claude).is_none());
     }
 
     #[test]
     fn initial_prompt_passthrough_no_skills() {
         assert_eq!(
-            build_initial_prompt(&[], Some("do stuff")),
+            build_initial_prompt(&[], Some("do stuff"), AgentKind::Claude),
             Some("do stuff".into())
         );
     }
 
     #[test]
     fn initial_prompt_skills_only() {
-        let result = build_initial_prompt(&["/prime".into()], None).unwrap();
+        let result = build_initial_prompt(&["/prime".into()], None, AgentKind::Claude).unwrap();
         assert!(result.contains("/prime"));
         assert!(!result.contains("Task:"));
     }
 
     #[test]
     fn initial_prompt_skills_and_prompt() {
-        let result =
-            build_initial_prompt(&["/prime".into(), "/caveman ultra".into()], Some("fix bug"))
-                .unwrap();
+        let result = build_initial_prompt(
+            &["/prime".into(), "/caveman ultra".into()],
+            Some("fix bug"),
+            AgentKind::Claude,
+        )
+        .unwrap();
         assert!(result.contains("1. /prime"));
         assert!(result.contains("2. /caveman ultra"));
         assert!(result.contains("Task: fix bug"));
@@ -2384,7 +2546,7 @@ mod tests {
                     2. Option B\n  \
                     3. Option C\n\n  \
                     Enter to confirm";
-        assert!(detect_attention_dialog(pane));
+        assert!(detect_attention_dialog(pane, AgentKind::Claude));
     }
 
     #[test]
@@ -2394,7 +2556,7 @@ mod tests {
                     ❯ 1. Yes\n  \
                     2. Yes, allow all edits during this session\n  \
                     3. No, and tell Claude what to do differently";
-        assert!(detect_attention_dialog(pane));
+        assert!(detect_attention_dialog(pane, AgentKind::Claude));
     }
 
     #[test]
@@ -2407,7 +2569,7 @@ mod tests {
                     ❯ \n\
                     ────────────\n  \
                     -- INSERT -- ⏵⏵ bypass permissions on";
-        assert!(!detect_attention_dialog(pane));
+        assert!(!detect_attention_dialog(pane, AgentKind::Claude));
     }
 
     #[test]
@@ -2416,11 +2578,51 @@ mod tests {
         for i in 0..20 {
             pane.push_str(&format!("output line {i}\n"));
         }
-        assert!(!detect_attention_dialog(&pane));
+        assert!(!detect_attention_dialog(&pane, AgentKind::Claude));
     }
 
     #[test]
     fn no_attention_on_plain_output() {
-        assert!(!detect_attention_dialog("⏺ Done. All tests pass.\n"));
+        assert!(!detect_attention_dialog(
+            "⏺ Done. All tests pass.\n",
+            AgentKind::Claude
+        ));
+    }
+
+    // --- codex (captured from codex-cli 0.148.0 panes) ---
+
+    #[test]
+    fn codex_attention_for_trust_dialog() {
+        let pane = "  Do you trust the contents of this directory?\n\n\
+                    › 1. Yes, continue\n  \
+                    2. No, quit\n\n  \
+                    Press enter to continue";
+        assert!(detect_attention_dialog(pane, AgentKind::Codex));
+    }
+
+    #[test]
+    fn codex_no_attention_when_idle() {
+        let pane = "• 4\n  beef42\n\n\
+                    › Ask Codex to do anything\n  \
+                    gpt-5.6-sol default · /some/dir";
+        assert!(!detect_attention_dialog(pane, AgentKind::Codex));
+    }
+
+    #[test]
+    fn codex_no_attention_while_working() {
+        let pane = "• Running the command exactly as provided.\n\
+                    • Working (2s • esc to interrupt)\n\
+                    › Ask Codex to do anything\n  \
+                    gpt-5.6-sol default · /some/dir";
+        assert!(!detect_attention_dialog(pane, AgentKind::Codex));
+    }
+
+    #[test]
+    fn codex_initial_prompt_avoids_skill_tool_wording() {
+        let result =
+            build_initial_prompt(&["/prime".into()], Some("fix bug"), AgentKind::Codex).unwrap();
+        assert!(result.contains("1. /prime"));
+        assert!(result.contains("Task: fix bug"));
+        assert!(!result.contains("Skill tool"));
     }
 }

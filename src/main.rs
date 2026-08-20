@@ -1,3 +1,4 @@
+mod agent;
 mod app;
 mod cli;
 mod config;
@@ -370,6 +371,44 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             {
                                 let action = item.action;
                                 app.execute_context_action(action);
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let Some(item) = app.context_menu_items.iter().find(|i| i.key == c) {
+                                let action = item.action;
+                                app.execute_context_action(action);
+                            }
+                        }
+                        _ => {}
+                    },
+                    InputMode::AgentPicker => match key.code {
+                        KeyCode::Esc => app.cancel_input(),
+                        KeyCode::Up => {
+                            if app.context_menu_selected > 0 {
+                                app.context_menu_selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.context_menu_selected + 1 < app.context_menu_items.len() {
+                                app.context_menu_selected += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some(item) =
+                                app.context_menu_items.get(app.context_menu_selected)
+                            {
+                                let action = item.action;
+                                app.execute_context_action(action);
+                            }
+                        }
+                        KeyCode::Char(c) if c == kb.move_up => {
+                            if app.context_menu_selected > 0 {
+                                app.context_menu_selected -= 1;
+                            }
+                        }
+                        KeyCode::Char(c) if c == kb.move_down => {
+                            if app.context_menu_selected + 1 < app.context_menu_items.len() {
+                                app.context_menu_selected += 1;
                             }
                         }
                         KeyCode::Char(c) => {

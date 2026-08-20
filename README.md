@@ -1,8 +1,10 @@
-# Claude Manager
+# Showrunner
+
+> Formerly **claude-manager** — renamed as it grows agent-agnostic (Claude Code and Codex CLI today; pi and opencode planned).
 
 A terminal UI (TUI) for managing multiple Claude Code sessions organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
 
-Claude Manager uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, review diffs, and attach/detach freely.
+Showrunner uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, review diffs, and attach/detach freely.
 <img width="800" height="430" alt="showcase-gif" src="https://github.com/user-attachments/assets/63b6a5b1-b821-44b3-b764-481ee40fd33f" />
 
 ## Prerequisites
@@ -10,16 +12,19 @@ Claude Manager uses tmux to run Claude Code sessions in the background, letting 
 - **Cargo** (Rust 1.85+) — [install via rustup](https://rustup.rs/)
 - **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
 - **Claude Code CLI** (`claude`) — must be installed and available in your PATH
+- **Codex CLI** (`codex`, optional) — for sessions with `--agent codex` / `default_agent = "codex"`; must be logged in (`codex login`)
 - **git** — for worktree and branch management
 - **gh** (optional) — GitHub CLI, for PR creation features
-- **difit** (optional) — the default diff review tool (`r`). Installed globally (`npm i -g difit`) it launches instantly; otherwise it runs via `npx` automatically (Node.js required), fetched on first use.
-- **hunk** (optional) — an alternative terminal-based diff review tool ([modem-dev/hunk](https://github.com/modem-dev/hunk)), used when `review_tool = "hunk"` is set in config. Installed globally (`npm i -g hunkdiff`) it launches instantly; otherwise it runs via `npx hunkdiff` automatically (Node.js required). Unlike difit it runs in your terminal (suspending the TUI); review comments are still forwarded back to the agent.
+- **hunk** (optional) — the default diff review tool (`r`), a terminal diff viewer ([modem-dev/hunk](https://github.com/modem-dev/hunk)). Installed globally (`npm i -g hunkdiff`) it launches instantly; otherwise it runs via `npx hunkdiff` automatically (Node.js required), fetched on first use.
+- **difit** (optional) — an alternative browser-based diff review tool, used when `review_tool = "difit"` is set in config. Installed globally (`npm i -g difit`) it launches instantly; otherwise it runs via `npx difit` automatically (Node.js required).
 
 ## Installation
 
 ```bash
-cargo install claude-manager
+cargo install showrunner
 ```
+
+This installs the `showrunner` binary plus a `claude-manager` alias for backwards compatibility (existing sessions, scripts and skills keep working). Configuration and data stay in `~/.claude-manager/`.
 
 Or build from source:
 
@@ -32,20 +37,20 @@ cargo install --path .
 ## Usage
 
 ```bash
-claude-manager
+showrunner
 ```
 
 Launch from any directory. Configuration is stored in `~/.claude-manager/config.toml`.
 
-> **Tip:** When you attach to a session (with `Enter`), you're inside a tmux session. To detach and get back to claude-manager, use your tmux detach binding — with the default prefix that's `Ctrl-b d`. The session keeps running in the background.
+> **Tip:** When you attach to a session (with `Enter`), you're inside a tmux session. To detach and get back to showrunner, use your tmux detach binding — with the default prefix that's `Ctrl-b d`. The session keeps running in the background.
 
 ### Concepts
 
-- **Project** — A git repository you want to manage Claude sessions for. Added by its filesystem path.
-- **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple Claude sessions.
-- **Session** — A Claude Code instance running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
+- **Project** — A git repository you want to manage agent sessions for. Added by its filesystem path (`p` prompts for path and name).
+- **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple sessions.
+- **Session** — An agent instance (Claude Code today) running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
 - **Main session** (`◆ main`) — Every task has one, created with the task. It works in a worktree with the **task branch itself** checked out, so its commits land on the task branch directly — no merge step. Extra sessions (`n`) get their own `<task-branch>-<name>` branch and merge back into it.
-- **Adhoc session** — A project-scoped session that runs Claude directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
+- **Adhoc session** — A project-scoped session that runs the agent directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
 
 ### Keybindings
 
@@ -76,6 +81,7 @@ The context menu shows actions relevant to the selected item. Press the hotkey c
 | Key | Action | Config key |
 |-----|--------|------------|
 | `t` | Add task | `add_task` |
+| `T` | Add task, choosing the agent harness first | `add_task_with_agent` |
 | `A` | New adhoc session | `new_adhoc_session` |
 | `x` | Run the project's configured run command | `run` |
 | `b` | Checkout branch (fuzzy-search the branch list) | `checkout` |
@@ -104,10 +110,11 @@ Run sessions are independent per item, so running on a different item starts a s
 | Key | Action | Config key |
 |-----|--------|------------|
 | `n` | New session (with worktree) | `new_session` |
+| `S` | New session, choosing the agent harness first | `new_session_with_agent` |
 | `N` | New session (without worktree) | `new_session_no_worktree` |
 | `r` | Review branch-vs-base diff (difit or hunk) | `review` |
 | `x` | Run the project's configured run command | `run` |
-| `u` | Update/rebase branch onto main | `update` |
+| `u` | Update/rebase branch onto its base branch (default `main`) | `update` |
 | `B` | Set base branch | `set_base_branch` |
 | `P` | Push branch | `push` |
 | `b` | Checkout branch in project dir | `checkout` |
@@ -129,23 +136,23 @@ Run sessions are independent per item, so running on a different item starts a s
 
 The main session only offers Review, Terminal, Run and Copy path: it is already on the task branch, so Merge and Update have nothing to do, and it can't be deleted on its own — delete or archive the task instead.
 
-The **Review** action (`r`) launches the configured diff review tool on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Choose the tool with `review_tool` in `~/.claude-manager/config.toml` (`"difit"`, the default, or `"hunk"`):
+The **Review** action (`r`) launches the configured diff review tool on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Choose the tool with `review_tool` in `~/.claude-manager/config.toml` (`"hunk"`, the default, or `"difit"`):
 
-- **difit** (default) opens a browser-based viewer in the background, so the TUI stays interactive. Any comments you leave are captured on exit and forwarded back to the agent's Claude session as a new prompt, so you can review a diff and hand the feedback straight to the agent.
-- **hunk** ([modem-dev/hunk](https://github.com/modem-dev/hunk)) opens a terminal viewer in the foreground, suspending the TUI until you exit. Comments you leave are polled from hunk's live review session while it runs and forwarded to the agent on exit, the same as difit. (A comment added in the last fraction of a second before quitting may be missed, since hunk's session is gone once it closes.)
+- **hunk** (default, [modem-dev/hunk](https://github.com/modem-dev/hunk)) opens a terminal viewer in the foreground, suspending the TUI until you exit. Comments you leave are polled from hunk's live review session while it runs and forwarded to the agent session on exit. (A comment added in the last fraction of a second before quitting may be missed, since hunk's session is gone once it closes.)
+- **difit** opens a browser-based viewer in the background, so the TUI stays interactive. Any comments you leave are captured on exit and forwarded back to the agent session as a new prompt, so you can review a diff and hand the feedback straight to the agent. When a task review ends with comments and the task has several sessions, a picker asks which session receives them.
 
 ```toml
 # ~/.claude-manager/config.toml
-review_tool = "hunk"   # or "difit" (default)
+review_tool = "difit"   # or "hunk" (default)
 ```
 
 ### Session Status Indicators
 
 Sessions display their current status:
-- **Running** — Claude is actively working
-- **Waiting for input** — Claude is waiting for your response
-- **Waiting for permission** — Claude needs tool approval
-- **Finished** — Claude has completed its work
+- **Running** — the agent is actively working
+- **Waiting for input** — the agent is waiting for your response
+- **Waiting for permission** — the agent stopped on a permission or question dialog
+- **Finished** — the agent process has exited
 
 ### Worktrees
 
@@ -153,7 +160,7 @@ Every session gets a git worktree so it works on an isolated copy of the codebas
 
 Because the main session's worktree owns the task branch, `b` (checkout in the project dir) fails while it exists — check out the branch in a worktree instead, or delete the task. **Update branch** (`u`) and session **Merge** (`m`) run inside that worktree rather than checking the branch out in the project dir. Worktrees are removed when their session is deleted, and all of a task's worktrees when the task (`d`) or project is deleted.
 
-You can configure file patterns to copy into new worktrees (e.g. `.env` files) by adding `copy_patterns` to your project config. To run commands inside each freshly-created worktree (installing dependencies, configuring git hooks, etc.), add `setup_commands` (a single string or a list):
+The project's `.claude/` directory is always copied into new worktrees, so project-level agent config and skills are available there. You can copy additional file patterns (e.g. `.env` files) by adding `copy_patterns` to your project config. To run commands inside each freshly-created worktree (installing dependencies, configuring git hooks, etc.), add `setup_commands` (a single string or a list):
 
 ```toml
 [[projects]]
@@ -168,6 +175,11 @@ setup_commands = ["npm install", "./scripts/configure-hooks.sh"]
 The config file at `~/.claude-manager/config.toml` is managed automatically through the TUI, but can also be edited manually:
 
 ```toml
+# Global: agent harness new sessions run by default ("claude" or "codex");
+# override per creation with --agent. Codex sessions launch in yolo mode with
+# the work dir pre-trusted, and resume via `codex resume --last`.
+default_agent = "claude"
+
 # Global: skills/slash-commands run in every new session before the initial
 # prompt (a single string or a list). Useful for priming context.
 startup_skills = ["/prime"]
@@ -193,7 +205,7 @@ Most of these fields are set for you through the TUI (`run_command` on first Run
 
 #### Stacked PRs
 
-Tasks whose `base_branch` is another task's branch form a stack — the same relationship GitHub's stacked pull requests use (each PR's base is the previous branch in the chain). Claude Manager detects these chains automatically and marks each member with its position, `⧉ 2/3`, in the TUI task list and in `claude-manager list` (`stack=2/3`, or a `stack` object in `--json`). Stacked tasks are listed consecutively in chain order (root first), regardless of the order they were created in. To stack task B on task A, set B's base branch to A's branch with `B`. Creating a PR from a stacked task targets its base branch, so the PR lands stacked on GitHub.
+Tasks whose `base_branch` is another task's branch form a stack — the same relationship GitHub's stacked pull requests use (each PR's base is the previous branch in the chain). Showrunner detects these chains automatically and marks each member with its position, `⧉ 2/3`, in the TUI task list and in `showrunner list` (`stack=2/3`, or a `stack` object in `--json`). Stacked tasks are listed consecutively in chain order (root first), regardless of the order they were created in. To stack task B on task A, set B's base branch to A's branch with `B`. Creating a PR from a stacked task targets its base branch, so the PR lands stacked on GitHub.
 
 #### Custom Keybindings
 
@@ -209,11 +221,11 @@ delete = "x"
 
 ## Mobile web UI (`serve`)
 
-`claude-manager serve` starts an HTTP server with a phone-friendly web UI for managing sessions remotely — view session status, read live output, send messages and keys (permission prompts included), create tasks/sessions, and kill sessions.
+`showrunner serve` starts an HTTP server with a phone-friendly web UI for managing sessions remotely — view session statuses, read live output, send messages and keys (permission prompts included), review diffs, and create projects, tasks, sessions and adhoc sessions, delete tasks, or kill sessions.
 
 ```sh
-claude-manager serve                          # default 127.0.0.1:7878
-claude-manager serve --bind 0.0.0.0:7878     # bind another interface
+showrunner serve                          # default 127.0.0.1:7878
+showrunner serve --bind 0.0.0.0:7878     # bind another interface
 ```
 
 The server has no authentication — keep it on localhost and expose it through your tailnet:
@@ -229,14 +241,14 @@ This gives you a valid-HTTPS URL reachable only from your own devices. Open it o
 Besides the TUI and `serve`, the binary exposes the same task/session operations as commands. They act on the shared state in `~/.claude-manager/`, so a running TUI picks the changes up on its next refresh. Agents running inside a session use these to manage each other (see [Claude Code plugin](#claude-code-plugin)), and they're handy from any shell.
 
 ```sh
-claude-manager list [--json] [--project <name>]      # projects, tasks, live sessions + status
-claude-manager task create <project> <name> [--branch <b>] [--prompt <text>]
-claude-manager task delete <project> <task> --yes
-claude-manager session create <project> <task> [--prompt <text>] [--no-worktree]
-claude-manager session kill <session> --yes
-claude-manager ask <session> <question> [--timeout <secs>]
-claude-manager send <session> <text> [--no-submit]
-claude-manager output <session> [--lines <n>]
+showrunner list [--json] [--project <name>]      # projects, tasks, live sessions + status
+showrunner task create <project> <name> [--branch <b>] [--prompt <text>] [--agent claude|codex]
+showrunner task delete <project> <task> --yes
+showrunner session create <project> <task> [--prompt <text>] [--no-worktree] [--agent claude|codex]
+showrunner session kill <session> --yes
+showrunner ask <session> <question> [--timeout <secs>]
+showrunner send <session> <text> [--no-submit]
+showrunner output <session> [--lines <n>]
 ```
 
 Sessions are addressed by the refs `list` prints — `<project>/<task>/<session>` (e.g. `myapp/fix-auth/2`), `<project>/<task>` for that task's main session, or a raw tmux name. `list` marks the session you're calling from as `(this session)`, and reports the same statuses as the TUI (`running`, `waiting_input`, `waiting_permission`, `finished`); it samples each pane twice, so it takes a moment.
@@ -246,7 +258,7 @@ Sessions are addressed by the refs `list` prints — `<project>/<task>/<session>
 **`ask`** sends a question to another session, waits until that agent finishes its turn, and prints its reply on stdout:
 
 ```sh
-$ claude-manager ask myapp/fix-auth/2 "which module owns token refresh?"
+$ showrunner ask myapp/fix-auth/2 "which module owns token refresh?"
 ⏺ src/auth/refresh.ts — TokenRefresher. It's called from the interceptor in api/client.ts.
 ```
 
@@ -254,12 +266,12 @@ A busy session queues the question and answers when it gets there, so `ask` bloc
 
 ## Claude Code plugin
 
-The repo ships a Claude Code plugin (`claude-manager-plugin/`) with skills that let an agent running inside a session drive Claude Manager without leaving the worktree:
+The repo ships a Claude Code plugin (`showrunner-plugin/`) with skills that let an agent running inside a session drive Showrunner without leaving the worktree:
 
 - **`commit-push-task`** — commit changes on the current branch, fast-forward them into the task branch (in whichever worktree has it checked out), and push the task branch. In the main session, where the current branch *is* the task branch, it just commits and pushes.
 - **`manage-sessions`** — view, create and manage other tasks and sessions, and ask an agent in another session a question, via the [CLI](#cli) above. Session agents are told about this in their system prompt, so they can fan work out to new sessions or consult a sibling agent that holds context they don't.
 
-The plugin is installed into every session's worktree automatically, so both skills are available inside any session (`/commit-push-task`, `/manage-sessions`).
+The plugin is installed into every Claude session's worktree automatically, so both skills are available inside any session (`/commit-push-task`, `/manage-sessions`). Sessions running other agents (e.g. codex) get the same SKILL.md files installed under `.agents/skills/` in the worktree instead — the cross-agent skills location.
 
 ## Development
 

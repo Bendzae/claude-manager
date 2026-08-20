@@ -81,7 +81,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_help(f, app, chunks[3]);
     draw_status(f, app, chunks[4]);
 
-    if matches!(app.input_mode, InputMode::ContextMenu | InputMode::RunMenu) {
+    if matches!(
+        app.input_mode,
+        InputMode::ContextMenu | InputMode::RunMenu | InputMode::AgentPicker
+    ) {
         draw_context_menu(f, app, list_area);
     }
 
@@ -119,7 +122,7 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     let (title, sep_str) = if compact {
         ("cm", " · ")
     } else {
-        ("claude-manager", "   ·   ")
+        ("showrunner", "   ·   ")
     };
     let label = |glyph: &str, n: usize, word: &str| {
         if compact {
@@ -1477,6 +1480,11 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             ("r", "restart"),
             ("k", "kill"),
             ("Esc", "close"),
+        ]),
+        InputMode::AgentPicker => help_bar(&[
+            ("⏎", "select agent"),
+            ("↑/↓", "navigate"),
+            ("Esc", "cancel"),
         ]),
         InputMode::AddTaskPrompt | InputMode::AddSessionPrompt | InputMode::MergeCommitMessage => {
             help_bar(&[("⏎", "confirm"), ("⌥⏎", "newline"), ("Esc", "cancel")])
