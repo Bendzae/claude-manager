@@ -34,8 +34,8 @@ Configuration and data stay in `~/.claude-manager/`, so upgrading from claude-ma
 Or build from source:
 
 ```bash
-git clone git@github.com:Bendzae/claude-manager.git
-cd claude-manager
+git clone git@github.com:Bendzae/showrunner.git
+cd showrunner
 cargo install --path .
 ```
 
