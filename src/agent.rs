@@ -9,16 +9,18 @@ pub enum AgentKind {
     #[default]
     Claude,
     Codex,
+    Pi,
 }
 
 /// Ids accepted in config (`default_agent`) and on `--agent`.
-pub const AGENT_IDS: &[&str] = &["claude", "codex"];
+pub const AGENT_IDS: &[&str] = &["claude", "codex", "pi"];
 
 impl AgentKind {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             "claude" => Some(AgentKind::Claude),
             "codex" => Some(AgentKind::Codex),
+            "pi" => Some(AgentKind::Pi),
             _ => None,
         }
     }
@@ -27,6 +29,7 @@ impl AgentKind {
         match self {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "codex",
+            AgentKind::Pi => "pi",
         }
     }
 
@@ -35,11 +38,12 @@ impl AgentKind {
         match self {
             AgentKind::Claude => "Claude Code",
             AgentKind::Codex => "Codex CLI",
+            AgentKind::Pi => "Pi",
         }
     }
 
     /// All known agents, in picker order.
-    pub const ALL: &[AgentKind] = &[AgentKind::Claude, AgentKind::Codex];
+    pub const ALL: &[AgentKind] = &[AgentKind::Claude, AgentKind::Codex, AgentKind::Pi];
 
     /// Process name to look for when checking whether the agent is still
     /// alive in a pane (either as the pane process or one of its children —
@@ -61,6 +65,12 @@ impl AgentKind {
             // Codex renders selectors (trust dialog etc.) as `› 1.`; with the
             // yolo flag there are no per-command approvals.
             AgentKind::Codex => &["› 1."],
+            // Pi has no per-command approvals; its only blocking dialogs are
+            // modal selectors (project trust, /model picker, …), which all
+            // render the same navigation hint line. Sessions launch with
+            // `--approve`, so the trust dialog shouldn't appear — the markers
+            // are a safety net.
+            AgentKind::Pi => &["Trust project folder?", "↑↓ navigate"],
         }
     }
 
@@ -80,6 +90,10 @@ impl AgentKind {
             // its input line always starts with `›` (placeholder or typed text)
             // and everything below it is footer.
             AgentKind::Codex => line == "›" || line.starts_with("› "),
+            // Pi frames its input box with full-width ─ rules; the cwd line
+            // and stats footer render below the bottom rule and are cut with
+            // it. It draws no rules inside the transcript.
+            AgentKind::Pi => line.chars().count() >= 10 && line.chars().all(|c| c == '─'),
         }
     }
 
@@ -122,6 +136,17 @@ mod tests {
     #[test]
     fn default_is_claude() {
         assert_eq!(AgentKind::default(), AgentKind::Claude);
+    }
+
+    // Pi chrome captured from pi 0.84.2 panes: input box framed by
+    // full-width ─ rules, cwd + stats footer below.
+    #[test]
+    fn pi_chrome_matches_rules_not_transcript_or_footer() {
+        let pi = AgentKind::Pi;
+        assert!(pi.is_prompt_chrome("────────────────────────────"));
+        assert!(!pi.is_prompt_chrome("⠏ Working..."));
+        assert!(!pi.is_prompt_chrome("0.0%/128k (auto)"));
+        assert!(!pi.is_prompt_chrome("/some/work/dir (main)"));
     }
 
     #[test]

@@ -465,7 +465,7 @@ pub struct Config {
     /// scalar emitted after a table would be invalid TOML).
     #[serde(default)]
     pub review_tool: ReviewTool,
-    /// Agent harness new sessions run by default ("claude" or "codex");
+    /// Agent harness new sessions run by default ("claude", "codex" or "pi");
     /// overridable per creation with `--agent`. Scalar, so also declared
     /// before `projects`.
     #[serde(default = "default_agent_id")]
