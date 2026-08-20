@@ -9,16 +9,6 @@ readme = "README.md"
 keywords = ["agents", "tui", "tmux", "ai", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
-[[bin]]
-name = "showrunner"
-path = "src/main.rs"
-
-# Backwards-compatible alias: existing sessions, scripts, and the previously
-# published skills invoke `claude-manager`.
-[[bin]]
-name = "claude-manager"
-path = "src/main.rs"
-
 [dependencies]
 ratatui = "0.30"
 crossterm = { version = "0.28", features = ["bracketed-paste"] }

@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img src="assets/logo-light.svg" alt="showrunner logo" width="72" align="right">
+</picture>
+
 # Showrunner
 
 > Formerly **claude-manager** — renamed as it grows agent-agnostic (Claude Code and Codex CLI today; pi and opencode planned).
@@ -24,7 +29,7 @@ Showrunner uses tmux to run Claude Code sessions in the background, letting you 
 cargo install showrunner
 ```
 
-This installs the `showrunner` binary plus a `claude-manager` alias for backwards compatibility (existing sessions, scripts and skills keep working). Configuration and data stay in `~/.claude-manager/`.
+Configuration and data stay in `~/.claude-manager/`, so upgrading from claude-manager keeps all projects, tasks and sessions. Remove the old binary with `cargo uninstall claude-manager` (add a shell alias if your fingers still type it).
 
 Or build from source:
 

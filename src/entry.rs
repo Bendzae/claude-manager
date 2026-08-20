@@ -1,13 +1,4 @@
-mod agent;
-mod app;
-mod cli;
-mod config;
-mod ops;
-mod server;
-mod theme;
-mod tmux;
-mod ui;
-mod worker;
+//! Main-loop entry point for the `showrunner` binary.
 
 use std::io;
 use std::time::Duration;
@@ -23,7 +14,8 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use app::{App, InputMode};
+use crate::app::{App, InputMode};
+use crate::{cli, tmux, ui};
 
 fn is_text_input_mode(mode: InputMode) -> bool {
     matches!(
@@ -42,7 +34,7 @@ fn is_text_input_mode(mode: InputMode) -> bool {
     )
 }
 
-fn main() -> Result<()> {
+pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(result) = cli::dispatch(&args) {
         return result;
