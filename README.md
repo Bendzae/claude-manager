@@ -5,7 +5,7 @@
 
 > Formerly **claude-manager**.
 
-A terminal UI (TUI) for managing multiple coding-agent sessions — Claude Code and Codex CLI today, more harnesses planned — organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
+A terminal UI (TUI) for managing multiple coding-agent sessions — Claude Code, Codex CLI and Pi today, more harnesses planned — organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
 
 Showrunner uses tmux to run agent sessions in the background, letting you organize them into projects and tasks, monitor their status, review diffs, and attach/detach freely.
 <img width="800" height="430" alt="showcase-gif" src="https://github.com/user-attachments/assets/63b6a5b1-b821-44b3-b764-481ee40fd33f" />
@@ -14,7 +14,7 @@ Showrunner uses tmux to run agent sessions in the background, letting you organi
 
 - **Cargo** (Rust 1.85+) — [install via rustup](https://rustup.rs/)
 - **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
-- **An agent CLI** on your PATH — **Claude Code** (`claude`, the default) and/or **Codex CLI** (`codex`, used with `--agent codex` / `default_agent = "codex"`; must be logged in via `codex login`)
+- **An agent CLI** on your PATH — **Claude Code** (`claude`, the default), **Codex CLI** (`codex`, used with `--agent codex` / `default_agent = "codex"`; must be logged in via `codex login`) and/or **Pi** (`pi`, used with `--agent pi` / `default_agent = "pi"`; needs a provider and default model configured, e.g. via `/login` or `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`)
 - **git** — for worktree and branch management
 - **gh** (optional) — GitHub CLI, for PR creation features
 - **hunk** (optional) — the default diff review tool (`r`), a terminal diff viewer ([modem-dev/hunk](https://github.com/modem-dev/hunk)). Installed globally (`npm i -g hunkdiff`) it launches instantly; otherwise it runs via `npx hunkdiff` automatically (Node.js required), fetched on first use.
@@ -50,7 +50,7 @@ Launch from any directory. Configuration is stored in `~/.showrunner/config.toml
 
 - **Project** — A git repository you want to manage agent sessions for. Added by its filesystem path (`p` prompts for path and name).
 - **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple sessions.
-- **Session** — An agent instance (Claude Code or Codex CLI, per `default_agent`/`--agent`) running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
+- **Session** — An agent instance (Claude Code, Codex CLI or Pi, per `default_agent`/`--agent`) running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
 - **Main session** (`◆ main`) — Every task has one, created with the task. It works in a worktree with the **task branch itself** checked out, so its commits land on the task branch directly — no merge step. Extra sessions (`n`) get their own `<task-branch>-<name>` branch and merge back into it.
 - **Adhoc session** — A project-scoped session that runs the agent directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
 
@@ -177,9 +177,10 @@ setup_commands = ["npm install", "./scripts/configure-hooks.sh"]
 The config file at `~/.showrunner/config.toml` is managed automatically through the TUI, but can also be edited manually:
 
 ```toml
-# Global: agent harness new sessions run by default ("claude" or "codex");
+# Global: agent harness new sessions run by default ("claude", "codex" or "pi");
 # override per creation with --agent. Codex sessions launch in yolo mode with
-# the work dir pre-trusted, and resume via `codex resume --last`.
+# the work dir pre-trusted, and resume via `codex resume --last`. Pi sessions
+# launch with `--approve` (project files pre-trusted) and resume via `pi --continue`.
 default_agent = "claude"
 
 # Global: skills/slash-commands run in every new session before the initial
@@ -244,9 +245,9 @@ Besides the TUI and `serve`, the binary exposes the same task/session operations
 
 ```sh
 showrunner list [--json] [--project <name>]      # projects, tasks, live sessions + status
-showrunner task create <project> <name> [--branch <b>] [--prompt <text>] [--agent claude|codex]
+showrunner task create <project> <name> [--branch <b>] [--prompt <text>] [--agent claude|codex|pi]
 showrunner task delete <project> <task> --yes
-showrunner session create <project> <task> [--prompt <text>] [--no-worktree] [--agent claude|codex]
+showrunner session create <project> <task> [--prompt <text>] [--no-worktree] [--agent claude|codex|pi]
 showrunner session kill <session> --yes
 showrunner ask <session> <question> [--timeout <secs>]
 showrunner send <session> <text> [--no-submit]

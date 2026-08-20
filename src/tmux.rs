@@ -979,6 +979,24 @@ fn build_agent_command(
             }
             cmd
         }
+        AgentKind::Pi => {
+            // Pi has no per-command approvals; `--approve` pre-trusts the
+            // project-local files we inject (.agents/skills) for this run so
+            // the one-time trust dialog never blocks the session.
+            let mut cmd = String::from("pi --approve");
+            if resume {
+                // cwd-scoped: continues the most recent session for this work dir.
+                cmd.push_str(" --continue");
+            }
+            if let Some(sp) = system_prompt {
+                cmd.push_str(&format!(" --append-system-prompt {}", shell_escape(sp)));
+            }
+            if let Some(prompt) = initial_prompt {
+                cmd.push(' ');
+                cmd.push_str(&shell_escape(prompt));
+            }
+            cmd
+        }
     }
 }
 
@@ -2615,6 +2633,64 @@ mod tests {
                     › Ask Codex to do anything\n  \
                     gpt-5.6-sol default · /some/dir";
         assert!(!detect_attention_dialog(pane, AgentKind::Codex));
+    }
+
+    // --- pi (captured from pi 0.84.2 panes) ---
+
+    #[test]
+    fn pi_attention_for_trust_dialog() {
+        let pane = "\
+────────────────────────────\n \
+Trust project folder?\n \
+/some/work/dir\n \
+This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.\n \
+→ Trust\n   \
+Trust parent folder (/some/work)\n   \
+Trust (this session only)\n   \
+Do not trust\n   \
+Do not trust (this session only)\n \
+↑↓ navigate  enter select  escape/ctrl+c cancel\n\
+────────────────────────────";
+        assert!(detect_attention_dialog(pane, AgentKind::Pi));
+    }
+
+    #[test]
+    fn pi_no_attention_when_idle() {
+        let pane = "\
+Some transcript output.\n\
+────────────────────────────\n\
+\n\
+────────────────────────────\n\
+/some/work/dir (main)\n\
+0.0%/128k (auto)                    (openrouter) openai/gpt-4o-mini";
+        assert!(!detect_attention_dialog(pane, AgentKind::Pi));
+    }
+
+    #[test]
+    fn pi_no_attention_while_working() {
+        let pane = "\
+ ⠏ Working...\n\
+────────────────────────────\n\
+\n\
+────────────────────────────\n\
+/some/work/dir (main)\n\
+0.0%/128k (auto)                    (openrouter) openai/gpt-4o-mini";
+        assert!(!detect_attention_dialog(pane, AgentKind::Pi));
+    }
+
+    #[test]
+    fn pi_command_uses_approve_system_prompt_flag_and_positional_prompt() {
+        let cmd = build_agent_command(AgentKind::Pi, "/w", Some("briefing"), Some("do it"), false);
+        assert_eq!(
+            cmd,
+            "pi --approve --append-system-prompt 'briefing' 'do it'"
+        );
+
+        let resumed = build_agent_command(AgentKind::Pi, "/w", Some("briefing"), None, true);
+        assert_eq!(
+            resumed,
+            "pi --approve --continue --append-system-prompt 'briefing'"
+        );
     }
 
     #[test]

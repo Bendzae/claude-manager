@@ -26,10 +26,10 @@ Usage:
 Managing tasks and sessions (usable from inside a session):
   showrunner list [--json] [--project <name>]
   showrunner task create <project> <name> [--branch <b>] [--prompt <text>]
-                                           [--agent claude|codex]
+                                           [--agent claude|codex|pi]
   showrunner task delete <project> <task> --yes
   showrunner session create <project> <task> [--prompt <text>] [--no-worktree]
-                                              [--agent claude|codex]
+                                              [--agent claude|codex|pi]
   showrunner session kill <session> --yes
 
 Talking to another session:
@@ -195,11 +195,12 @@ fn session_looks_busy(session_name: &str) -> bool {
         .any(is_spinner_line)
 }
 
-/// A spinner line is a glyph plus a gerund — "✽ Gallivanting…", "⎿ Running…" —
-/// possibly with a counter, as opposed to prose that happens to end in "…".
+/// A spinner line is a glyph plus a gerund — "✽ Gallivanting…", "⎿ Running…",
+/// pi's "⠏ Working..." — possibly with a counter, as opposed to prose that
+/// happens to end in an ellipsis.
 fn is_spinner_line(line: &str) -> bool {
     let line = line.trim();
-    line.ends_with('…') && line.split_whitespace().count() <= 4
+    (line.ends_with('…') || line.ends_with("...")) && line.split_whitespace().count() <= 4
 }
 
 /// Sample session statuses the way the TUI's worker does: a session counts as
@@ -859,5 +860,51 @@ mod tests {
             extract_reply(pane, "beef", AgentKind::Codex).unwrap(),
             "• 4"
         );
+    }
+
+    #[test]
+    fn trim_pane_pi_cuts_input_box_and_footer() {
+        // Pi frames its input box with full-width ─ rules; the cwd line and
+        // stats footer render below the bottom rule (pi 0.84.2).
+        let pane = "\
+ what is 2+2?
+ The answer is 4.
+
+────────────────────────────────────────
+
+────────────────────────────────────────
+/some/work/dir (main)
+0.0%/128k (auto)                    (openrouter) openai/gpt-4o-mini
+";
+        assert_eq!(
+            trim_pane(pane, AgentKind::Pi),
+            "what is 2+2?\n The answer is 4."
+        );
+    }
+
+    #[test]
+    fn extract_reply_works_on_pi_panes() {
+        let pane = "\
+ what is 2+2?
+ [cm-ask beef]
+ The answer is 4.
+────────────────────────────────────────
+
+────────────────────────────────────────
+/some/work/dir (main)
+0.0%/128k (auto)                    (openrouter) openai/gpt-4o-mini";
+        assert_eq!(
+            extract_reply(pane, "beef", AgentKind::Pi).unwrap(),
+            " The answer is 4."
+        );
+    }
+
+    #[test]
+    fn spinner_lines_match_claude_and_pi_styles() {
+        assert!(is_spinner_line("✽ Gallivanting…"));
+        assert!(is_spinner_line("⠏ Working..."));
+        assert!(!is_spinner_line(
+            "This is a longer prose sentence that trails off..."
+        ));
     }
 }
