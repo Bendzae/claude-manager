@@ -35,6 +35,8 @@ fn is_text_input_mode(mode: InputMode) -> bool {
 }
 
 pub fn run() -> Result<()> {
+    crate::config::migrate_legacy_base_dir();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(result) = cli::dispatch(&args) {
         return result;

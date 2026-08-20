@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 56" width="360" height="56">
+  <g transform="scale(0.56)" fill="#dde3ee"><path d="M78 14 L38 14 L22 40 L62 40 Z"/><path d="M22 86 L62 86 L78 60 L38 60 Z"/></g>
+  <text x="66" y="39" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" font-size="30" letter-spacing="0.5"><tspan fill="#8b96ad">show</tspan><tspan fill="#ffb454" font-weight="700">runner</tspan></text>
+</svg>
