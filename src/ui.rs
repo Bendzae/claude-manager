@@ -119,10 +119,11 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
     // Narrow terminals get a tighter strip: short title, thin separators, and
     // icon-only counts (colour + glyph carry the meaning, words are dropped).
     let compact = area.width < COMPACT_WIDTH;
+    // ▞ is the logo's low-res twin: two offset blocks, same slant.
     let (title, sep_str) = if compact {
-        ("cm", " · ")
+        ("▞", " · ")
     } else {
-        ("showrunner", "   ·   ")
+        ("▞ showrunner", "   ·   ")
     };
     let label = |glyph: &str, n: usize, word: &str| {
         if compact {
