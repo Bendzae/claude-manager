@@ -14,7 +14,7 @@ Showrunner uses tmux to run agent sessions in the background, letting you organi
 
 - **Cargo** (Rust 1.85+) — [install via rustup](https://rustup.rs/)
 - **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
-- **An agent CLI** on your PATH — **Claude Code** (`claude`, the default), **Codex CLI** (`codex`, used with `--agent codex` / `default_agent = "codex"`; must be logged in via `codex login`) and/or **Pi** (`pi`, used with `--agent pi` / `default_agent = "pi"`; needs a provider and default model configured, e.g. via `/login` or `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`)
+- **An agent CLI** on your PATH — **Claude Code** (`claude`, the default), **Codex CLI** (`codex`) and/or **Pi** (`pi`) — see [Agent harnesses](#agent-harnesses)
 - **git** — for worktree and branch management
 - **gh** (optional) — GitHub CLI, for PR creation features
 - **hunk** (optional) — the default diff review tool (`r`), a terminal diff viewer ([modem-dev/hunk](https://github.com/modem-dev/hunk)). Installed globally (`npm i -g hunkdiff`) it launches instantly; otherwise it runs via `npx hunkdiff` automatically (Node.js required), fetched on first use.
@@ -221,6 +221,49 @@ context_menu = "o"
 [context_menu_keys]
 delete = "x"
 ```
+
+## Agent harnesses
+
+Sessions can run any of the supported harnesses, chosen per creation (`--agent`, or the `T`/`S` picker keys) with `default_agent` as the fallback.
+
+### <img src="https://github.com/anthropics.png" height="20" alt=""/> Claude Code
+
+The default harness (`claude`).
+
+- Launches with `--dangerously-skip-permissions`; the session briefing is passed via `--append-system-prompt`.
+- The showrunner skills are loaded as a Claude Code plugin (`--plugin-dir`), so they're available as `/commit-push-task` and `/manage-sessions` slash commands.
+- Permission prompts and question dialogs surface as **Waiting for permission**.
+- Dead sessions resume with `claude --continue`.
+
+### <img src="https://github.com/openai.png" height="20" alt=""/> Codex CLI
+
+`codex` — must be logged in via `codex login`.
+
+- Launches in yolo mode (`--dangerously-bypass-approvals-and-sandbox`). The work dir is pre-trusted via a `[projects]` entry in `~/.codex/config.toml`, since the first-launch trust dialog appears even in yolo mode.
+- Codex has no system-prompt flag, so the session briefing is prepended to the first message.
+- The showrunner skills are installed as plain SKILL.md folders under `.agents/skills/`.
+- Dead sessions resume with `codex resume --last` (scoped to the work dir).
+
+### <img src="https://pi.dev/logo.svg" height="20" alt=""/> Pi
+
+`pi` — needs a provider and default model configured (`/login` inside pi, or `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`).
+
+- No per-command approvals by design. Launches with `--approve`, which pre-trusts the project-local files showrunner injects (`.agents/skills/`) so the one-time project-trust dialog never blocks a session; the briefing is passed via `--append-system-prompt`.
+- The showrunner skills are installed under `.agents/skills/`, which pi discovers natively.
+- Dead sessions resume with `pi --continue` (scoped to the work dir).
+
+### Feature support
+
+All showrunner features work with every harness — what differs is the mechanism:
+
+| | Claude Code | Codex CLI | Pi |
+|---|---|---|---|
+| Session briefing | `--append-system-prompt` | prepended to first message | `--append-system-prompt` |
+| Showrunner skills | plugin (slash commands) | `.agents/skills/` | `.agents/skills/` |
+| Auto-approval | `--dangerously-skip-permissions` | yolo flag + pre-trusted work dir | yolo by design, `--approve` for project files |
+| Attention dialogs | permission & question prompts | selectors (trust dialog etc.) | trust dialog & modal selectors |
+| Resume | `claude --continue` | `codex resume --last` | `pi --continue` |
+| Initial prompt, startup skills, status detection, `ask`/`send`/`output` | ✓ | ✓ | ✓ |
 
 ## Mobile web UI (`serve`)
 
