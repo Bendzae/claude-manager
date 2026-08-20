@@ -179,6 +179,7 @@ async fn api_state(State(state): State<Arc<ServerState>>) -> Result<Response, Ap
                         diff_stats: Default::default(),
                         task_diff_stats: Default::default(),
                         session_branches: Default::default(),
+                        session_agents: Default::default(),
                         pr_urls: Default::default(),
                         project_branches: Default::default(),
                         run_sessions: Default::default(),

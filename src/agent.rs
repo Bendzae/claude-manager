@@ -33,6 +33,15 @@ impl AgentKind {
         }
     }
 
+    /// Single-cell glyph identifying the harness in session lists.
+    pub fn icon(self) -> &'static str {
+        match self {
+            AgentKind::Claude => "\u{273b}", // ✻ — Claude's asterisk motif
+            AgentKind::Codex => "\u{2b21}",  // ⬡ — hexagon, OpenAI-ish
+            AgentKind::Pi => "\u{3c0}",      // π
+        }
+    }
+
     /// Human-readable name, e.g. for pickers.
     pub fn label(self) -> &'static str {
         match self {

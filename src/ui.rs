@@ -40,6 +40,20 @@ fn run_indicator(app: &App, item: &app::ListItem) -> Option<Span<'static>> {
 }
 
 /// Status icon + colour for a session, used both inline and for the status rail.
+
+/// Dim glyph identifying the harness a session runs (✻ claude, ⬡ codex, π pi).
+fn agent_icon_span(app: &App, tmux_name: &str) -> Span<'static> {
+    let agent = app
+        .session_agents
+        .get(tmux_name)
+        .and_then(|id| crate::agent::AgentKind::from_id(id))
+        .unwrap_or_default();
+    Span::styled(
+        format!(" {}", agent.icon()),
+        Style::default().fg(current().muted),
+    )
+}
+
 fn status_glyph(status: SessionStatus, tick: usize) -> (&'static str, Color) {
     match status {
         SessionStatus::Running => (SPINNER[tick % SPINNER.len()], current().yellow),
@@ -944,6 +958,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(format!("{status_icon} "), Style::default().fg(status_color)),
                     Span::styled("⌂ ", Style::default().fg(current().accent)),
                     Span::styled(&session.session_name, style),
+                    agent_icon_span(app, &session.name),
                 ];
                 if let Some(ind) = run_indicator(app, item) {
                     spans.push(ind);
@@ -1007,6 +1022,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     left.push(Span::styled("⌂ ", Style::default().fg(current().accent)));
                 }
                 left.push(Span::styled(&session.session_name, style));
+                left.push(agent_icon_span(app, &session.name));
                 if let Some(ind) = run_indicator(app, item) {
                     left.push(ind);
                 }
