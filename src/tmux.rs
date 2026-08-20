@@ -965,7 +965,10 @@ fn build_agent_command(
                 // cwd-scoped: resumes the most recent session for this work dir.
                 cmd.push_str(" resume --last");
             }
-            cmd.push_str(" --dangerously-bypass-approvals-and-sandbox");
+            // Inline mode instead of codex's default alternate screen: tmux
+            // keeps no scrollback for alt screens, so long turns would scroll
+            // out of what `capture-pane -S` can see and break ask/output.
+            cmd.push_str(" --no-alt-screen --dangerously-bypass-approvals-and-sandbox");
             if !resume {
                 let prompt = match (system_prompt, initial_prompt) {
                     (Some(sp), Some(p)) => Some(format!("{sp}\n\n{p}")),
