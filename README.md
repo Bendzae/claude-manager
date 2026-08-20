@@ -1,23 +1,20 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-  <img src="assets/logo-light.svg" alt="showrunner logo" width="72" align="right">
-</picture>
+<h1><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dark.svg">
+  <img src="assets/wordmark-light.svg" alt="showrunner" width="330">
+</picture></h1>
 
-# Showrunner
+> Formerly **claude-manager**.
 
-> Formerly **claude-manager** — renamed as it grows agent-agnostic (Claude Code and Codex CLI today; pi and opencode planned).
+A terminal UI (TUI) for managing multiple coding-agent sessions — Claude Code and Codex CLI today, more harnesses planned — organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
 
-A terminal UI (TUI) for managing multiple Claude Code sessions organized by projects and tasks. Built with Rust using [ratatui](https://github.com/ratatui/ratatui).
-
-Showrunner uses tmux to run Claude Code sessions in the background, letting you organize them into projects and tasks, monitor their status, review diffs, and attach/detach freely.
+Showrunner uses tmux to run agent sessions in the background, letting you organize them into projects and tasks, monitor their status, review diffs, and attach/detach freely.
 <img width="800" height="430" alt="showcase-gif" src="https://github.com/user-attachments/assets/63b6a5b1-b821-44b3-b764-481ee40fd33f" />
 
 ## Prerequisites
 
 - **Cargo** (Rust 1.85+) — [install via rustup](https://rustup.rs/)
 - **tmux** — `brew install tmux` (macOS) or `apt install tmux` (Linux)
-- **Claude Code CLI** (`claude`) — must be installed and available in your PATH
-- **Codex CLI** (`codex`, optional) — for sessions with `--agent codex` / `default_agent = "codex"`; must be logged in (`codex login`)
+- **An agent CLI** on your PATH — **Claude Code** (`claude`, the default) and/or **Codex CLI** (`codex`, used with `--agent codex` / `default_agent = "codex"`; must be logged in via `codex login`)
 - **git** — for worktree and branch management
 - **gh** (optional) — GitHub CLI, for PR creation features
 - **hunk** (optional) — the default diff review tool (`r`), a terminal diff viewer ([modem-dev/hunk](https://github.com/modem-dev/hunk)). Installed globally (`npm i -g hunkdiff`) it launches instantly; otherwise it runs via `npx hunkdiff` automatically (Node.js required), fetched on first use.
@@ -53,7 +50,7 @@ Launch from any directory. Configuration is stored in `~/.showrunner/config.toml
 
 - **Project** — A git repository you want to manage agent sessions for. Added by its filesystem path (`p` prompts for path and name).
 - **Task** — A unit of work within a project, tied to a git branch. Each task can have multiple sessions.
-- **Session** — An agent instance (Claude Code today) running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
+- **Session** — An agent instance (Claude Code or Codex CLI, per `default_agent`/`--agent`) running in a tmux session. Sessions can be created with an optional initial prompt, and (by default) in their own git worktree so they don't collide.
 - **Main session** (`◆ main`) — Every task has one, created with the task. It works in a worktree with the **task branch itself** checked out, so its commits land on the task branch directly — no merge step. Extra sessions (`n`) get their own `<task-branch>-<name>` branch and merge back into it.
 - **Adhoc session** — A project-scoped session that runs the agent directly in the project directory on whatever branch is checked out, with no task or worktree. Created with `A` from a project's context menu and grouped under the project. Handy for quick, throwaway work that doesn't warrant a task.
 
@@ -243,7 +240,7 @@ This gives you a valid-HTTPS URL reachable only from your own devices. Open it o
 
 ## CLI
 
-Besides the TUI and `serve`, the binary exposes the same task/session operations as commands. They act on the shared state in `~/.showrunner/`, so a running TUI picks the changes up on its next refresh. Agents running inside a session use these to manage each other (see [Claude Code plugin](#claude-code-plugin)), and they're handy from any shell.
+Besides the TUI and `serve`, the binary exposes the same task/session operations as commands. They act on the shared state in `~/.showrunner/`, so a running TUI picks the changes up on its next refresh. Agents running inside a session use these to manage each other (see [Agent skills](#agent-skills)), and they're handy from any shell.
 
 ```sh
 showrunner list [--json] [--project <name>]      # projects, tasks, live sessions + status
@@ -269,14 +266,14 @@ $ showrunner ask myapp/fix-auth/2 "which module owns token refresh?"
 
 A busy session queues the question and answers when it gets there, so `ask` blocks for as long as that takes (default timeout 300s). On timeout, or when the target stops on a permission/question dialog, whatever it printed still goes to stdout and the exit status is non-zero. Use `send` to drop a message without waiting for a reply, and `output` to read a session's screen directly.
 
-## Claude Code plugin
+## Agent skills
 
-The repo ships a Claude Code plugin (`showrunner-plugin/`) with skills that let an agent running inside a session drive Showrunner without leaving the worktree:
+The repo ships two skills (`showrunner-plugin/`) that let an agent running inside a session drive Showrunner without leaving the worktree:
 
 - **`commit-push-task`** — commit changes on the current branch, fast-forward them into the task branch (in whichever worktree has it checked out), and push the task branch. In the main session, where the current branch *is* the task branch, it just commits and pushes.
 - **`manage-sessions`** — view, create and manage other tasks and sessions, and ask an agent in another session a question, via the [CLI](#cli) above. Session agents are told about this in their system prompt, so they can fan work out to new sessions or consult a sibling agent that holds context they don't.
 
-The plugin is installed into every Claude session's worktree automatically, so both skills are available inside any session (`/commit-push-task`, `/manage-sessions`). Sessions running other agents (e.g. codex) get the same SKILL.md files installed under `.agents/skills/` in the worktree instead — the cross-agent skills location.
+They're installed into every session's worktree automatically, in whatever form the agent discovers: a Claude Code plugin for Claude sessions (`/commit-push-task`, `/manage-sessions`), plain SKILL.md folders under `.agents/skills/` — the cross-agent skills location — for everyone else.
 
 ## Development
 
