@@ -29,7 +29,7 @@ Showrunner uses tmux to run Claude Code sessions in the background, letting you 
 cargo install showrunner
 ```
 
-Configuration and data stay in `~/.claude-manager/`, so upgrading from claude-manager keeps all projects, tasks and sessions. Remove the old binary with `cargo uninstall claude-manager` (add a shell alias if your fingers still type it).
+Data lives in `~/.showrunner/`. Upgrading from claude-manager keeps all projects, tasks and sessions: on first start the old `~/.showrunner/` dir is migrated automatically (renamed, worktree git links repaired, live sessions re-pointed). Remove the old binary with `cargo uninstall claude-manager`.
 
 Or build from source:
 
@@ -45,7 +45,7 @@ cargo install --path .
 showrunner
 ```
 
-Launch from any directory. Configuration is stored in `~/.claude-manager/config.toml`.
+Launch from any directory. Configuration is stored in `~/.showrunner/config.toml`.
 
 > **Tip:** When you attach to a session (with `Enter`), you're inside a tmux session. To detach and get back to showrunner, use your tmux detach binding — with the default prefix that's `Ctrl-b d`. The session keeps running in the background.
 
@@ -59,7 +59,7 @@ Launch from any directory. Configuration is stored in `~/.claude-manager/config.
 
 ### Keybindings
 
-All keybindings are customizable via `~/.claude-manager/keybindings.toml`. The tables below show the defaults. See [`keybindings.example.toml`](keybindings.example.toml) for a full template.
+All keybindings are customizable via `~/.showrunner/keybindings.toml`. The tables below show the defaults. See [`keybindings.example.toml`](keybindings.example.toml) for a full template.
 
 #### Global
 
@@ -141,13 +141,13 @@ Run sessions are independent per item, so running on a different item starts a s
 
 The main session only offers Review, Terminal, Run and Copy path: it is already on the task branch, so Merge and Update have nothing to do, and it can't be deleted on its own — delete or archive the task instead.
 
-The **Review** action (`r`) launches the configured diff review tool on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Choose the tool with `review_tool` in `~/.claude-manager/config.toml` (`"hunk"`, the default, or `"difit"`):
+The **Review** action (`r`) launches the configured diff review tool on the relevant diff — branch-vs-base for a task, uncommitted changes for a session. Choose the tool with `review_tool` in `~/.showrunner/config.toml` (`"hunk"`, the default, or `"difit"`):
 
 - **hunk** (default, [modem-dev/hunk](https://github.com/modem-dev/hunk)) opens a terminal viewer in the foreground, suspending the TUI until you exit. Comments you leave are polled from hunk's live review session while it runs and forwarded to the agent session on exit. (A comment added in the last fraction of a second before quitting may be missed, since hunk's session is gone once it closes.)
 - **difit** opens a browser-based viewer in the background, so the TUI stays interactive. Any comments you leave are captured on exit and forwarded back to the agent session as a new prompt, so you can review a diff and hand the feedback straight to the agent. When a task review ends with comments and the task has several sessions, a picker asks which session receives them.
 
 ```toml
-# ~/.claude-manager/config.toml
+# ~/.showrunner/config.toml
 review_tool = "difit"   # or "hunk" (default)
 ```
 
@@ -177,7 +177,7 @@ setup_commands = ["npm install", "./scripts/configure-hooks.sh"]
 
 ### Configuration
 
-The config file at `~/.claude-manager/config.toml` is managed automatically through the TUI, but can also be edited manually:
+The config file at `~/.showrunner/config.toml` is managed automatically through the TUI, but can also be edited manually:
 
 ```toml
 # Global: agent harness new sessions run by default ("claude" or "codex");
@@ -214,7 +214,7 @@ Tasks whose `base_branch` is another task's branch form a stack — the same rel
 
 #### Custom Keybindings
 
-Create `~/.claude-manager/keybindings.toml` to override any default keybinding. Only the keys you specify are overridden; everything else keeps its default. Example:
+Create `~/.showrunner/keybindings.toml` to override any default keybinding. Only the keys you specify are overridden; everything else keeps its default. Example:
 
 ```toml
 quit = "Q"
@@ -243,7 +243,7 @@ This gives you a valid-HTTPS URL reachable only from your own devices. Open it o
 
 ## CLI
 
-Besides the TUI and `serve`, the binary exposes the same task/session operations as commands. They act on the shared state in `~/.claude-manager/`, so a running TUI picks the changes up on its next refresh. Agents running inside a session use these to manage each other (see [Claude Code plugin](#claude-code-plugin)), and they're handy from any shell.
+Besides the TUI and `serve`, the binary exposes the same task/session operations as commands. They act on the shared state in `~/.showrunner/`, so a running TUI picks the changes up on its next refresh. Agents running inside a session use these to manage each other (see [Claude Code plugin](#claude-code-plugin)), and they're handy from any shell.
 
 ```sh
 showrunner list [--json] [--project <name>]      # projects, tasks, live sessions + status

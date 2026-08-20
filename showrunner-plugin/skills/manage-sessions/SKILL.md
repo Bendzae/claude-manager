@@ -8,7 +8,7 @@ You are running inside a Showrunner session. The `showrunner` CLI lets you see t
 tasks and sessions on this machine, create new ones, and talk to the agents running in them.
 
 Every command is a plain shell call. Run them from anywhere; they act on the shared Showrunner
-state (`~/.claude-manager/`), not on your worktree.
+state (`~/.showrunner/`), not on your worktree.
 
 ## Session refs
 

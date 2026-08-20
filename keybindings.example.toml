@@ -1,5 +1,5 @@
 # Example keybindings configuration for showrunner
-# Copy this file to ~/.claude-manager/keybindings.toml and customize as needed.
+# Copy this file to ~/.showrunner/keybindings.toml and customize as needed.
 # All fields are optional — omitted fields fall back to the defaults shown here.
 # (Arrow keys, Enter, Esc, and Tab are not configurable.)
 

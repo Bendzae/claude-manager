@@ -106,7 +106,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Keybindings for context menu actions. All fields are single characters.
-/// Configured under `[context_menu_keys]` in `~/.claude-manager/keybindings.toml`.
+/// Configured under `[context_menu_keys]` in `~/.showrunner/keybindings.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuKeyBindings {
     /// Add task to project (default: t)
@@ -196,7 +196,7 @@ impl Default for ContextMenuKeyBindings {
 
 /// Keybindings for Normal mode. All fields are single characters.
 /// Arrow keys, Enter, Esc, and Tab are not configurable.
-/// Loaded from `~/.claude-manager/keybindings.toml`.
+/// Loaded from `~/.showrunner/keybindings.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyBindings {
     /// Quit the application (default: q)
@@ -481,12 +481,99 @@ pub struct Config {
     pub startup_skills: Vec<String>,
 }
 
-/// Root directory for all showrunner data. Kept at ~/.claude-manager (the
-/// pre-rename location) for backwards compatibility with existing installs.
+/// Root directory for all showrunner data: ~/.showrunner
 pub fn base_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".showrunner")
+}
+
+/// The pre-rename data dir (~/.claude-manager).
+fn legacy_base_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
         .join(".claude-manager")
+}
+
+/// One-time migration of the data dir from ~/.claude-manager to ~/.showrunner,
+/// run at startup before anything touches `base_dir()`. Renames the directory,
+/// then heals what stored absolute paths into the old location: the git
+/// back-pointers of the worktrees living inside it, and `CM_WORKTREE_PATH` on
+/// live tmux sessions. A no-op when there is nothing to migrate or the new
+/// dir already exists.
+pub fn migrate_legacy_base_dir() {
+    let old = legacy_base_dir();
+    let new = base_dir();
+    if new.exists() || !old.exists() || fs::rename(&old, &new).is_err() {
+        return;
+    }
+
+    // Heal git worktree links: each worktree's .git file points at
+    // <main-repo>/.git/worktrees/<id> (unaffected by the move), but the
+    // back-pointer stored there still holds the old worktree path.
+    let worktrees = new.join("worktrees");
+    if let Ok(projects) = fs::read_dir(&worktrees) {
+        for wt in projects
+            .flatten()
+            .filter(|p| p.path().is_dir())
+            .filter_map(|p| fs::read_dir(p.path()).ok())
+            .flatten()
+            .flatten()
+            .filter(|wt| wt.path().is_dir())
+        {
+            let gitfile = fs::read_to_string(wt.path().join(".git")).unwrap_or_default();
+            if let Some(main_repo) = main_repo_from_gitdir(gitfile.trim()) {
+                let _ = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(main_repo)
+                    .arg("worktree")
+                    .arg("repair")
+                    .arg(wt.path())
+                    .output();
+            }
+        }
+    }
+
+    // Point live sessions' CM_WORKTREE_PATH at the new location.
+    let (old_s, new_s) = (old.to_string_lossy(), new.to_string_lossy());
+    if let Ok(out) = std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+    {
+        for session in String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|s| s.starts_with("cm__"))
+        {
+            let env = std::process::Command::new("tmux")
+                .args(["show-environment", "-t", session, "CM_WORKTREE_PATH"])
+                .output();
+            if let Ok(env) = env
+                && env.status.success()
+                && let Some((_, value)) =
+                    String::from_utf8_lossy(&env.stdout).trim().split_once('=')
+                && value.starts_with(old_s.as_ref())
+            {
+                let updated = value.replacen(old_s.as_ref(), new_s.as_ref(), 1);
+                let _ = std::process::Command::new("tmux")
+                    .args([
+                        "set-environment",
+                        "-t",
+                        session,
+                        "CM_WORKTREE_PATH",
+                        &updated,
+                    ])
+                    .output();
+            }
+        }
+    }
+}
+
+/// Extract the main repo path from a worktree `.git` file's
+/// `gitdir: <main>/.git/worktrees/<id>` line.
+fn main_repo_from_gitdir(gitfile: &str) -> Option<PathBuf> {
+    let gitdir = gitfile.strip_prefix("gitdir: ")?.trim();
+    let (main_git, _) = gitdir.split_once("/.git/worktrees/")?;
+    Some(PathBuf::from(main_git))
 }
 
 /// Path to the persisted UI theme name.
@@ -1151,5 +1238,20 @@ mod tests {
         assert_eq!(deserialized.projects.len(), 1);
         assert_eq!(deserialized.projects[0].tasks.len(), 1);
         assert_eq!(deserialized.projects[0].tasks[0].name, "task1");
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn main_repo_parsed_from_worktree_gitfile() {
+        assert_eq!(
+            main_repo_from_gitdir("gitdir: /home/u/proj/.git/worktrees/task-main"),
+            Some(PathBuf::from("/home/u/proj"))
+        );
+        assert_eq!(main_repo_from_gitdir("gitdir: /home/u/proj/.git"), None);
+        assert_eq!(main_repo_from_gitdir(""), None);
     }
 }
