@@ -22,6 +22,12 @@ Showrunner uses tmux to run agent sessions in the background, letting you organi
 
 ## Installation
 
+Homebrew (macOS and Linux):
+
+```bash
+brew install Bendzae/tap/showrunner
+```
+
 Prebuilt binaries (macOS and Linux):
 
 ```bash
