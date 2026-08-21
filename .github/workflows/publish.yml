@@ -18,7 +18,7 @@ jobs:
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if curl -fsSL -o /dev/null "https://crates.io/api/v1/crates/showrunner/$VERSION"; then
+          if curl -fsSL -o /dev/null -A "showrunner-ci (github.com/Bendzae/showrunner)" "https://crates.io/api/v1/crates/showrunner/$VERSION"; then
             echo "publish-crate=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish-crate=true" >> "$GITHUB_OUTPUT"
