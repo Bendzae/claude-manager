@@ -18,26 +18,31 @@ jobs:
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-            echo "new=false" >> "$GITHUB_OUTPUT"
+          if curl -fsSL -o /dev/null "https://crates.io/api/v1/crates/showrunner/$VERSION"; then
+            echo "publish-crate=false" >> "$GITHUB_OUTPUT"
           else
-            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "publish-crate=true" >> "$GITHUB_OUTPUT"
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "publish-release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish-release=true" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.version.outputs.new == 'true'
+        if: steps.version.outputs.publish-crate == 'true'
 
       - uses: Swatinem/rust-cache@v2
-        if: steps.version.outputs.new == 'true'
+        if: steps.version.outputs.publish-crate == 'true'
 
       - name: Publish to crates.io
-        if: steps.version.outputs.new == 'true'
+        if: steps.version.outputs.publish-crate == 'true'
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Trigger binary release
-        if: steps.version.outputs.new == 'true'
+        if: steps.version.outputs.publish-release == 'true'
         run: gh workflow run release.yml --ref main -f tag="v$VERSION"
         env:
           GH_TOKEN: ${{ github.token }}
