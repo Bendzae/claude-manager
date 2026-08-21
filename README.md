@@ -22,6 +22,14 @@ Showrunner uses tmux to run agent sessions in the background, letting you organi
 
 ## Installation
 
+Prebuilt binaries (macOS and Linux):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Bendzae/showrunner/releases/latest/download/showrunner-installer.sh | sh
+```
+
+Or via cargo:
+
 ```bash
 cargo install showrunner
 ```
