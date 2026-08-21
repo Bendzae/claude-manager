@@ -57,6 +57,10 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
             print!("{HELP}");
             Some(Ok(()))
         }
+        Some("--version" | "-V" | "version") => {
+            println!("showrunner {}", env!("CARGO_PKG_VERSION"));
+            Some(Ok(()))
+        }
         _ => None,
     }
 }
