@@ -25,8 +25,10 @@ Usage:
 
 Managing tasks and sessions (usable from inside a session):
   showrunner list [--json] [--project <name>]
-  showrunner task create <project> <name> [--branch <b>] [--prompt <text>]
+  showrunner task create <project> <name> [--branch <b>] [--base <b>]
+                                           [--prompt <text>]
                                            [--agent claude|codex|pi]
+  showrunner task set-base <project> <task> <branch>   ('main' resets)
   showrunner task delete <project> <task> --yes
   showrunner session create <project> <task> [--prompt <text>] [--no-worktree]
                                               [--agent claude|codex|pi]
@@ -374,28 +376,37 @@ fn cmd_list(args: &[String]) -> Result<()> {
 fn cmd_task(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("create") => cmd_task_create(&args[1..]),
+        Some("set-base") => cmd_task_set_base(&args[1..]),
         Some("delete") => cmd_task_delete(&args[1..]),
-        Some(other) => bail!("unknown task command '{other}' (expected create or delete)"),
-        None => bail!("usage: task create <project> <name> | task delete <project> <task> --yes"),
+        Some(other) => {
+            bail!("unknown task command '{other}' (expected create, set-base or delete)")
+        }
+        None => bail!(
+            "usage: task create <project> <name> | task set-base <project> <task> <branch> | \
+             task delete <project> <task> --yes"
+        ),
     }
 }
 
 fn cmd_task_create(args: &[String]) -> Result<()> {
-    let (positional, flags) = parse_args(args, &["branch", "prompt", "agent"], &[])?;
+    let (positional, flags) = parse_args(args, &["branch", "base", "prompt", "agent"], &[])?;
     let [project_name, task_name] = positional.as_slice() else {
         bail!(
-            "usage: task create <project> <name> [--branch <b>] [--prompt <text>] [--agent <id>]"
+            "usage: task create <project> <name> [--branch <b>] [--base <b>] [--prompt <text>] \
+             [--agent <id>]"
         );
     };
 
     let cfg = Config::load()?;
     let project = ops::find_project(&cfg, project_name)?;
     let agent = ops::resolve_agent(&cfg, flags.get("agent").map(String::as_str))?;
+    let base = flags.get("base").map(String::as_str);
     let (branch, tmux_name) = ops::create_task(
         &cfg,
         project,
         task_name,
         flags.get("branch").map(String::as_str),
+        base,
         flags
             .get("prompt")
             .map(String::as_str)
@@ -406,8 +417,44 @@ fn cmd_task_create(args: &[String]) -> Result<()> {
     let session = TmuxSession::from_tmux_name(&tmux_name)
         .map(|s| session_ref(&s))
         .unwrap_or(tmux_name);
-    println!("created task '{task_name}' on branch {branch}");
+    match base.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(base) => println!("created task '{task_name}' on branch {branch} (base {base})"),
+        None => println!("created task '{task_name}' on branch {branch}"),
+    }
     println!("main session: {session}");
+    Ok(())
+}
+
+fn cmd_task_set_base(args: &[String]) -> Result<()> {
+    let (positional, _) = parse_args(args, &[], &[])?;
+    let [project_name, task_name, base] = positional.as_slice() else {
+        bail!("usage: task set-base <project> <task> <branch>   ('main' resets to the default)");
+    };
+
+    let cfg = Config::load()?;
+    let project = ops::find_project(&cfg, project_name)?;
+    if !project.tasks.iter().any(|t| t.name == *task_name) {
+        bail!("task '{task_name}' not found in project '{project_name}'");
+    }
+
+    let base = base.trim();
+    let new_base = Some(base.to_string()).filter(|b| !b.is_empty() && b != "main");
+    if let Some(b) = &new_base
+        && !tmux::branch_exists(&project.path, b)
+    {
+        bail!(
+            "base branch '{b}' does not exist in {} (create it first, or check the name)",
+            project.path
+        );
+    }
+
+    let label = new_base.as_deref().unwrap_or("main").to_string();
+    let (project_name, task_name) = (project_name.clone(), task_name.clone());
+    let task_for_msg = task_name.clone();
+    Config::modify(move |c| {
+        c.set_task_base_branch(&project_name, &task_name, new_base);
+    })?;
+    println!("base branch for '{task_for_msg}' set to {label}");
     Ok(())
 }
 

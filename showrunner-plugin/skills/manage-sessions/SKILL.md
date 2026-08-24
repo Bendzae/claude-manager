@@ -66,12 +66,17 @@ showrunner output <session> --lines 200   # what's currently on that session's s
 ## Creating work
 
 ```
-showrunner task create <project> <name> [--branch <b>] [--prompt "<initial task>"]
+showrunner task create <project> <name> [--branch <b>] [--base <b>] [--prompt "<initial task>"]
+showrunner task set-base <project> <task> <branch>
 showrunner session create <project> <task> [--prompt "<initial task>"] [--no-worktree]
 ```
 
 - `task create` branches off `main`, registers the task, and starts its main session in a fresh
   worktree. Without `--branch` the branch name is derived from the task name.
+- `--base <branch>` makes the task part of a stack: it sets the task's base branch (the existing
+  branch must exist in the repo), and a newly created task branch starts from it instead of main.
+  Use it when building on another task's branch. `task set-base` fixes the base after creation
+  (pass `main` to reset).
 - `session create` adds a parallel session to an existing task, on its own `<task-branch>-<n>`
   branch in its own worktree. Use it to fan out independent work within the same task.
 - `--prompt` is the agent's first instruction. Make it self-contained: a new session starts with no

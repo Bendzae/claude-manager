@@ -2103,7 +2103,7 @@ impl App {
             let branch_exists = tmux::branch_exists(&project_path, &branch);
 
             if !branch_exists {
-                if let Err(e) = tmux::create_task_branch(&project_path, &branch) {
+                if let Err(e) = tmux::create_task_branch(&project_path, &branch, None) {
                     return OpResult {
                         message: format!("Error: {e}"),
                         rebuild: false,

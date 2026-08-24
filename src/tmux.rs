@@ -264,15 +264,16 @@ pub fn fetch_pull_all(project_path: &str) -> Result<String> {
     }
 }
 
-/// Pull latest main and create a task branch from it.
-pub fn create_task_branch(project_path: &str, branch_name: &str) -> Result<()> {
-    // Try to fetch latest main from origin
+/// Pull the latest base branch (default "main") and create a task branch from it.
+pub fn create_task_branch(project_path: &str, branch_name: &str, base: Option<&str>) -> Result<()> {
+    let base = base.unwrap_or("main");
+    // Try to fetch the latest base from origin
     let _ = Command::new("git")
-        .args(["-C", project_path, "fetch", "origin", "main"])
+        .args(["-C", project_path, "fetch", "origin", base])
         .output();
 
-    // Try creating from origin/main first, fall back to local main.
-    // `--no-track` prevents inheriting origin/main as the upstream — once the
+    // Try creating from origin/<base> first, fall back to the local base.
+    // `--no-track` prevents inheriting origin/<base> as the upstream — once the
     // branch is pushed, `push -u` will set it to track origin/<branch_name>.
     let status = Command::new("git")
         .args([
@@ -281,7 +282,7 @@ pub fn create_task_branch(project_path: &str, branch_name: &str) -> Result<()> {
             "branch",
             "--no-track",
             branch_name,
-            "origin/main",
+            &format!("origin/{base}"),
         ])
         .output()?;
 
@@ -293,11 +294,11 @@ pub fn create_task_branch(project_path: &str, branch_name: &str) -> Result<()> {
                 "branch",
                 "--no-track",
                 branch_name,
-                "main",
+                base,
             ])
             .output()?;
         if !output.status.success() {
-            bail!("Failed to create branch {branch_name}");
+            bail!("Failed to create branch {branch_name} from {base}");
         }
     }
 

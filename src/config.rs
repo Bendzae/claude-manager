@@ -1076,6 +1076,27 @@ mod tests {
     }
 
     #[test]
+    fn set_task_base_branch_trims_and_normalizes_main_to_none() {
+        let mut cfg = empty_config();
+        cfg.add_project("App".into(), "/tmp/app".into());
+        cfg.add_task("App", "t".into(), "b".into());
+
+        assert!(cfg.set_task_base_branch("App", "t", Some(" feature-1 ".into())));
+        assert_eq!(
+            cfg.projects[0].tasks[0].base_branch.as_deref(),
+            Some("feature-1")
+        );
+
+        assert!(cfg.set_task_base_branch("App", "t", Some("main".into())));
+        assert_eq!(cfg.projects[0].tasks[0].base_branch, None);
+
+        assert!(cfg.set_task_base_branch("App", "t", None));
+        assert_eq!(cfg.projects[0].tasks[0].base_branch, None);
+
+        assert!(!cfg.set_task_base_branch("App", "missing", Some("x".into())));
+    }
+
+    #[test]
     fn remove_task() {
         let mut cfg = empty_config();
         cfg.add_project("App".into(), "/tmp/app".into());

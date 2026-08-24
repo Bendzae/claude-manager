@@ -422,6 +422,7 @@ async fn api_create_task(
             &project,
             body.name.trim(),
             None,
+            None,
             body.prompt.as_deref().filter(|p| !p.trim().is_empty()),
             agent,
         )?;

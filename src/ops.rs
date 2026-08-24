@@ -60,12 +60,15 @@ pub fn create_task_session(
 
 /// Create a task (branch + config entry) and its main session.
 /// `branch` defaults to a branch name derived from the task name.
+/// `base` sets the task's base branch (for stacking); a newly created task
+/// branch starts from it instead of main.
 /// Returns the task's branch and the main session's tmux name.
 pub fn create_task(
     cfg: &Config,
     project: &Project,
     task_name: &str,
     branch: Option<&str>,
+    base: Option<&str>,
     prompt: Option<&str>,
     agent: AgentKind,
 ) -> Result<(String, String)> {
@@ -95,14 +98,29 @@ pub fn create_task(
         bail!("'{branch}' cannot be used as a task branch");
     }
 
+    let base = base.map(str::trim).filter(|b| !b.is_empty());
+    if let Some(base) = base {
+        if base == branch {
+            bail!("base branch can't be the task branch itself");
+        }
+        if !tmux::branch_exists(&project.path, base) {
+            bail!(
+                "base branch '{base}' does not exist in {} (create it first, or check the name)",
+                project.path
+            );
+        }
+    }
+
     if !tmux::branch_exists(&project.path, &branch) {
-        tmux::create_task_branch(&project.path, &branch)?;
+        tmux::create_task_branch(&project.path, &branch, base)?;
     }
 
     let (project_name, task, branch_for_config) =
         (project.name.clone(), task_name.to_string(), branch.clone());
+    let base_for_config = base.map(str::to_string);
     Config::modify(move |c| {
-        c.add_task(&project_name, task, branch_for_config);
+        c.add_task(&project_name, task.clone(), branch_for_config);
+        c.set_task_base_branch(&project_name, &task, base_for_config);
     })?;
 
     let tmux_name = create_task_session(
