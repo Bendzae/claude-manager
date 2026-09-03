@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
+use crate::tmux::{self, DiffStats, PrInfo, PrState, SessionStatus, TmuxSession};
 
 /// Task info for computing branch diffs.
 #[derive(Clone)]
@@ -32,8 +32,8 @@ pub struct WorkerUpdate {
     pub session_branches: HashMap<String, String>,
     /// Agent harness id per session, keyed by session tmux name.
     pub session_agents: HashMap<String, String>,
-    /// PR URLs keyed by branch name.
-    pub pr_urls: HashMap<String, String>,
+    /// PR details keyed by branch name.
+    pub prs: HashMap<String, PrInfo>,
     /// Current git branch for each project, keyed by project name.
     pub project_branches: HashMap<String, String>,
     /// Live "Run" sessions, keyed by tmux name (`cmrun-*`); value is true while
@@ -71,7 +71,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
     let mut diff_stats: HashMap<String, DiffStats> = HashMap::new();
     let mut session_branches: HashMap<String, String> = HashMap::new();
     let mut session_agents: HashMap<String, String> = HashMap::new();
-    let mut pr_urls: HashMap<String, String> = HashMap::new();
+    let mut prs: HashMap<String, PrInfo> = HashMap::new();
     let mut task_diff_stats: HashMap<String, DiffStats> = HashMap::new();
     let mut project_branches: HashMap<String, String> = HashMap::new();
     let mut tick: u64 = 0;
@@ -134,7 +134,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             session_branches: session_branches.clone(),
             session_agents: session_agents.clone(),
             task_diff_stats: task_diff_stats.clone(),
-            pr_urls: pr_urls.clone(),
+            prs: prs.clone(),
             project_branches: project_branches.clone(),
             run_sessions: tmux::list_run_sessions(),
         });
@@ -177,19 +177,26 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             }
         }
 
-        // Check for PRs (infrequently, ~every 10 seconds)
+        // Look for new PRs every ~10 seconds; refresh known ones (review and
+        // CI state change over time) every ~60 seconds. Merged PRs are final.
         if tick % 20 == 0 {
+            prs.retain(|k, _| tasks.iter().any(|t| t.branch == *k));
             for task in tasks.iter() {
-                if !pr_urls.contains_key(&task.branch) {
-                    if let Some(url) = tmux::get_pr_url(&task.project_path, &task.branch) {
+                let known = prs.get(&task.branch);
+                let refresh = tick % 120 == 0 && known.is_some_and(|p| p.state != PrState::Merged);
+                if known.is_some() && !refresh {
+                    continue;
+                }
+                if let Some(info) = tmux::get_pr_info(&task.project_path, &task.branch) {
+                    if known.is_none_or(|p| p.url != info.url) {
                         // Write PR URL to file so hooks can read it without network calls
                         let pr_path = crate::config::pr_url_path(&task.project_name, &task.branch);
                         if let Some(parent) = pr_path.parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        let _ = std::fs::write(&pr_path, &url);
-                        pr_urls.insert(task.branch.clone(), url);
+                        let _ = std::fs::write(&pr_path, &info.url);
                     }
+                    prs.insert(task.branch.clone(), info);
                 }
             }
         }
@@ -211,7 +218,7 @@ fn worker_loop(hints: Arc<Mutex<WorkerHints>>, latest: Arc<Mutex<Option<WorkerUp
             session_branches: session_branches.clone(),
             session_agents: session_agents.clone(),
             task_diff_stats: task_diff_stats.clone(),
-            pr_urls: pr_urls.clone(),
+            prs: prs.clone(),
             project_branches: project_branches.clone(),
             run_sessions: tmux::list_run_sessions(),
         };

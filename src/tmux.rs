@@ -2059,10 +2059,81 @@ fn capture_pane_plain(session_name: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Get the PR URL for a branch using the `gh` CLI.
-pub fn get_pr_url(project_path: &str, branch: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+impl PrState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrState::Open => "open",
+            PrState::Draft => "draft",
+            PrState::Merged => "merged",
+            PrState::Closed => "closed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrReview {
+    Approved,
+    ChangesRequested,
+    /// Reviewers were requested but none has approved or requested changes yet.
+    Requested,
+    NotRequested,
+}
+
+impl PrReview {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrReview::Approved => "approved",
+            PrReview::ChangesRequested => "changes_requested",
+            PrReview::Requested => "requested",
+            PrReview::NotRequested => "not_requested",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiStatus {
+    Passing,
+    Failing,
+    Pending,
+}
+
+impl CiStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CiStatus::Passing => "passing",
+            CiStatus::Failing => "failing",
+            CiStatus::Pending => "pending",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrInfo {
+    pub url: String,
+    pub state: PrState,
+    pub review: PrReview,
+    /// `None` when the PR has no status checks at all.
+    pub checks: Option<CiStatus>,
+}
+
+/// Get PR details for a branch using the `gh` CLI.
+pub fn get_pr_info(project_path: &str, branch: &str) -> Option<PrInfo> {
     let output = Command::new("gh")
-        .args(["pr", "view", branch, "--json", "url", "-q", ".url"])
+        .args([
+            "pr",
+            "view",
+            branch,
+            "--json",
+            "url,state,isDraft,reviewDecision,reviewRequests,statusCheckRollup",
+        ])
         .current_dir(project_path)
         .output()
         .ok()?;
@@ -2071,8 +2142,73 @@ pub fn get_pr_url(project_path: &str, branch: &str) -> Option<String> {
         return None;
     }
 
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if url.is_empty() { None } else { Some(url) }
+    parse_pr_info(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_pr_info(json: &str) -> Option<PrInfo> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let url = v["url"].as_str()?.trim().to_string();
+    if url.is_empty() {
+        return None;
+    }
+
+    let state = match (v["state"].as_str(), v["isDraft"].as_bool()) {
+        (Some("MERGED"), _) => PrState::Merged,
+        (Some("CLOSED"), _) => PrState::Closed,
+        (_, Some(true)) => PrState::Draft,
+        _ => PrState::Open,
+    };
+
+    let requests = v["reviewRequests"].as_array().map_or(0, Vec::len);
+    let review = match v["reviewDecision"].as_str() {
+        Some("APPROVED") => PrReview::Approved,
+        Some("CHANGES_REQUESTED") => PrReview::ChangesRequested,
+        _ if requests > 0 => PrReview::Requested,
+        _ => PrReview::NotRequested,
+    };
+
+    let checks = v["statusCheckRollup"]
+        .as_array()
+        .filter(|runs| !runs.is_empty())
+        .map(|runs| ci_rollup(runs));
+
+    Some(PrInfo {
+        url,
+        state,
+        review,
+        checks,
+    })
+}
+
+/// Fold GitHub's per-check entries (CheckRun `status`/`conclusion` or legacy
+/// StatusContext `state`) into one status: any failure wins, then any pending.
+fn ci_rollup(runs: &[serde_json::Value]) -> CiStatus {
+    const FAILED: &[&str] = &[
+        "FAILURE",
+        "ERROR",
+        "CANCELLED",
+        "TIMED_OUT",
+        "ACTION_REQUIRED",
+        "STARTUP_FAILURE",
+        "STALE",
+    ];
+    let mut pending = false;
+    for run in runs {
+        let conclusion = run["conclusion"].as_str().unwrap_or("");
+        let state = run["state"].as_str().unwrap_or("");
+        if FAILED.contains(&conclusion) || FAILED.contains(&state) {
+            return CiStatus::Failing;
+        }
+        let status = run["status"].as_str();
+        if status.is_some_and(|s| s != "COMPLETED") || matches!(state, "PENDING" | "EXPECTED") {
+            pending = true;
+        }
+    }
+    if pending {
+        CiStatus::Pending
+    } else {
+        CiStatus::Passing
+    }
 }
 
 pub fn next_session_number(project_name: &str, task_name: &str, sessions: &[TmuxSession]) -> u32 {
@@ -2701,5 +2837,73 @@ Some transcript output.\n\
         assert!(result.contains("1. /prime"));
         assert!(result.contains("Task: fix bug"));
         assert!(!result.contains("Skill tool"));
+    }
+
+    // --- parse_pr_info ---
+
+    #[test]
+    fn parse_pr_info_open_with_pending_review_and_passing_ci() {
+        let json = r#"{"url":"https://github.com/o/r/pull/7","state":"OPEN","isDraft":false,
+            "reviewDecision":"REVIEW_REQUIRED","reviewRequests":[{"login":"bob"}],
+            "statusCheckRollup":[
+              {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"},
+              {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"},
+              {"__typename":"StatusContext","state":"SUCCESS"}]}"#;
+        let info = parse_pr_info(json).unwrap();
+        assert_eq!(info.url, "https://github.com/o/r/pull/7");
+        assert_eq!(info.state, PrState::Open);
+        assert_eq!(info.review, PrReview::Requested);
+        assert_eq!(info.checks, Some(CiStatus::Passing));
+    }
+
+    #[test]
+    fn parse_pr_info_draft_without_reviewers_or_checks() {
+        let json = r#"{"url":"https://github.com/o/r/pull/8","state":"OPEN","isDraft":true,
+            "reviewDecision":"","reviewRequests":[],"statusCheckRollup":[]}"#;
+        let info = parse_pr_info(json).unwrap();
+        assert_eq!(info.state, PrState::Draft);
+        assert_eq!(info.review, PrReview::NotRequested);
+        assert_eq!(info.checks, None);
+    }
+
+    #[test]
+    fn parse_pr_info_merged_approved() {
+        let json = r#"{"url":"https://github.com/o/r/pull/9","state":"MERGED","isDraft":false,
+            "reviewDecision":"APPROVED","reviewRequests":[],"statusCheckRollup":[
+              {"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}"#;
+        let info = parse_pr_info(json).unwrap();
+        assert_eq!(info.state, PrState::Merged);
+        assert_eq!(info.review, PrReview::Approved);
+    }
+
+    #[test]
+    fn ci_rollup_failure_beats_pending() {
+        let runs: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"status":"IN_PROGRESS","conclusion":null},
+                {"status":"COMPLETED","conclusion":"FAILURE"}]"#,
+        )
+        .unwrap();
+        assert_eq!(ci_rollup(&runs), CiStatus::Failing);
+    }
+
+    #[test]
+    fn ci_rollup_pending_when_any_check_unfinished() {
+        let runs: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"status":"QUEUED","conclusion":null},
+                {"status":"COMPLETED","conclusion":"SUCCESS"},
+                {"state":"PENDING"}]"#,
+        )
+        .unwrap();
+        assert_eq!(ci_rollup(&runs), CiStatus::Pending);
+    }
+
+    #[test]
+    fn parse_pr_info_changes_requested_with_failing_status_context() {
+        let json = r#"{"url":"https://github.com/o/r/pull/10","state":"OPEN","isDraft":false,
+            "reviewDecision":"CHANGES_REQUESTED","reviewRequests":[],
+            "statusCheckRollup":[{"__typename":"StatusContext","state":"FAILURE"}]}"#;
+        let info = parse_pr_info(json).unwrap();
+        assert_eq!(info.review, PrReview::ChangesRequested);
+        assert_eq!(info.checks, Some(CiStatus::Failing));
     }
 }

@@ -170,6 +170,18 @@ Sessions display their current status:
 - **Waiting for permission** — the agent stopped on a permission or question dialog
 - **Finished** — the agent process has exited
 
+### PR Status
+
+Tasks with a pull request (found via `gh`) show it in the `PR` column as `#123` plus two glyphs, refreshed about once a minute. Selecting the task spells the same information out in the status bar.
+
+| Cell | Meaning |
+|------|---------|
+| `#123` / `#123 draft` / `#123 merged` / `#123 closed` | PR number and state (open PRs have no suffix) |
+| `✓` / `✗` / `◌` / `·` | Review: approved / changes requested / review requested, no decision yet / no reviewers requested |
+| `●` green / `●` red / `◍` yellow | CI: all checks passed / a check failed / checks still running (omitted when the PR has no checks) |
+
+Merged and closed PRs show only their state, since review and CI no longer apply.
+
 ### Worktrees
 
 Every session gets a git worktree so it works on an isolated copy of the codebase. The task's **main session** checks out the task branch itself; additional sessions created with `n` get their own `<task-branch>-<name>` branch. Use `N` to skip worktree creation and work directly in the project directory.

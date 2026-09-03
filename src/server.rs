@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::config::{self, Config};
 use crate::ops;
-use crate::tmux::{self, DiffStats, TmuxSession};
+use crate::tmux::{self, DiffStats, PrInfo, TmuxSession};
 use crate::worker::{TaskInfo, Worker, WorkerUpdate};
 
 struct ServerState {
@@ -106,6 +106,15 @@ fn diff_json(d: &DiffStats) -> Value {
     json!({ "added": d.added, "removed": d.removed })
 }
 
+fn pr_json(p: &PrInfo) -> Value {
+    json!({
+        "url": p.url,
+        "state": p.state.as_str(),
+        "review": p.review.as_str(),
+        "checks": p.checks.map(|c| c.as_str()),
+    })
+}
+
 fn session_json(s: &TmuxSession, u: &WorkerUpdate) -> Value {
     json!({
         "tmux_name": s.name,
@@ -136,7 +145,8 @@ fn build_state(cfg: &Config, u: &WorkerUpdate, hostname: &str) -> Value {
                         "branch": t.branch,
                         "base_branch": t.base_branch(),
                         "archived": t.archived,
-                        "pr_url": u.pr_urls.get(&t.branch),
+                        "pr_url": u.prs.get(&t.branch).map(|p| &p.url),
+                        "pr": u.prs.get(&t.branch).map(pr_json),
                         "diff": u.task_diff_stats.get(&t.branch).map(diff_json),
                         "sessions": sessions,
                     })
@@ -180,7 +190,7 @@ async fn api_state(State(state): State<Arc<ServerState>>) -> Result<Response, Ap
                         task_diff_stats: Default::default(),
                         session_branches: Default::default(),
                         session_agents: Default::default(),
-                        pr_urls: Default::default(),
+                        prs: Default::default(),
                         project_branches: Default::default(),
                         run_sessions: Default::default(),
                     };

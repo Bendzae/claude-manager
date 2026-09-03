@@ -196,7 +196,14 @@ body::before {
 .task-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--dim); flex-shrink: 0; }
 .diff-added { color: var(--green); }
 .diff-removed { color: var(--red); }
-.pr-link { color: var(--cyan); text-decoration: none; }
+.pr-link { color: var(--cyan); text-decoration: none; white-space: nowrap; }
+.pr-link.pr-draft { color: var(--dim); }
+.pr-link.pr-merged { color: #bb9af7; }
+.pr-link.pr-closed { color: var(--red); }
+.pr-review-approved, .pr-ci-passing { color: var(--green); }
+.pr-review-changes_requested, .pr-ci-failing { color: var(--red); }
+.pr-review-requested, .pr-ci-pending { color: var(--amber); }
+.pr-review-not_requested { color: var(--dim); }
 
 .session-row-wrap {
   display: flex;

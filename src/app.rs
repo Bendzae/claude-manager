@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use crate::agent::AgentKind;
 use crate::config::{self, Config, KeyBindings, Project, ReviewTool, Task};
-use crate::tmux::{self, DiffStats, SessionStatus, TmuxSession};
+use crate::tmux::{self, DiffStats, PrInfo, SessionStatus, TmuxSession};
 use crate::worker::{TaskInfo, Worker};
 
 #[derive(Debug, Clone)]
@@ -317,8 +317,8 @@ pub struct App {
     /// Agent harness id per session, keyed by tmux name (from the worker).
     pub session_agents: HashMap<String, String>,
     pub task_diff_stats: HashMap<String, DiffStats>,
-    /// PR URLs keyed by branch name
-    pub pr_urls: HashMap<String, String>,
+    /// PR details keyed by branch name
+    pub prs: HashMap<String, PrInfo>,
     /// Current git branch for each project, keyed by project name
     pub project_branches: HashMap<String, String>,
     /// Last-seen modification time of config.toml, used to detect external edits.
@@ -586,7 +586,7 @@ impl App {
             session_branches: HashMap::new(),
             session_agents: HashMap::new(),
             task_diff_stats: HashMap::new(),
-            pr_urls: HashMap::new(),
+            prs: HashMap::new(),
             project_branches: HashMap::new(),
             config_mtime: config_file_mtime(),
             op_count: 0,
@@ -654,8 +654,8 @@ impl App {
             if !update.task_diff_stats.is_empty() {
                 self.task_diff_stats = update.task_diff_stats;
             }
-            if !update.pr_urls.is_empty() {
-                self.pr_urls.extend(update.pr_urls);
+            if !update.prs.is_empty() {
+                self.prs = update.prs;
             }
             if !update.project_branches.is_empty() {
                 self.project_branches = update.project_branches;
@@ -2958,8 +2958,8 @@ impl App {
 
     pub fn open_pr(&mut self) {
         if let Some(ListItem::Task { task, .. }) = self.selected_item() {
-            if let Some(url) = self.pr_urls.get(&task.branch) {
-                open_url(url);
+            if let Some(pr) = self.prs.get(&task.branch) {
+                open_url(&pr.url);
             } else {
                 self.input_mode = InputMode::ConfirmCreatePr;
                 self.status_message = Some("No PR found. Create one? (y/n)".into());

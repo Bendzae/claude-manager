@@ -181,6 +181,35 @@ function urgentStatus(sessions) {
   return "";
 }
 
+const REVIEW_GLYPH = {
+  approved: ["✓", "approved"],
+  changes_requested: ["✗", "changes requested"],
+  requested: ["◌", "review requested"],
+  not_requested: ["·", "no review requested"],
+};
+
+function prLink(pr) {
+  const m = pr.url.match(/\/pull\/(\d+)\/?$/);
+  const a = el("a", `pr-link pr-${pr.state}`, m ? `#${m[1]}` : "PR");
+  a.href = pr.url;
+  a.target = "_blank";
+  const title = [pr.state];
+  if (pr.state === "merged" || pr.state === "closed") {
+    a.append(` ${pr.state}`);
+  } else {
+    if (pr.state === "draft") a.append(" draft");
+    const [glyph, label] = REVIEW_GLYPH[pr.review] || REVIEW_GLYPH.not_requested;
+    a.append(" ", el("span", `pr-review pr-review-${pr.review}`, glyph));
+    title.push(label);
+    if (pr.checks) {
+      a.append(" ", el("span", `pr-ci pr-ci-${pr.checks}`, pr.checks === "pending" ? "◍" : "●"));
+      title.push(`CI ${pr.checks}`);
+    }
+  }
+  a.title = title.join(" · ");
+  return a;
+}
+
 function renderTask(project, task) {
   const card = el("div", "task");
 
@@ -198,12 +227,7 @@ function renderTask(project, task) {
       );
   }
   meta.append(taskDiff);
-  if (task.pr_url) {
-    const a = el("a", "pr-link", "PR ↗");
-    a.href = task.pr_url;
-    a.target = "_blank";
-    meta.append(a);
-  }
+  if (task.pr) meta.append(prLink(task.pr));
   meta.append(
     confirmButton("row-del", "✕", async (btn) => {
       btn.disabled = true;

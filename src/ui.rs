@@ -10,7 +10,7 @@ use ratatui::widgets::{
 
 use crate::app::{self, App, InputMode};
 use crate::theme::current;
-use crate::tmux::{self, SessionStatus};
+use crate::tmux::{self, CiStatus, PrInfo, PrReview, PrState, SessionStatus};
 
 const PAD_LEFT: u16 = 1;
 const PAD_TOP: u16 = 1;
@@ -393,6 +393,86 @@ fn pr_number(url: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// `#123` (or `PR` when the URL has no numeric id), coloured by PR state.
+fn pr_label(pr: &PrInfo) -> Span<'static> {
+    let label = pr_number(&pr.url)
+        .map(|n| format!("#{n}"))
+        .unwrap_or_else(|| "PR".to_string());
+    let t = current();
+    let color = match pr.state {
+        PrState::Open => t.magenta,
+        PrState::Draft => t.muted,
+        PrState::Merged => t.accent,
+        PrState::Closed => t.red,
+    };
+    Span::styled(label, Style::default().fg(color))
+}
+
+/// PR badge cell: `#123` plus, for open PRs, a review glyph and a CI glyph.
+/// Merged/closed PRs spell out their state instead, since review and CI no
+/// longer matter for them.
+fn pr_badge(pr: &PrInfo) -> Vec<Span<'static>> {
+    let t = current();
+    let mut spans = vec![pr_label(pr)];
+    match pr.state {
+        PrState::Merged | PrState::Closed => {
+            let color = if pr.state == PrState::Merged {
+                t.accent
+            } else {
+                t.red
+            };
+            spans.push(Span::styled(
+                format!(" {}", pr.state.as_str()),
+                Style::default().fg(color),
+            ));
+            return spans;
+        }
+        PrState::Draft => spans.push(Span::styled(" draft", Style::default().fg(t.muted))),
+        PrState::Open => {}
+    }
+    let (review_glyph, review_color) = match pr.review {
+        PrReview::Approved => ("\u{2713}", t.green),
+        PrReview::ChangesRequested => ("\u{2717}", t.red),
+        PrReview::Requested => ("\u{25cc}", t.yellow),
+        PrReview::NotRequested => ("\u{00b7}", t.muted),
+    };
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        review_glyph,
+        Style::default().fg(review_color),
+    ));
+    if let Some(ci) = pr.checks {
+        let (glyph, color) = match ci {
+            CiStatus::Passing => ("\u{25cf}", t.green),
+            CiStatus::Failing => ("\u{25cf}", t.red),
+            CiStatus::Pending => ("\u{25cd}", t.yellow),
+        };
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(glyph, Style::default().fg(color)));
+    }
+    spans
+}
+
+/// Human-readable PR summary for the status bar: `draft · review requested · CI pending`.
+fn pr_summary(pr: &PrInfo) -> String {
+    let mut parts = vec![pr.state.as_str().to_string()];
+    if matches!(pr.state, PrState::Open | PrState::Draft) {
+        parts.push(
+            match pr.review {
+                PrReview::Approved => "approved",
+                PrReview::ChangesRequested => "changes requested",
+                PrReview::Requested => "review requested",
+                PrReview::NotRequested => "no review requested",
+            }
+            .to_string(),
+        );
+        if let Some(ci) = pr.checks {
+            parts.push(format!("CI {}", ci.as_str()));
+        }
+    }
+    parts.join(" \u{00b7} ")
 }
 
 // --- Overview row layout ---------------------------------------------------
@@ -852,17 +932,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
                     .map(|s| (s.added, s.removed))
                     .unwrap_or((0, 0));
 
-                // Badge column: PR icon.
-                let badge = if let Some(url) = app.pr_urls.get(&task.branch) {
-                    // Show "#<number>" instead of a bare icon; fall back to "PR"
-                    // when the URL has no numeric id.
-                    let label = pr_number(url)
-                        .map(|n| format!("#{n}"))
-                        .unwrap_or_else(|| "PR".to_string());
-                    vec![Span::styled(label, Style::default().fg(current().magenta))]
-                } else {
-                    Vec::new()
-                };
+                let badge = app.prs.get(&task.branch).map(pr_badge).unwrap_or_default();
 
                 // Branch column: branch name, with "← base" suffix for non-main bases.
                 let branch_label = match task.base_branch.as_deref() {
@@ -1560,10 +1630,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // Show PR URL when a task with a PR is selected and no other status message
     if app.status_message.is_none() && app.input_mode == InputMode::Normal {
         if let Some(app::ListItem::Task { task, .. }) = app.selected_item() {
-            if let Some(url) = app.pr_urls.get(&task.branch) {
+            if let Some(pr) = app.prs.get(&task.branch) {
                 let pr_line = Paragraph::new(Line::from(vec![
                     Span::styled("\u{e728} ", Style::default().fg(current().magenta)),
-                    Span::styled(url.as_str(), Style::default().fg(current().muted)),
+                    Span::styled(pr.url.as_str(), Style::default().fg(current().muted)),
+                    Span::raw("  "),
+                    Span::styled(pr_summary(pr), Style::default().fg(current().muted)),
                 ]));
                 f.render_widget(pr_line, area);
                 return;
@@ -1692,6 +1764,56 @@ mod tests {
         let expected = w.churn + COL_GAP + w.badge + COL_GAP + w.branch;
         assert_eq!(spans_width(&full), expected);
         assert_eq!(spans_width(&empty), expected);
+    }
+
+    fn pr(state: PrState, review: PrReview, checks: Option<CiStatus>) -> PrInfo {
+        PrInfo {
+            url: "https://github.com/o/r/pull/42".to_string(),
+            state,
+            review,
+            checks,
+        }
+    }
+
+    #[test]
+    fn pr_badge_open_shows_number_review_and_ci_glyphs() {
+        let spans = pr_badge(&pr(
+            PrState::Open,
+            PrReview::Approved,
+            Some(CiStatus::Passing),
+        ));
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "#42 \u{2713} \u{25cf}");
+    }
+
+    #[test]
+    fn pr_badge_omits_ci_glyph_without_checks() {
+        let spans = pr_badge(&pr(PrState::Draft, PrReview::Requested, None));
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "#42 draft \u{25cc}");
+    }
+
+    #[test]
+    fn pr_badge_merged_spells_state_only() {
+        let spans = pr_badge(&pr(
+            PrState::Merged,
+            PrReview::Approved,
+            Some(CiStatus::Passing),
+        ));
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "#42 merged");
+    }
+
+    #[test]
+    fn pr_summary_lists_state_review_and_ci() {
+        let s = pr_summary(&pr(
+            PrState::Open,
+            PrReview::Requested,
+            Some(CiStatus::Pending),
+        ));
+        assert_eq!(s, "open \u{00b7} review requested \u{00b7} CI pending");
+        let s = pr_summary(&pr(PrState::Closed, PrReview::NotRequested, None));
+        assert_eq!(s, "closed");
     }
 
     #[test]
